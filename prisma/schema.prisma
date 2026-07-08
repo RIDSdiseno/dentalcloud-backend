@@ -1,0 +1,269 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                         String                      @id @default(uuid())
+  email                      String                      @unique
+  passwordHash               String
+  name                       String
+  rut                        String?
+  role                       String                      @default("odontologo")
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  appointments               Appointment[]
+  workSchedules              WorkSchedule[]
+  treatmentPlans             TreatmentPlan[]
+  evolutions                 Evolution[]
+  ledgerMovements            LedgerMovement[]
+  administrativeObservations AdministrativeObservation[]
+  clinicalDocuments          ClinicalDocument[]
+
+  @@map("users")
+}
+
+model Chair {
+  id            String         @id @default(uuid())
+  number        Int            @unique
+  name          String?
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  appointments  Appointment[]
+  workSchedules WorkSchedule[]
+
+  @@map("chairs")
+}
+
+model Patient {
+  id                         String                      @id @default(uuid())
+  rut                        String                      @unique
+  firstName                  String
+  lastName                   String
+  phone                      String?
+  email                      String?
+  birthDate                  DateTime?
+  address                    String?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  appointments               Appointment[]
+  treatmentPlans             TreatmentPlan[]
+  evolutions                 Evolution[]
+  ledgerMovements            LedgerMovement[]
+  administrativeObservations AdministrativeObservation[]
+  clinicalDocuments          ClinicalDocument[]
+
+  @@map("patients")
+}
+
+model TreatmentPlan {
+  id              String           @id @default(uuid())
+  number          Int              @unique @default(autoincrement())
+  patientId       String
+  patient         Patient          @relation(fields: [patientId], references: [id])
+  professionalId  String?
+  professional    User?            @relation(fields: [professionalId], references: [id])
+  sucursalId      String?
+  sucursal        Sucursal?        @relation(fields: [sucursalId], references: [id])
+  previsionId     String?
+  prevision       Prevision?       @relation(fields: [previsionId], references: [id])
+  convenioId      String?
+  convenio        Convenio?        @relation(fields: [convenioId], references: [id])
+  name            String?
+  paymentMethod   String?
+  status          String           @default("sin_iniciar")
+  amount          Int              @default(0)
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  items           TreatmentItem[]
+  ledgerMovements LedgerMovement[]
+
+  @@map("treatment_plans")
+}
+
+model TreatmentItem {
+  id                      String        @id @default(uuid())
+  treatmentPlanId         String
+  treatmentPlan           TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
+  prestacionId            String?
+  prestacion              Prestacion?   @relation(fields: [prestacionId], references: [id])
+  toothNumber             String?
+  description             String
+  listPrice               Int           @default(0)
+  convenioDiscountPercent Int           @default(0)
+  cost                    Int           @default(0)
+  completed               Boolean       @default(false)
+  createdAt               DateTime      @default(now())
+
+  @@map("treatment_items")
+}
+
+model Sucursal {
+  id             String          @id @default(uuid())
+  name           String          @unique
+  address        String?
+  active         Boolean         @default(true)
+  dimageClinicId String?
+  createdAt      DateTime        @default(now())
+  treatmentPlans TreatmentPlan[]
+
+  @@map("sucursales")
+}
+
+model Prevision {
+  id             String          @id @default(uuid())
+  name           String          @unique
+  active         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  treatmentPlans TreatmentPlan[]
+
+  @@map("previsiones")
+}
+
+model Convenio {
+  id              String          @id @default(uuid())
+  name            String          @unique
+  discountPercent Int             @default(0)
+  active          Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  treatmentPlans  TreatmentPlan[]
+
+  @@map("convenios")
+}
+
+model Prestacion {
+  id        String          @id @default(uuid())
+  code      String?         @unique
+  name      String
+  basePrice Int             @default(0)
+  active    Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  items     TreatmentItem[]
+
+  @@map("prestaciones")
+}
+
+model Appointment {
+  id             String   @id @default(uuid())
+  chairId        String
+  chair          Chair    @relation(fields: [chairId], references: [id])
+  patientId      String
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professionalId String?
+  professional   User?    @relation(fields: [professionalId], references: [id])
+  startAt        DateTime
+  endAt          DateTime
+  notes          String?
+  status         String   @default("agendada")
+  type           String   @default("cita")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([chairId, startAt])
+  @@index([professionalId, startAt])
+  @@map("appointments")
+}
+
+model AdministrativeObservation {
+  id             String   @id @default(uuid())
+  patientId      String
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professionalId String
+  professional   User     @relation(fields: [professionalId], references: [id])
+  content        String
+  createdAt      DateTime @default(now())
+
+  @@index([patientId, createdAt])
+  @@map("administrative_observations")
+}
+
+model ClinicalDocument {
+  id           String   @id @default(uuid())
+  patientId    String
+  patient      Patient  @relation(fields: [patientId], references: [id])
+  uploadedById String
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
+  category     String
+  fileName     String
+  fileUrl      String
+  resourceType String
+  publicId     String
+  description  String?
+  createdAt    DateTime @default(now())
+
+  @@index([patientId, category, createdAt])
+  @@map("clinical_documents")
+}
+
+model Evolution {
+  id             String   @id @default(uuid())
+  patientId      String
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professionalId String
+  professional   User     @relation(fields: [professionalId], references: [id])
+  content        String
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([patientId, createdAt])
+  @@map("evolutions")
+}
+
+model EvolutionTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  section   String?
+  content   String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("evolution_templates")
+}
+
+model LedgerMovement {
+  id              String         @id @default(uuid())
+  number          Int            @unique @default(autoincrement())
+  patientId       String
+  patient         Patient        @relation(fields: [patientId], references: [id])
+  treatmentPlanId String?
+  treatmentPlan   TreatmentPlan? @relation(fields: [treatmentPlanId], references: [id])
+  type            String
+  debe            Int            @default(0)
+  haber           Int            @default(0)
+  description     String?
+  paymentMethod   String?
+  documentNumber  String?
+  notes           String?
+  registeredById  String
+  registeredBy    User           @relation(fields: [registeredById], references: [id])
+  createdAt       DateTime       @default(now())
+
+  @@index([patientId, createdAt])
+  @@map("ledger_movements")
+}
+
+model WorkSchedule {
+  id             String   @id @default(uuid())
+  professionalId String
+  professional   User     @relation(fields: [professionalId], references: [id])
+  chairId        String?
+  chair          Chair?   @relation(fields: [chairId], references: [id])
+  weekday        Int
+  startTime      String
+  endTime        String
+  createdAt      DateTime @default(now())
+
+  @@index([professionalId, weekday])
+  @@map("work_schedules")
+}
