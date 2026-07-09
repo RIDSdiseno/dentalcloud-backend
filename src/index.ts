@@ -19,9 +19,18 @@ import rxRoutes from './routes/rx';
 
 const app = express();
 
+// Railway (and other dashboards) make it easy to accidentally save the origin
+// with a trailing slash, but browsers never send one in the `Origin` header —
+// cors() requires an exact string match, so a stray "/" silently breaks every
+// cross-origin request. Support a comma-separated list too, trimmed of slashes.
+const allowedOrigins = (process.env.FRONTEND_ORIGIN ?? '')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_ORIGIN,
+    origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
     credentials: true,
   })
 );
