@@ -58,6 +58,7 @@ export async function create(req: Request, res: Response) {
       patientId: body.patientId,
       professionalId,
       content: body.content,
+      clinicaId: req.user!.clinicaId!,
     },
     include,
   });

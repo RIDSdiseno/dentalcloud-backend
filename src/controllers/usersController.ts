@@ -5,13 +5,30 @@ import { cleanRut, isValidRut } from '../utils/rut';
 
 const VALID_ROLES = ['admin', 'odontologo'];
 
-function toPublicUser(user: { id: string; email: string; name: string; role: string; rut: string | null; createdAt: Date }) {
-  return { id: user.id, email: user.email, name: user.name, role: user.role, rut: user.rut, createdAt: user.createdAt };
+function toPublicUser(user: {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  rut: string | null;
+  createdAt: Date;
+  clinicaId: string | null;
+}) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    rut: user.rut,
+    createdAt: user.createdAt,
+    clinicaId: user.clinicaId,
+  };
 }
 
 export async function list(req: Request, res: Response) {
   const users = await prisma.user.findMany({
-    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true },
+    where: { clinicaId: req.user!.clinicaId! },
+    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true },
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
   return res.json({ users });
@@ -43,7 +60,7 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name: name.trim(), email: normalizedEmail, passwordHash, role },
+    data: { name: name.trim(), email: normalizedEmail, passwordHash, role, clinicaId: req.user!.clinicaId! },
   });
   return res.status(201).json({ user: toPublicUser(user) });
 }

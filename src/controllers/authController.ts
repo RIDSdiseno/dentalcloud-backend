@@ -1,9 +1,10 @@
 import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import type { CookieOptions } from 'express';
-import type { User } from '@prisma/client';
+import type { User, Clinica } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
+import { parseClinicaModules } from '../lib/clinicaModules';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
@@ -17,8 +18,16 @@ function refreshCookieOptions(): CookieOptions {
   };
 }
 
-function toPublicUser(user: User) {
-  return { id: user.id, email: user.email, name: user.name, role: user.role };
+function toPublicUser(user: User & { clinica?: Clinica | null }) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    clinicaId: user.clinicaId,
+    clinicaModules: user.clinica ? parseClinicaModules(user.clinica.modules) : null,
+    rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
+  };
 }
 
 export async function login(req: Request, res: Response) {
@@ -28,7 +37,7 @@ export async function login(req: Request, res: Response) {
     return res.status(400).json({ error: 'Email y contraseña son requeridos' });
   }
 
-  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() }, include: { clinica: true } });
   if (!user) {
     return res.status(401).json({ error: 'Credenciales inválidas' });
   }
@@ -36,6 +45,10 @@ export async function login(req: Request, res: Response) {
   const passwordMatches = await bcrypt.compare(password, user.passwordHash);
   if (!passwordMatches) {
     return res.status(401).json({ error: 'Credenciales inválidas' });
+  }
+
+  if (user.clinica && !user.clinica.active) {
+    return res.status(403).json({ error: 'Tu clínica está desactivada. Contacta al administrador de la plataforma.' });
   }
 
   const accessToken = signAccessToken(user);
@@ -58,9 +71,12 @@ export async function refresh(req: Request, res: Response) {
     return res.status(401).json({ error: 'Sesión expirada, vuelve a iniciar sesión' });
   }
 
-  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+  const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { clinica: true } });
   if (!user) {
     return res.status(401).json({ error: 'Sesión inválida' });
+  }
+  if (user.clinica && !user.clinica.active) {
+    return res.status(403).json({ error: 'Tu clínica está desactivada. Contacta al administrador de la plataforma.' });
   }
 
   const accessToken = signAccessToken(user);
@@ -76,7 +92,7 @@ export function logout(req: Request, res: Response) {
 }
 
 export async function me(req: Request, res: Response) {
-  const user = await prisma.user.findUnique({ where: { id: req.user!.sub } });
+  const user = await prisma.user.findUnique({ where: { id: req.user!.sub }, include: { clinica: true } });
   if (!user) {
     return res.status(404).json({ error: 'Usuario no encontrado' });
   }

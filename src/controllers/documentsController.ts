@@ -81,6 +81,7 @@ export async function upload(req: Request, res: Response) {
         resourceType: uploadResult.resource_type,
         publicId: uploadResult.public_id,
         description: body.description?.trim() || null,
+        clinicaId: req.user!.clinicaId!,
       },
       include,
     });

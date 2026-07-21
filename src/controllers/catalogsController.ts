@@ -4,7 +4,7 @@ import prisma from '../lib/prisma';
 export async function listSucursales(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const sucursales = await prisma.sucursal.findMany({
-    where: includeInactive ? {} : { active: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
     orderBy: { name: 'asc' },
   });
   return res.json({ sucursales });
@@ -15,11 +15,14 @@ export async function createSucursal(req: Request, res: Response) {
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la sucursal es requerido' });
   }
-  const existing = await prisma.sucursal.findUnique({ where: { name: name.trim() } });
+  const clinicaId = req.user!.clinicaId!;
+  const existing = await prisma.sucursal.findFirst({ where: { clinicaId, name: name.trim() } });
   if (existing) {
     return res.status(409).json({ error: 'Ya existe una sucursal con ese nombre' });
   }
-  const sucursal = await prisma.sucursal.create({ data: { name: name.trim(), address: address?.trim() || null } });
+  const sucursal = await prisma.sucursal.create({
+    data: { name: name.trim(), address: address?.trim() || null, clinicaId },
+  });
   return res.status(201).json({ sucursal });
 }
 
@@ -62,7 +65,7 @@ export async function removeSucursal(req: Request<{ id: string }>, res: Response
 export async function listPrevisiones(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const previsiones = await prisma.prevision.findMany({
-    where: includeInactive ? {} : { active: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
     orderBy: { name: 'asc' },
   });
   return res.json({ previsiones });
@@ -73,11 +76,12 @@ export async function createPrevision(req: Request, res: Response) {
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la previsión es requerido' });
   }
-  const existing = await prisma.prevision.findUnique({ where: { name: name.trim() } });
+  const clinicaId = req.user!.clinicaId!;
+  const existing = await prisma.prevision.findFirst({ where: { clinicaId, name: name.trim() } });
   if (existing) {
     return res.status(409).json({ error: 'Ya existe una previsión con ese nombre' });
   }
-  const prevision = await prisma.prevision.create({ data: { name: name.trim() } });
+  const prevision = await prisma.prevision.create({ data: { name: name.trim(), clinicaId } });
   return res.status(201).json({ prevision });
 }
 
@@ -113,7 +117,7 @@ export async function removePrevision(req: Request<{ id: string }>, res: Respons
 export async function listConvenios(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const convenios = await prisma.convenio.findMany({
-    where: includeInactive ? {} : { active: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
     orderBy: { name: 'asc' },
   });
   return res.json({ convenios });
@@ -124,12 +128,13 @@ export async function createConvenio(req: Request, res: Response) {
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre del convenio es requerido' });
   }
-  const existing = await prisma.convenio.findUnique({ where: { name: name.trim() } });
+  const clinicaId = req.user!.clinicaId!;
+  const existing = await prisma.convenio.findFirst({ where: { clinicaId, name: name.trim() } });
   if (existing) {
     return res.status(409).json({ error: 'Ya existe un convenio con ese nombre' });
   }
   const pct = Math.min(100, Math.max(0, Math.round(discountPercent ?? 0)));
-  const convenio = await prisma.convenio.create({ data: { name: name.trim(), discountPercent: pct } });
+  const convenio = await prisma.convenio.create({ data: { name: name.trim(), discountPercent: pct, clinicaId } });
   return res.status(201).json({ convenio });
 }
 
@@ -168,6 +173,7 @@ export async function listPrestaciones(req: Request, res: Response) {
   const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const prestaciones = await prisma.prestacion.findMany({
     where: {
+      clinicaId: req.user!.clinicaId!,
       ...(includeInactive ? {} : { active: true }),
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
     },
@@ -181,14 +187,15 @@ export async function createPrestacion(req: Request, res: Response) {
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la prestación es requerido' });
   }
+  const clinicaId = req.user!.clinicaId!;
   if (code?.trim()) {
-    const existing = await prisma.prestacion.findUnique({ where: { code: code.trim() } });
+    const existing = await prisma.prestacion.findFirst({ where: { clinicaId, code: code.trim() } });
     if (existing) {
       return res.status(409).json({ error: 'Ya existe una prestación con ese código' });
     }
   }
   const prestacion = await prisma.prestacion.create({
-    data: { name: name.trim(), code: code?.trim() || null, basePrice: Math.max(0, Math.round(basePrice ?? 0)) },
+    data: { name: name.trim(), code: code?.trim() || null, basePrice: Math.max(0, Math.round(basePrice ?? 0)), clinicaId },
   });
   return res.status(201).json({ prestacion });
 }
@@ -232,7 +239,7 @@ export async function removePrestacion(req: Request<{ id: string }>, res: Respon
 export async function listEvolutionTemplates(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const templates = await prisma.evolutionTemplate.findMany({
-    where: includeInactive ? {} : { active: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
     orderBy: { name: 'asc' },
   });
   return res.json({ templates });
@@ -247,7 +254,7 @@ export async function createEvolutionTemplate(req: Request, res: Response) {
     return res.status(400).json({ error: 'El contenido de la plantilla es requerido' });
   }
   const template = await prisma.evolutionTemplate.create({
-    data: { name: name.trim(), section: section?.trim() || null, content },
+    data: { name: name.trim(), section: section?.trim() || null, content, clinicaId: req.user!.clinicaId! },
   });
   return res.status(201).json({ template });
 }

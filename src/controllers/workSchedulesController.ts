@@ -66,7 +66,7 @@ export async function create(req: Request, res: Response) {
   }
 
   const schedule = await prisma.workSchedule.create({
-    data: { professionalId, chairId: chairId || null, weekday, startTime, endTime },
+    data: { professionalId, chairId: chairId || null, weekday, startTime, endTime, clinicaId: req.user!.clinicaId! },
     include: { chair: { select: { id: true, number: true, name: true } } },
   });
   return res.status(201).json({ schedule });

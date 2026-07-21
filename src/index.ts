@@ -16,8 +16,15 @@ import ledgerRoutes from './routes/ledger';
 import observationsRoutes from './routes/observations';
 import documentsRoutes from './routes/documents';
 import rxRoutes from './routes/rx';
+import dataConsentsRoutes from './routes/dataConsents';
+import publicConsentsRoutes from './routes/publicConsents';
+import clinicasRoutes from './routes/clinicas';
 
 const app = express();
+
+// Railway corre detrás de un proxy; sin esto, req.ip devuelve la IP interna del
+// proxy en vez de la IP real del cliente (necesario para el registro del firmante).
+app.set('trust proxy', 1);
 
 // Railway (and other dashboards) make it easy to accidentally save the origin
 // with a trailing slash, but browsers never send one in the `Origin` header —
@@ -51,6 +58,9 @@ app.use('/api/ledger', ledgerRoutes);
 app.use('/api/observations', observationsRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/rx', rxRoutes);
+app.use('/api/data-consents', dataConsentsRoutes);
+app.use('/api/public/consents', publicConsentsRoutes);
+app.use('/api/clinicas', clinicasRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

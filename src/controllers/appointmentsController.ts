@@ -123,6 +123,7 @@ export async function create(req: Request, res: Response) {
       endAt,
       notes: body.notes?.trim() || null,
       type: body.type || 'cita',
+      clinicaId: req.user!.clinicaId!,
     },
     include,
   });

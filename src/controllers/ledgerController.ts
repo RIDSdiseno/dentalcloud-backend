@@ -168,6 +168,7 @@ export async function createMovement(req: Request, res: Response) {
       documentNumber: body.documentNumber?.trim() || null,
       notes: body.notes?.trim() || null,
       registeredById: req.user!.sub,
+      clinicaId: req.user!.clinicaId!,
     },
     include: movementInclude,
   });

@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,41 +7,79 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Clinica {
+  id        String   @id @default(uuid())
+  name      String
+  active    Boolean  @default(true)
+  rxEnabled Boolean  @default(true)
+  // Permisos de módulos adicionales (documentos clínicos, cartola, evoluciones,
+  // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
+  // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.
+  modules   Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
+  createdAt DateTime @default(now())
+
+  users                      User[]
+  chairs                     Chair[]
+  patients                   Patient[]
+  appointments               Appointment[]
+  treatmentPlans             TreatmentPlan[]
+  treatmentItems             TreatmentItem[]
+  sucursales                 Sucursal[]
+  previsiones                Prevision[]
+  convenios                  Convenio[]
+  prestaciones               Prestacion[]
+  administrativeObservations AdministrativeObservation[]
+  clinicalDocuments          ClinicalDocument[]
+  evolutions                 Evolution[]
+  evolutionTemplates         EvolutionTemplate[]
+  ledgerMovements            LedgerMovement[]
+  workSchedules              WorkSchedule[]
+
+  @@map("clinicas")
+}
+
 model User {
   id                         String                      @id @default(uuid())
   email                      String                      @unique
   passwordHash               String
   name                       String
-  rut                        String?
   role                       String                      @default("odontologo")
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
+  rut                        String?
+  clinicaId                  String?
+  clinica                    Clinica?                    @relation(fields: [clinicaId], references: [id])
+  administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
-  workSchedules              WorkSchedule[]
-  treatmentPlans             TreatmentPlan[]
+  clinicalDocuments          ClinicalDocument[]
   evolutions                 Evolution[]
   ledgerMovements            LedgerMovement[]
-  administrativeObservations AdministrativeObservation[]
-  clinicalDocuments          ClinicalDocument[]
+  treatmentPlans             TreatmentPlan[]
+  workSchedules              WorkSchedule[]
+  privacyConsentsSent        Patient[]                   @relation("PrivacyConsentSentBy")
 
+  @@index([clinicaId])
   @@map("users")
 }
 
 model Chair {
   id            String         @id @default(uuid())
-  number        Int            @unique
+  number        Int
   name          String?
   active        Boolean        @default(true)
   createdAt     DateTime       @default(now())
+  clinicaId     String
+  clinica       Clinica        @relation(fields: [clinicaId], references: [id])
   appointments  Appointment[]
   workSchedules WorkSchedule[]
 
+  @@unique([clinicaId, number])
   @@map("chairs")
 }
 
 model Patient {
   id                         String                      @id @default(uuid())
-  rut                        String                      @unique
+  rut                        String
   firstName                  String
   lastName                   String
   phone                      String?
@@ -55,13 +88,28 @@ model Patient {
   address                    String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
+  privacyConsentAt           DateTime?
+  privacyConsentStatus       String                      @default("pendiente")
+  privacyConsentMethod       String?
+  privacyConsentToken        String?                     @unique
+  privacyConsentSentAt       DateTime?
+  privacyConsentExpiresAt    DateTime?
+  privacyConsentSignerName   String?
+  privacyConsentSignerRut    String?
+  privacyConsentSignerIp     String?
+  privacyConsentUserAgent    String?
+  privacyConsentSentById     String?
+  privacyConsentSentBy       User?                       @relation("PrivacyConsentSentBy", fields: [privacyConsentSentById], references: [id])
+  clinicaId                  String
+  clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
+  administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
-  treatmentPlans             TreatmentPlan[]
+  clinicalDocuments          ClinicalDocument[]
   evolutions                 Evolution[]
   ledgerMovements            LedgerMovement[]
-  administrativeObservations AdministrativeObservation[]
-  clinicalDocuments          ClinicalDocument[]
+  treatmentPlans             TreatmentPlan[]
 
+  @@unique([clinicaId, rut])
   @@map("patients")
 }
 
@@ -69,130 +117,152 @@ model TreatmentPlan {
   id              String           @id @default(uuid())
   number          Int              @unique @default(autoincrement())
   patientId       String
-  patient         Patient          @relation(fields: [patientId], references: [id])
   professionalId  String?
-  professional    User?            @relation(fields: [professionalId], references: [id])
-  sucursalId      String?
-  sucursal        Sucursal?        @relation(fields: [sucursalId], references: [id])
-  previsionId     String?
-  prevision       Prevision?       @relation(fields: [previsionId], references: [id])
-  convenioId      String?
-  convenio        Convenio?        @relation(fields: [convenioId], references: [id])
-  name            String?
-  paymentMethod   String?
   status          String           @default("sin_iniciar")
   amount          Int              @default(0)
   notes           String?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
-  items           TreatmentItem[]
+  convenioId      String?
+  name            String?
+  paymentMethod   String?
+  previsionId     String?
+  sucursalId      String?
+  clinicaId       String
+  clinica         Clinica          @relation(fields: [clinicaId], references: [id])
   ledgerMovements LedgerMovement[]
+  items           TreatmentItem[]
+  convenio        Convenio?        @relation(fields: [convenioId], references: [id])
+  patient         Patient          @relation(fields: [patientId], references: [id])
+  prevision       Prevision?       @relation(fields: [previsionId], references: [id])
+  professional    User?            @relation(fields: [professionalId], references: [id])
+  sucursal        Sucursal?        @relation(fields: [sucursalId], references: [id])
 
+  @@index([clinicaId])
   @@map("treatment_plans")
 }
 
 model TreatmentItem {
   id                      String        @id @default(uuid())
   treatmentPlanId         String
-  treatmentPlan           TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
-  prestacionId            String?
-  prestacion              Prestacion?   @relation(fields: [prestacionId], references: [id])
-  toothNumber             String?
   description             String
-  listPrice               Int           @default(0)
-  convenioDiscountPercent Int           @default(0)
   cost                    Int           @default(0)
   completed               Boolean       @default(false)
   createdAt               DateTime      @default(now())
+  convenioDiscountPercent Int           @default(0)
+  listPrice               Int           @default(0)
+  prestacionId            String?
+  toothNumber             String?
+  clinicaId               String
+  clinica                 Clinica       @relation(fields: [clinicaId], references: [id])
+  prestacion              Prestacion?   @relation(fields: [prestacionId], references: [id])
+  treatmentPlan           TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
 
+  @@index([clinicaId])
   @@map("treatment_items")
 }
 
 model Sucursal {
   id             String          @id @default(uuid())
-  name           String          @unique
+  name           String
   address        String?
   active         Boolean         @default(true)
-  dimageClinicId String?
   createdAt      DateTime        @default(now())
+  dimageClinicId String?
+  clinicaId      String
+  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans TreatmentPlan[]
 
+  @@unique([clinicaId, name])
   @@map("sucursales")
 }
 
 model Prevision {
   id             String          @id @default(uuid())
-  name           String          @unique
+  name           String
   active         Boolean         @default(true)
   createdAt      DateTime        @default(now())
+  clinicaId      String
+  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans TreatmentPlan[]
 
+  @@unique([clinicaId, name])
   @@map("previsiones")
 }
 
 model Convenio {
   id              String          @id @default(uuid())
-  name            String          @unique
+  name            String
   discountPercent Int             @default(0)
   active          Boolean         @default(true)
   createdAt       DateTime        @default(now())
+  clinicaId       String
+  clinica         Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans  TreatmentPlan[]
 
+  @@unique([clinicaId, name])
   @@map("convenios")
 }
 
 model Prestacion {
   id        String          @id @default(uuid())
-  code      String?         @unique
+  code      String?
   name      String
   basePrice Int             @default(0)
   active    Boolean         @default(true)
   createdAt DateTime        @default(now())
+  clinicaId String
+  clinica   Clinica         @relation(fields: [clinicaId], references: [id])
   items     TreatmentItem[]
 
+  @@unique([clinicaId, code])
   @@map("prestaciones")
 }
 
 model Appointment {
   id             String   @id @default(uuid())
   chairId        String
-  chair          Chair    @relation(fields: [chairId], references: [id])
   patientId      String
-  patient        Patient  @relation(fields: [patientId], references: [id])
-  professionalId String?
-  professional   User?    @relation(fields: [professionalId], references: [id])
   startAt        DateTime
   endAt          DateTime
   notes          String?
   status         String   @default("agendada")
-  type           String   @default("cita")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  professionalId String?
+  type           String   @default("cita")
+  clinicaId      String
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
+  chair          Chair    @relation(fields: [chairId], references: [id])
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professional   User?    @relation(fields: [professionalId], references: [id])
 
   @@index([chairId, startAt])
   @@index([professionalId, startAt])
+  @@index([clinicaId])
   @@map("appointments")
 }
 
 model AdministrativeObservation {
   id             String   @id @default(uuid())
   patientId      String
-  patient        Patient  @relation(fields: [patientId], references: [id])
   professionalId String
-  professional   User     @relation(fields: [professionalId], references: [id])
   content        String
   createdAt      DateTime @default(now())
+  clinicaId      String
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professional   User     @relation(fields: [professionalId], references: [id])
 
   @@index([patientId, createdAt])
+  @@index([clinicaId])
   @@map("administrative_observations")
 }
 
 model ClinicalDocument {
   id           String   @id @default(uuid())
   patientId    String
-  patient      Patient  @relation(fields: [patientId], references: [id])
   uploadedById String
-  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
   category     String
   fileName     String
   fileUrl      String
@@ -200,23 +270,31 @@ model ClinicalDocument {
   publicId     String
   description  String?
   createdAt    DateTime @default(now())
+  clinicaId    String
+  clinica      Clinica  @relation(fields: [clinicaId], references: [id])
+  patient      Patient  @relation(fields: [patientId], references: [id])
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
 
   @@index([patientId, category, createdAt])
+  @@index([clinicaId])
   @@map("clinical_documents")
 }
 
 model Evolution {
   id             String   @id @default(uuid())
   patientId      String
-  patient        Patient  @relation(fields: [patientId], references: [id])
   professionalId String
-  professional   User     @relation(fields: [professionalId], references: [id])
   content        String
   enabled        Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  clinicaId      String
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  professional   User     @relation(fields: [professionalId], references: [id])
 
   @@index([patientId, createdAt])
+  @@index([clinicaId])
   @@map("evolutions")
 }
 
@@ -227,7 +305,10 @@ model EvolutionTemplate {
   content   String
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
+  clinicaId String
+  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
 
+  @@index([clinicaId])
   @@map("evolution_templates")
 }
 
@@ -235,9 +316,7 @@ model LedgerMovement {
   id              String         @id @default(uuid())
   number          Int            @unique @default(autoincrement())
   patientId       String
-  patient         Patient        @relation(fields: [patientId], references: [id])
   treatmentPlanId String?
-  treatmentPlan   TreatmentPlan? @relation(fields: [treatmentPlanId], references: [id])
   type            String
   debe            Int            @default(0)
   haber           Int            @default(0)
@@ -246,24 +325,32 @@ model LedgerMovement {
   documentNumber  String?
   notes           String?
   registeredById  String
-  registeredBy    User           @relation(fields: [registeredById], references: [id])
   createdAt       DateTime       @default(now())
+  clinicaId       String
+  clinica         Clinica        @relation(fields: [clinicaId], references: [id])
+  patient         Patient        @relation(fields: [patientId], references: [id])
+  registeredBy    User           @relation(fields: [registeredById], references: [id])
+  treatmentPlan   TreatmentPlan? @relation(fields: [treatmentPlanId], references: [id])
 
   @@index([patientId, createdAt])
+  @@index([clinicaId])
   @@map("ledger_movements")
 }
 
 model WorkSchedule {
   id             String   @id @default(uuid())
   professionalId String
-  professional   User     @relation(fields: [professionalId], references: [id])
   chairId        String?
-  chair          Chair?   @relation(fields: [chairId], references: [id])
   weekday        Int
   startTime      String
   endTime        String
   createdAt      DateTime @default(now())
+  clinicaId      String
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
+  chair          Chair?   @relation(fields: [chairId], references: [id])
+  professional   User     @relation(fields: [professionalId], references: [id])
 
   @@index([professionalId, weekday])
+  @@index([clinicaId])
   @@map("work_schedules")
 }

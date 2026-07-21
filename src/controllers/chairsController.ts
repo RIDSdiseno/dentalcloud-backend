@@ -4,7 +4,7 @@ import prisma from '../lib/prisma';
 export async function list(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const chairs = await prisma.chair.findMany({
-    where: includeInactive ? {} : { active: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
     orderBy: { number: 'asc' },
   });
   return res.json({ chairs });
@@ -17,12 +17,13 @@ export async function create(req: Request, res: Response) {
     return res.status(400).json({ error: 'El número de sillón debe ser un entero positivo' });
   }
 
-  const existing = await prisma.chair.findUnique({ where: { number } });
+  const clinicaId = req.user!.clinicaId!;
+  const existing = await prisma.chair.findFirst({ where: { clinicaId, number } });
   if (existing) {
     return res.status(409).json({ error: `Ya existe un sillón con el número ${number}` });
   }
 
-  const chair = await prisma.chair.create({ data: { number, name: name?.trim() || null } });
+  const chair = await prisma.chair.create({ data: { number, name: name?.trim() || null, clinicaId } });
   return res.status(201).json({ chair });
 }
 

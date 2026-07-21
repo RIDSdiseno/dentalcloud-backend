@@ -47,6 +47,7 @@ export async function create(req: Request, res: Response) {
       patientId: body.patientId,
       professionalId,
       content: body.content.trim(),
+      clinicaId: req.user!.clinicaId!,
     },
     include,
   });

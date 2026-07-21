@@ -37,17 +37,21 @@ function toPatientPatch(body: PatientInput) {
 export async function list(req: Request, res: Response) {
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const searchRut = cleanRut(search);
+  const clinicaId = req.user!.clinicaId!;
 
   const patients = await prisma.patient.findMany({
-    where: search
-      ? {
-          OR: [
-            ...(searchRut ? [{ rut: { contains: searchRut, mode: 'insensitive' as const } }] : []),
-            { firstName: { contains: search, mode: 'insensitive' as const } },
-            { lastName: { contains: search, mode: 'insensitive' as const } },
-          ],
-        }
-      : undefined,
+    where: {
+      clinicaId,
+      ...(search
+        ? {
+            OR: [
+              ...(searchRut ? [{ rut: { contains: searchRut, mode: 'insensitive' as const } }] : []),
+              { firstName: { contains: search, mode: 'insensitive' as const } },
+              { lastName: { contains: search, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    },
     orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     take: 50,
   });
@@ -72,13 +76,14 @@ export async function create(req: Request, res: Response) {
     return res.status(400).json({ error: 'Nombre y apellido son requeridos' });
   }
 
+  const clinicaId = req.user!.clinicaId!;
   const rut = cleanRut(body.rut);
-  const existing = await prisma.patient.findUnique({ where: { rut } });
+  const existing = await prisma.patient.findFirst({ where: { clinicaId, rut } });
   if (existing) {
     return res.status(409).json({ error: `Ya existe un paciente con el RUT ${rut}` });
   }
 
-  const patient = await prisma.patient.create({ data: { rut, ...toPatientData(body) } });
+  const patient = await prisma.patient.create({ data: { rut, clinicaId, ...toPatientData(body) } });
   return res.status(201).json({ patient });
 }
 

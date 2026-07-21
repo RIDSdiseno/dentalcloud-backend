@@ -85,6 +85,7 @@ export async function create(req: Request, res: Response) {
 
   const items = (body.items ?? []).filter((i) => i.description?.trim());
   const amount = items.reduce((sum, i) => sum + Math.round(i.cost ?? 0), 0);
+  const clinicaId = req.user!.clinicaId!;
 
   const plan = await prisma.treatmentPlan.create({
     data: {
@@ -97,6 +98,7 @@ export async function create(req: Request, res: Response) {
       paymentMethod: body.paymentMethod?.trim() || null,
       amount,
       notes: body.notes?.trim() || null,
+      clinicaId,
       items: {
         create: items.map((i) => ({
           description: i.description!.trim(),
@@ -105,6 +107,7 @@ export async function create(req: Request, res: Response) {
           toothNumber: i.toothNumber?.trim() || null,
           listPrice: Math.round(i.listPrice ?? i.cost ?? 0),
           convenioDiscountPercent: Math.round(i.convenioDiscountPercent ?? 0),
+          clinicaId,
         })),
       },
     },
@@ -172,6 +175,7 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
       toothNumber: body.toothNumber?.trim() || null,
       listPrice: Math.round(body.listPrice ?? body.cost ?? 0),
       convenioDiscountPercent: Math.round(body.convenioDiscountPercent ?? 0),
+      clinicaId: plan.clinicaId,
     },
   });
 
