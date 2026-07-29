@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { sendMail } from '../lib/mailer';
-import { CONSENT_LEGAL_TEXT } from '../lib/consentText';
+import { DEFAULT_CONSENT_TYPES } from '../lib/consentTypes';
 import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { cleanRut, isValidRut } from '../utils/rut';
 
@@ -16,14 +16,67 @@ function getAppBaseUrl() {
   return origins[0] ?? 'http://localhost:5173';
 }
 
-export async function getText(req: Request, res: Response) {
-  return res.json({ text: CONSENT_LEGAL_TEXT });
+// Se llama en cada listado de tipos: si a la clínica le falta alguno de los
+// tipos estándar (clínica nueva, o un tipo agregado al catálogo después de que
+// la clínica ya existía), lo crea. Así no depende de una migración/seed para
+// que clínicas nuevas queden al día.
+async function ensureDefaultConsentTypes(clinicaId: string) {
+  const existing = await prisma.consentType.findMany({ where: { clinicaId }, select: { code: true } });
+  const existingCodes = new Set(existing.map((c) => c.code));
+  const missing = DEFAULT_CONSENT_TYPES.filter((ct) => !existingCodes.has(ct.code));
+  if (missing.length === 0) return;
+  await prisma.consentType.createMany({
+    data: missing.map((ct) => ({ ...ct, clinicaId })),
+    skipDuplicates: true,
+  });
+  // El texto legal de "proteccion_datos" pudo haberse sembrado vacío por la
+  // migración de datos histórica; lo completa si sigue en blanco.
+  await prisma.consentType.updateMany({
+    where: { clinicaId, code: 'proteccion_datos', legalText: '' },
+    data: { legalText: DEFAULT_CONSENT_TYPES.find((ct) => ct.code === 'proteccion_datos')!.legalText },
+  });
+}
+
+export async function getTypes(req: Request, res: Response) {
+  const clinicaId = req.user!.clinicaId!;
+  await ensureDefaultConsentTypes(clinicaId);
+  const consentTypes = await prisma.consentType.findMany({
+    where: { clinicaId, active: true },
+    orderBy: { name: 'asc' },
+  });
+  return res.json({ consentTypes });
+}
+
+export async function listForPatient(req: Request<{ patientId: string }>, res: Response) {
+  const consents = await prisma.consent.findMany({
+    where: { patientId: req.params.patientId },
+    select: {
+      id: true,
+      consentTypeId: true,
+      status: true,
+      method: true,
+      sentAt: true,
+      expiresAt: true,
+      respondedAt: true,
+      signerName: true,
+      signerRut: true,
+    },
+  });
+  return res.json({ consents });
+}
+
+export async function getText(req: Request<{ consentTypeId: string }>, res: Response) {
+  const consentType = await prisma.consentType.findUnique({ where: { id: req.params.consentTypeId } });
+  if (!consentType) {
+    return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
+  }
+  return res.json({ text: consentType.legalText });
 }
 
 export async function send(req: Request, res: Response) {
-  const { patientId } = req.body as { patientId?: string };
-  if (!patientId) {
-    return res.status(400).json({ error: 'patientId es requerido' });
+  const { patientId, consentTypeId } = req.body as { patientId?: string; consentTypeId?: string };
+  if (!patientId || !consentTypeId) {
+    return res.status(400).json({ error: 'patientId y consentTypeId son requeridos' });
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: patientId } });
@@ -32,6 +85,10 @@ export async function send(req: Request, res: Response) {
   }
   if (!patient.email) {
     return res.status(400).json({ error: 'El paciente no tiene un correo registrado' });
+  }
+  const consentType = await prisma.consentType.findUnique({ where: { id: consentTypeId } });
+  if (!consentType || consentType.clinicaId !== patient.clinicaId) {
+    return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
   }
 
   const token = crypto.randomBytes(32).toString('hex');
@@ -43,7 +100,7 @@ export async function send(req: Request, res: Response) {
   try {
     await sendMail({
       to: patient.email,
-      subject: 'Consentimiento de tratamiento de datos personales – DentalCloud',
+      subject: `Consentimiento: ${consentType.name} – DentalCloud`,
       html: buildConsentEmailHtml({ patientFirstName: patient.firstName, signUrl, expiresAt }),
     });
   } catch (err) {
@@ -51,62 +108,74 @@ export async function send(req: Request, res: Response) {
     return res.status(502).json({ error: 'No se pudo enviar el correo. Intenta nuevamente.' });
   }
 
-  const updated = await prisma.patient.update({
-    where: { id: patientId },
-    data: {
-      privacyConsentStatus: 'pendiente',
-      privacyConsentToken: token,
-      privacyConsentSentAt: sentAt,
-      privacyConsentExpiresAt: expiresAt,
-      privacyConsentMethod: 'email',
-      privacyConsentSentById: req.user!.sub,
-      privacyConsentAt: null,
-      privacyConsentSignerName: null,
-      privacyConsentSignerRut: null,
-      privacyConsentSignerIp: null,
-      privacyConsentUserAgent: null,
+  const consent = await prisma.consent.upsert({
+    where: { patientId_consentTypeId: { patientId, consentTypeId } },
+    update: {
+      status: 'pendiente',
+      token,
+      sentAt,
+      expiresAt,
+      method: 'email',
+      sentById: req.user!.sub,
+      respondedAt: null,
+      signerName: null,
+      signerRut: null,
+      signerIp: null,
+      userAgent: null,
+      contentSnapshot: consentType.legalText,
+    },
+    create: {
+      patientId,
+      consentTypeId,
+      clinicaId: patient.clinicaId,
+      status: 'pendiente',
+      token,
+      sentAt,
+      expiresAt,
+      method: 'email',
+      sentById: req.user!.sub,
+      contentSnapshot: consentType.legalText,
     },
   });
 
   return res.status(201).json({
-    status: updated.privacyConsentStatus,
-    sentAt: updated.privacyConsentSentAt,
-    expiresAt: updated.privacyConsentExpiresAt,
+    consentTypeId,
+    status: consent.status,
+    sentAt: consent.sentAt,
+    expiresAt: consent.expiresAt,
   });
 }
 
 async function findConsentByToken(token: string) {
-  return prisma.patient.findUnique({ where: { privacyConsentToken: token } });
+  return prisma.consent.findUnique({ where: { token }, include: { consentType: true, patient: true } });
 }
 
-function isExpired(patient: { privacyConsentExpiresAt: Date | null }) {
-  return !!patient.privacyConsentExpiresAt && patient.privacyConsentExpiresAt < new Date();
+function isExpired(consent: { expiresAt: Date | null }) {
+  return !!consent.expiresAt && consent.expiresAt < new Date();
 }
 
 export async function getByToken(req: Request<{ token: string }>, res: Response) {
-  const patient = await findConsentByToken(req.params.token);
-  if (!patient) {
+  const consent = await findConsentByToken(req.params.token);
+  if (!consent) {
     return res.status(404).json({ error: 'Link no válido' });
   }
 
-  if (patient.privacyConsentStatus === 'firmado' || patient.privacyConsentStatus === 'rechazado') {
-    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: patient.privacyConsentStatus });
+  if (consent.status === 'firmado' || consent.status === 'rechazado') {
+    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: consent.status });
   }
 
-  if (isExpired(patient)) {
-    if (patient.privacyConsentStatus === 'pendiente') {
-      await prisma.patient.update({
-        where: { id: patient.id },
-        data: { privacyConsentStatus: 'expirado' },
-      });
+  if (isExpired(consent)) {
+    if (consent.status === 'pendiente') {
+      await prisma.consent.update({ where: { id: consent.id }, data: { status: 'expirado' } });
     }
     return res.status(410).json({ error: 'Este link ha vencido' });
   }
 
   return res.json({
-    patientName: `${patient.firstName} ${patient.lastName}`,
-    contentSnapshot: CONSENT_LEGAL_TEXT,
-    expiresAt: patient.privacyConsentExpiresAt,
+    patientName: `${consent.patient.firstName} ${consent.patient.lastName}`,
+    consentTypeName: consent.consentType.name,
+    contentSnapshot: consent.contentSnapshot ?? consent.consentType.legalText,
+    expiresAt: consent.expiresAt,
   });
 }
 
@@ -118,14 +187,14 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
     readConfirmed?: boolean;
   };
 
-  const patient = await findConsentByToken(req.params.token);
-  if (!patient) {
+  const consent = await findConsentByToken(req.params.token);
+  if (!consent) {
     return res.status(404).json({ error: 'Link no válido' });
   }
-  if (patient.privacyConsentStatus === 'firmado' || patient.privacyConsentStatus === 'rechazado') {
-    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: patient.privacyConsentStatus });
+  if (consent.status === 'firmado' || consent.status === 'rechazado') {
+    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: consent.status });
   }
-  if (isExpired(patient)) {
+  if (isExpired(consent)) {
     return res.status(410).json({ error: 'Este link ha vencido' });
   }
 
@@ -143,24 +212,27 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
   }
 
   const respondedAt = new Date();
-  const updated = await prisma.patient.update({
-    where: { id: patient.id },
+  const updated = await prisma.consent.update({
+    where: { id: consent.id },
     data: {
-      privacyConsentStatus: decision,
-      privacyConsentAt: respondedAt,
-      privacyConsentSignerName: signerName.trim(),
-      privacyConsentSignerRut: cleanRut(signerRut),
-      privacyConsentSignerIp: req.ip ?? null,
-      privacyConsentUserAgent: req.headers['user-agent'] ?? null,
+      status: decision,
+      respondedAt,
+      signerName: signerName.trim(),
+      signerRut: cleanRut(signerRut),
+      signerIp: req.ip ?? null,
+      userAgent: req.headers['user-agent'] ?? null,
     },
   });
 
-  return res.json({ status: updated.privacyConsentStatus, respondedAt: updated.privacyConsentAt });
+  return res.json({ status: updated.status, respondedAt: updated.respondedAt });
 }
 
 // Firma/rechazo presencial: lo hace un miembro del staff autenticado con el
 // paciente presente, sin depender del link enviado por correo.
-export async function respondInPerson(req: Request<{ patientId: string }>, res: Response) {
+export async function respondInPerson(
+  req: Request<{ patientId: string; consentTypeId: string }>,
+  res: Response
+) {
   const { decision, signerName, signerRut, readConfirmed } = req.body as {
     decision?: string;
     signerName?: string;
@@ -172,8 +244,16 @@ export async function respondInPerson(req: Request<{ patientId: string }>, res: 
   if (!patient) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
-  if (patient.privacyConsentStatus === 'firmado' || patient.privacyConsentStatus === 'rechazado') {
-    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: patient.privacyConsentStatus });
+  const consentType = await prisma.consentType.findUnique({ where: { id: req.params.consentTypeId } });
+  if (!consentType || consentType.clinicaId !== patient.clinicaId) {
+    return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
+  }
+
+  const existing = await prisma.consent.findUnique({
+    where: { patientId_consentTypeId: { patientId: patient.id, consentTypeId: consentType.id } },
+  });
+  if (existing && (existing.status === 'firmado' || existing.status === 'rechazado')) {
+    return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: existing.status });
   }
 
   if (decision !== 'firmado' && decision !== 'rechazado') {
@@ -190,18 +270,32 @@ export async function respondInPerson(req: Request<{ patientId: string }>, res: 
   }
 
   const respondedAt = new Date();
-  const updated = await prisma.patient.update({
-    where: { id: patient.id },
-    data: {
-      privacyConsentStatus: decision,
-      privacyConsentAt: respondedAt,
-      privacyConsentMethod: 'presencial',
-      privacyConsentSignerName: signerName.trim(),
-      privacyConsentSignerRut: cleanRut(signerRut),
-      privacyConsentSignerIp: req.ip ?? null,
-      privacyConsentUserAgent: req.headers['user-agent'] ?? null,
+  const updated = await prisma.consent.upsert({
+    where: { patientId_consentTypeId: { patientId: patient.id, consentTypeId: consentType.id } },
+    update: {
+      status: decision,
+      respondedAt,
+      method: 'presencial',
+      signerName: signerName.trim(),
+      signerRut: cleanRut(signerRut),
+      signerIp: req.ip ?? null,
+      userAgent: req.headers['user-agent'] ?? null,
+      contentSnapshot: consentType.legalText,
+    },
+    create: {
+      patientId: patient.id,
+      consentTypeId: consentType.id,
+      clinicaId: patient.clinicaId,
+      status: decision,
+      respondedAt,
+      method: 'presencial',
+      signerName: signerName.trim(),
+      signerRut: cleanRut(signerRut),
+      signerIp: req.ip ?? null,
+      userAgent: req.headers['user-agent'] ?? null,
+      contentSnapshot: consentType.legalText,
     },
   });
 
-  return res.json({ status: updated.privacyConsentStatus, respondedAt: updated.privacyConsentAt });
+  return res.json({ status: updated.status, respondedAt: updated.respondedAt });
 }

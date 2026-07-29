@@ -1,14 +1,16 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
-import { getText, respondInPerson, send } from '../controllers/dataConsentsController';
+import { getText, getTypes, listForPatient, respondInPerson, send } from '../controllers/dataConsentsController';
 
 const router = Router();
 
 router.use(authenticate);
-router.get('/text', getText);
 router.use(requireModuleEnabled('consentimientos'));
+router.get('/types', getTypes);
+router.get('/text/:consentTypeId', getText);
+router.get('/patient/:patientId', listForPatient);
 router.post('/', send);
-router.post('/:patientId/respond', respondInPerson);
+router.post('/:patientId/:consentTypeId/respond', respondInPerson);
 
 export default router;

@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt';
 import { PrismaClient } from '@prisma/client';
+import { DEFAULT_CONSENT_TYPES } from '../src/lib/consentTypes';
 
 const prisma = new PrismaClient();
 
@@ -68,6 +69,31 @@ async function main() {
     });
   }
   console.log(`Pacientes de ejemplo listos: ${samplePatients.length}`);
+
+  if (patients['Maria']) {
+    await prisma.patient.update({
+      where: { id: patients['Maria'].id },
+      data: {
+        heightCm: 165,
+        weightKg: 62.5,
+        allergies: ['fluoruro'],
+        allergyNotes: 'Alergia confirmada a compuestos fluorados (reacción cutánea previa).',
+      },
+    });
+    console.log('Antecedentes médicos de ejemplo (alergia a flúor) agregados a María.');
+  }
+
+  const clinicasForConsentTypes = await prisma.clinica.findMany({ select: { id: true } });
+  for (const clinica of clinicasForConsentTypes) {
+    for (const ct of DEFAULT_CONSENT_TYPES) {
+      await prisma.consentType.upsert({
+        where: { clinicaId_code: { clinicaId: clinica.id, code: ct.code } },
+        update: {},
+        create: { ...ct, clinicaId: clinica.id },
+      });
+    }
+  }
+  console.log(`Tipos de consentimiento listos para ${clinicasForConsentTypes.length} clínica(s).`);
 
   function at(daysFromNow: number, hours: number, minutes: number) {
     const date = new Date();

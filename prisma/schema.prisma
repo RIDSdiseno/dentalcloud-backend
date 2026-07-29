@@ -34,6 +34,8 @@ model Clinica {
   evolutionTemplates         EvolutionTemplate[]
   ledgerMovements            LedgerMovement[]
   workSchedules              WorkSchedule[]
+  consentTypes               ConsentType[]
+  consents                   Consent[]
 
   @@map("clinicas")
 }
@@ -56,7 +58,7 @@ model User {
   ledgerMovements            LedgerMovement[]
   treatmentPlans             TreatmentPlan[]
   workSchedules              WorkSchedule[]
-  privacyConsentsSent        Patient[]                   @relation("PrivacyConsentSentBy")
+  consentsSent               Consent[]                   @relation("ConsentsSentBy")
 
   @@index([clinicaId])
   @@map("users")
@@ -86,20 +88,14 @@ model Patient {
   email                      String?
   birthDate                  DateTime?
   address                    String?
+  heightCm                   Int?
+  weightKg                   Float?
+  allergies                  String[]                    @default([])
+  allergyNotes               String?
+  medicalConditions          String?
+  currentMedications         String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
-  privacyConsentAt           DateTime?
-  privacyConsentStatus       String                      @default("pendiente")
-  privacyConsentMethod       String?
-  privacyConsentToken        String?                     @unique
-  privacyConsentSentAt       DateTime?
-  privacyConsentExpiresAt    DateTime?
-  privacyConsentSignerName   String?
-  privacyConsentSignerRut    String?
-  privacyConsentSignerIp     String?
-  privacyConsentUserAgent    String?
-  privacyConsentSentById     String?
-  privacyConsentSentBy       User?                       @relation("PrivacyConsentSentBy", fields: [privacyConsentSentById], references: [id])
   clinicaId                  String
   clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
   administrativeObservations AdministrativeObservation[]
@@ -108,9 +104,54 @@ model Patient {
   evolutions                 Evolution[]
   ledgerMovements            LedgerMovement[]
   treatmentPlans             TreatmentPlan[]
+  consents                   Consent[]
 
   @@unique([clinicaId, rut])
   @@map("patients")
+}
+
+model ConsentType {
+  id        String    @id @default(uuid())
+  code      String
+  name      String
+  legalText String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  clinicaId String
+  clinica   Clinica   @relation(fields: [clinicaId], references: [id])
+  consents  Consent[]
+
+  @@unique([clinicaId, code])
+  @@map("consent_types")
+}
+
+model Consent {
+  id              String      @id @default(uuid())
+  patientId       String
+  patient         Patient     @relation(fields: [patientId], references: [id])
+  consentTypeId   String
+  consentType     ConsentType @relation(fields: [consentTypeId], references: [id])
+  status          String      @default("pendiente")
+  method          String?
+  token           String?     @unique
+  sentAt          DateTime?
+  expiresAt       DateTime?
+  respondedAt     DateTime?
+  signerName      String?
+  signerRut       String?
+  signerIp        String?
+  userAgent       String?
+  sentById        String?
+  sentBy          User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
+  contentSnapshot String?
+  clinicaId       String
+  clinica         Clinica     @relation(fields: [clinicaId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([patientId, consentTypeId])
+  @@index([clinicaId])
+  @@map("consents")
 }
 
 model TreatmentPlan {

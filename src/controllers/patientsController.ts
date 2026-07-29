@@ -1,6 +1,8 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { ALLERGY_KEYS } from '../lib/allergies';
+import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
 
 type PatientInput = {
   rut?: string;
@@ -10,7 +12,20 @@ type PatientInput = {
   email?: string;
   birthDate?: string;
   address?: string;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  allergies?: string[];
+  allergyNotes?: string;
+  medicalConditions?: string;
+  currentMedications?: string;
 };
+
+function sanitizeAllergies(allergies?: string[]): string[] | undefined {
+  if (allergies === undefined) return undefined;
+  if (!Array.isArray(allergies)) return [];
+  const validKeys: readonly string[] = ALLERGY_KEYS;
+  return allergies.filter((a) => typeof a === 'string' && validKeys.includes(a));
+}
 
 function toPatientData(body: PatientInput) {
   return {
@@ -20,6 +35,12 @@ function toPatientData(body: PatientInput) {
     email: body.email?.trim() || null,
     birthDate: body.birthDate ? new Date(body.birthDate) : null,
     address: body.address?.trim() || null,
+    heightCm: body.heightCm != null ? Math.round(body.heightCm) : null,
+    weightKg: body.weightKg != null ? body.weightKg : null,
+    allergies: sanitizeAllergies(body.allergies) ?? [],
+    allergyNotes: body.allergyNotes?.trim() || null,
+    medicalConditions: body.medicalConditions?.trim() || null,
+    currentMedications: body.currentMedications?.trim() || null,
   };
 }
 
@@ -31,6 +52,12 @@ function toPatientPatch(body: PatientInput) {
   if (body.email !== undefined) patch.email = body.email.trim() || null;
   if (body.birthDate !== undefined) patch.birthDate = body.birthDate ? new Date(body.birthDate) : null;
   if (body.address !== undefined) patch.address = body.address.trim() || null;
+  if (body.heightCm !== undefined) patch.heightCm = body.heightCm != null ? Math.round(body.heightCm) : null;
+  if (body.weightKg !== undefined) patch.weightKg = body.weightKg;
+  if (body.allergies !== undefined) patch.allergies = sanitizeAllergies(body.allergies);
+  if (body.allergyNotes !== undefined) patch.allergyNotes = body.allergyNotes.trim() || null;
+  if (body.medicalConditions !== undefined) patch.medicalConditions = body.medicalConditions.trim() || null;
+  if (body.currentMedications !== undefined) patch.currentMedications = body.currentMedications.trim() || null;
   return patch;
 }
 
@@ -55,7 +82,8 @@ export async function list(req: Request, res: Response) {
     orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     take: 50,
   });
-  return res.json({ patients });
+  const summaries = await fetchPrivacyConsentSummaries(patients.map((p) => p.id));
+  return res.json({ patients: patients.map((p) => withPrivacyConsentSummary(p, summaries)) });
 }
 
 export async function getOne(req: Request<{ id: string }>, res: Response) {
@@ -63,7 +91,8 @@ export async function getOne(req: Request<{ id: string }>, res: Response) {
   if (!patient) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
-  return res.json({ patient });
+  const summary = await fetchPrivacyConsentSummary(patient.id);
+  return res.json({ patient: { ...patient, ...summary } });
 }
 
 export async function create(req: Request, res: Response) {

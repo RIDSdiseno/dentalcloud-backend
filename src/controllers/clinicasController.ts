@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModules';
+import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
 
 export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
@@ -24,20 +25,24 @@ export async function withStats() {
   const [amountsByClinica, ledgerByClinica, consentsByClinica] = await Promise.all([
     prisma.treatmentPlan.groupBy({ by: ['clinicaId'], _sum: { amount: true } }),
     prisma.ledgerMovement.groupBy({ by: ['clinicaId'], _sum: { debe: true, haber: true } }),
-    prisma.patient.groupBy({ by: ['clinicaId', 'privacyConsentStatus'], _count: { _all: true } }),
+    prisma.consent.groupBy({
+      by: ['clinicaId', 'status'],
+      where: { consentType: { code: 'proteccion_datos' } },
+      _count: { _all: true },
+    }),
   ]);
 
   const amountByClinicaId = new Map(amountsByClinica.map((a) => [a.clinicaId, a._sum.amount ?? 0]));
   const ledgerByClinicaId = new Map(
     ledgerByClinica.map((l) => [l.clinicaId, { debe: l._sum.debe ?? 0, haber: l._sum.haber ?? 0 }])
   );
-  const consentStatsByClinicaId = new Map<string, { pendiente: number; firmado: number; rechazado: number }>();
+  // "pendiente" agrupa todo lo que no es firmado/rechazado, incluyendo los
+  // pacientes sin ninguna fila de Consent todavía (nunca se les envió nada).
+  const firmadoByClinicaId = new Map<string, number>();
+  const rechazadoByClinicaId = new Map<string, number>();
   for (const row of consentsByClinica) {
-    const current = consentStatsByClinicaId.get(row.clinicaId) ?? { pendiente: 0, firmado: 0, rechazado: 0 };
-    if (row.privacyConsentStatus === 'firmado') current.firmado += row._count._all;
-    else if (row.privacyConsentStatus === 'rechazado') current.rechazado += row._count._all;
-    else current.pendiente += row._count._all;
-    consentStatsByClinicaId.set(row.clinicaId, current);
+    if (row.status === 'firmado') firmadoByClinicaId.set(row.clinicaId, row._count._all);
+    else if (row.status === 'rechazado') rechazadoByClinicaId.set(row.clinicaId, row._count._all);
   }
 
   return clinicas.map((c) => ({
@@ -57,7 +62,11 @@ export async function withStats() {
     observationsCount: c._count.administrativeObservations,
     ledgerMovementsCount: c._count.ledgerMovements,
     ledgerNetAmount: (ledgerByClinicaId.get(c.id)?.haber ?? 0) - (ledgerByClinicaId.get(c.id)?.debe ?? 0),
-    consentStats: consentStatsByClinicaId.get(c.id) ?? { pendiente: 0, firmado: 0, rechazado: 0 },
+    consentStats: (() => {
+      const firmado = firmadoByClinicaId.get(c.id) ?? 0;
+      const rechazado = rechazadoByClinicaId.get(c.id) ?? 0;
+      return { firmado, rechazado, pendiente: Math.max(0, c._count.patients - firmado - rechazado) };
+    })(),
   }));
 }
 
@@ -74,16 +83,22 @@ export async function listAllPatients(req: Request, res: Response) {
       lastName: true,
       rut: true,
       createdAt: true,
-      privacyConsentStatus: true,
-      privacyConsentSentAt: true,
-      privacyConsentAt: true,
       clinicaId: true,
       clinica: { select: { name: true } },
     },
   });
 
+  const summaries = await fetchPrivacyConsentSummaries(patients.map((p) => p.id));
   return res.json({
-    patients: patients.map(({ clinica, ...p }) => ({ ...p, clinicaName: clinica.name })),
+    patients: patients.map(({ clinica, ...p }) => ({
+      ...p,
+      clinicaName: clinica.name,
+      ...(summaries.get(p.id) ?? {
+        privacyConsentStatus: 'pendiente' as const,
+        privacyConsentSentAt: null,
+        privacyConsentAt: null,
+      }),
+    })),
   });
 }
 
