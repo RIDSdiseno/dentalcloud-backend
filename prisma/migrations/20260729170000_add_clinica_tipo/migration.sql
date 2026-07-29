@@ -1,0 +1,1 @@
+ALTER TABLE "clinicas" ADD COLUMN "tipo" TEXT NOT NULL DEFAULT 'dental';

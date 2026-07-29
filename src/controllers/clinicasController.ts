@@ -49,6 +49,7 @@ export async function withStats() {
     id: c.id,
     name: c.name,
     active: c.active,
+    tipo: c.tipo,
     rxEnabled: c.rxEnabled,
     modules: parseClinicaModules(c.modules),
     createdAt: c.createdAt,
@@ -262,12 +263,17 @@ export async function listAllObservations(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { name, active, rxEnabled, modules } = req.body as {
+  const { name, active, tipo, rxEnabled, modules } = req.body as {
     name?: string;
     active?: boolean;
+    tipo?: string;
     rxEnabled?: boolean;
     modules?: Partial<Record<ClinicaModuleKey, boolean>>;
   };
+
+  if (tipo !== undefined && tipo !== 'dental' && tipo !== 'estetica') {
+    return res.status(400).json({ error: 'Tipo de clínica inválido' });
+  }
 
   const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
   if (!clinica) {
@@ -281,6 +287,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
       ...(active !== undefined ? { active } : {}),
+      ...(tipo !== undefined ? { tipo } : {}),
       ...(rxEnabled !== undefined ? { rxEnabled } : {}),
       ...(mergedModules !== undefined ? { modules: mergedModules } : {}),
     },

@@ -12,6 +12,8 @@ model Clinica {
   name      String
   active    Boolean  @default(true)
   rxEnabled Boolean  @default(true)
+  // "dental" | "estetica" — determina paleta de color y flujos disponibles en el front.
+  tipo      String   @default("dental")
   // Permisos de módulos adicionales (documentos clínicos, cartola, evoluciones,
   // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
   // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.

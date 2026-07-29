@@ -26,6 +26,7 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     role: user.role,
     clinicaId: user.clinicaId,
     clinicaModules: user.clinica ? parseClinicaModules(user.clinica.modules) : null,
+    clinicaTipo: user.clinica ? user.clinica.tipo : null,
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
   };
 }
