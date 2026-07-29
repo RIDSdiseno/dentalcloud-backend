@@ -31,7 +31,7 @@ export function buildConsentEmailHtml(params: {
         este enlace en tu navegador:<br />
         <a href="${signUrl}">${signUrl}</a>
       </p>
-      <p style="margin-top: 32px; font-size: 13px; color: #64748b;">Clínica DentalCloud</p>
+      <p style="margin-top: 32px; font-size: 13px; color: #64748b;">Clínica fordentcloud</p>
     </div>
   `;
 }

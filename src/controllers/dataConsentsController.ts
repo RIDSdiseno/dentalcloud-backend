@@ -100,7 +100,7 @@ export async function send(req: Request, res: Response) {
   try {
     await sendMail({
       to: patient.email,
-      subject: `Consentimiento: ${consentType.name} – DentalCloud`,
+      subject: `Consentimiento: ${consentType.name} – fordentcloud`,
       html: buildConsentEmailHtml({
         patientFirstName: patient.firstName,
         consentTypeName: consentType.name,
