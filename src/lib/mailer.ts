@@ -2,8 +2,8 @@ import axios from 'axios';
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
-async function getAccessToken(): Promise<string> {
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 30_000) {
+async function getAccessToken(forceRefresh = false): Promise<string> {
+  if (!forceRefresh && cachedToken && cachedToken.expiresAt > Date.now() + 30_000) {
     return cachedToken.value;
   }
 
@@ -23,10 +23,12 @@ async function getAccessToken(): Promise<string> {
   return cachedToken.value;
 }
 
-export async function sendMail(opts: { to: string; subject: string; html: string }) {
-  const token = await getAccessToken();
-  const sender = process.env.MS_GRAPH_SENDER;
+function isAuthError(err: unknown): boolean {
+  return axios.isAxiosError(err) && (err.response?.status === 401 || err.response?.status === 403);
+}
 
+async function sendViaGraph(token: string, opts: { to: string; subject: string; html: string }) {
+  const sender = process.env.MS_GRAPH_SENDER;
   await axios.post(
     `https://graph.microsoft.com/v1.0/users/${sender}/sendMail`,
     {
@@ -39,4 +41,20 @@ export async function sendMail(opts: { to: string; subject: string; html: string
     },
     { headers: { Authorization: `Bearer ${token}` } }
   );
+}
+
+export async function sendMail(opts: { to: string; subject: string; html: string }) {
+  const token = await getAccessToken();
+  try {
+    await sendViaGraph(token, opts);
+  } catch (err) {
+    // El token cacheado puede haber sido emitido antes de que se otorgara/cambiara
+    // un permiso de la app en Azure — Graph responde 401/403 igual aunque las
+    // credenciales sean válidas. Se descarta el cache y se reintenta una vez con
+    // un token recién emitido, en vez de esperar a que expire (hasta ~1 hora) o
+    // depender de un reinicio manual del proceso.
+    if (!isAuthError(err)) throw err;
+    const freshToken = await getAccessToken(true);
+    await sendViaGraph(freshToken, opts);
+  }
 }
