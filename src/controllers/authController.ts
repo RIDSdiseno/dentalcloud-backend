@@ -9,10 +9,18 @@ import { parseClinicaModules } from '../lib/clinicaModules';
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
 function refreshCookieOptions(): CookieOptions {
+  // Frontend (Netlify) y backend (Railway) viven en dominios distintos, así que
+  // esto es cross-site: los navegadores no envían cookies SameSite=Lax en
+  // peticiones fetch/XHR entre dominios (solo en navegación directa), lo que
+  // hacía que /auth/refresh nunca recibiera la cookie y la sesión pareciera
+  // cerrarse en cada recarga de página. SameSite=None (requiere Secure) sí se
+  // envía en cross-site. En desarrollo local ambos corren en localhost, así
+  // que Lax basta y evita depender de HTTPS.
+  const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     path: '/api/auth',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   };
