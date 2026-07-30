@@ -100,8 +100,13 @@ export async function send(req: Request, res: Response) {
   try {
     await sendMail({
       to: patient.email,
-      subject: `Consentimiento: ${consentType.name} – DentalCloud`,
-      html: buildConsentEmailHtml({ patientFirstName: patient.firstName, signUrl, expiresAt }),
+      subject: `Consentimiento: ${consentType.name} – fordentcloud`,
+      html: buildConsentEmailHtml({
+        patientFirstName: patient.firstName,
+        consentTypeName: consentType.name,
+        signUrl,
+        expiresAt,
+      }),
     });
   } catch (err) {
     console.error('Error enviando correo de consentimiento', err);
