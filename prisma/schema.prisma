@@ -8,17 +8,20 @@ datasource db {
 }
 
 model Clinica {
-  id        String   @id @default(uuid())
-  name      String
-  active    Boolean  @default(true)
-  rxEnabled Boolean  @default(true)
+  id           String   @id @default(uuid())
+  name         String
+  rut          String?  @unique
+  active       Boolean  @default(true)
+  rxEnabled    Boolean  @default(true)
   // "dental" | "estetica" — determina paleta de color y flujos disponibles en el front.
-  tipo      String   @default("dental")
+  tipo         String   @default("dental")
+  logoUrl      String?
+  logoPublicId String?
   // Permisos de módulos adicionales (documentos clínicos, cartola, evoluciones,
   // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
   // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.
-  modules   Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
-  createdAt DateTime @default(now())
+  modules      Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
+  createdAt    DateTime @default(now())
 
   users                      User[]
   chairs                     Chair[]
@@ -256,11 +259,16 @@ model Prestacion {
   name      String
   basePrice Int             @default(0)
   active    Boolean         @default(true)
+
   // Zonas del mapa facial (ver facialZoneConfig.ts en el front) donde puede
   // aplicarse esta prestación — solo relevante para clínicas tipo "estetica".
   // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
   // por defecto, y el único que existe para clínicas dentales).
   allowedZones String[]      @default([])
+
+  // Zonas donde aplica esta prestación (ej. clínicas "estetica": "nariz", etc.).
+  allowedZones String[]     @default([])
+>>>>>>> 9ea90c4e91536bea496f6b519492a43a5dd310c5
   createdAt DateTime        @default(now())
   clinicaId String
   clinica   Clinica         @relation(fields: [clinicaId], references: [id])
