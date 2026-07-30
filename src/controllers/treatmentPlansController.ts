@@ -17,6 +17,7 @@ type ItemInput = {
   toothNumber?: string;
   listPrice?: number;
   convenioDiscountPercent?: number;
+  notes?: string;
 };
 type PlanInput = {
   patientId?: string;
@@ -107,6 +108,7 @@ export async function create(req: Request, res: Response) {
           toothNumber: i.toothNumber?.trim() || null,
           listPrice: Math.round(i.listPrice ?? i.cost ?? 0),
           convenioDiscountPercent: Math.round(i.convenioDiscountPercent ?? 0),
+          notes: i.notes?.trim() || null,
           clinicaId,
         })),
       },
@@ -175,6 +177,7 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
       toothNumber: body.toothNumber?.trim() || null,
       listPrice: Math.round(body.listPrice ?? body.cost ?? 0),
       convenioDiscountPercent: Math.round(body.convenioDiscountPercent ?? 0),
+      notes: body.notes?.trim() || null,
       clinicaId: plan.clinicaId,
     },
   });
