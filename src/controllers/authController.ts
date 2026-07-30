@@ -5,6 +5,7 @@ import type { User, Clinica } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { parseClinicaModules } from '../lib/clinicaModules';
+import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
@@ -26,6 +27,16 @@ function refreshCookieOptions(): CookieOptions {
   };
 }
 
+// Permisos YA resueltos para el rol de este usuario específico (no la matriz
+// completa) — así el frontend no necesita otro fetch para saber qué puede
+// ver. `admin`/`super_admin` y roles desconocidos/legacy: acceso completo.
+function resolvePermissions(role: string, clinica?: Clinica | null): Record<PermissionKey, boolean> {
+  const allTrue = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Record<PermissionKey, boolean>;
+  if (role === 'admin' || role === 'super_admin' || !isPermissionedRole(role)) return allTrue;
+  if (!clinica) return allTrue;
+  return parseRolePermissions(clinica.rolePermissions)[role];
+}
+
 function toPublicUser(user: User & { clinica?: Clinica | null }) {
   return {
     id: user.id,
@@ -38,6 +49,7 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     clinicaName: user.clinica ? user.clinica.name : null,
     clinicaLogoUrl: user.clinica ? user.clinica.logoUrl : null,
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
+    permissions: resolvePermissions(user.role, user.clinica),
   };
 }
 

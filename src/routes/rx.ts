@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { requireRxEnabled } from '../middleware/requireRxEnabled';
+import { requireRolePermission } from '../middleware/requireRolePermission';
 import {
   examCatalog,
   patientStatus,
@@ -26,6 +27,7 @@ const router = Router();
 
 router.use(authenticate);
 router.use(requireRxEnabled);
+router.use(requireRolePermission('rx'));
 router.get('/exam-catalog', examCatalog);
 router.get('/patient-status', patientStatus);
 router.post('/patient-sync', syncPatient);

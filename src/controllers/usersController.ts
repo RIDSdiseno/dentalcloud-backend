@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
 
-const VALID_ROLES = ['admin', 'odontologo'];
+const VALID_ROLES = ['admin', 'odontologo', 'radiologo', 'operador'];
 
 function toPublicUser(user: {
   id: string;

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
+import { requireRolePermission } from '../middleware/requireRolePermission';
 import { list, create, update, remove, addItem } from '../controllers/treatmentPlansController';
 
 const router = Router();
 
 router.use(authenticate);
 router.use(requireModuleEnabled('tratamientos'));
+router.use(requireRolePermission('tratamientos'));
 router.get('/', list);
 router.post('/', create);
 router.patch('/:id', update);

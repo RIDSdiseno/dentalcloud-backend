@@ -21,6 +21,10 @@ model Clinica {
   // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
   // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.
   modules      Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
+  // Permisos por perfil (odontologo/radiologo/operador) dentro de la clínica —
+  // segundo nivel de control debajo de `modules`, editable por el admin de la
+  // clínica. Ver src/lib/rolePermissions.ts.
+  rolePermissions Json  @default("{}")
   createdAt    DateTime @default(now())
 
   users                      User[]
@@ -199,6 +203,13 @@ model TreatmentItem {
   listPrice               Int           @default(0)
   prestacionId            String?
   toothNumber             String?
+  // Trazabilidad de insumo aplicado (clínicas "estetica": lote/vencimiento de
+  // producto inyectable) y notas clínicas libres del procedimiento.
+  notes                   String?
+  productName             String?
+  productLot              String?
+  productExpiresAt        DateTime?
+  productQuantity         String?
   clinicaId               String
   clinica                 Clinica       @relation(fields: [clinicaId], references: [id])
   prestacion              Prestacion?   @relation(fields: [prestacionId], references: [id])
