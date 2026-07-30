@@ -265,10 +265,6 @@ model Prestacion {
   // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
   // por defecto, y el único que existe para clínicas dentales).
   allowedZones String[]      @default([])
-
-  // Zonas donde aplica esta prestación (ej. clínicas "estetica": "nariz", etc.).
-  allowedZones String[]     @default([])
->>>>>>> 9ea90c4e91536bea496f6b519492a43a5dd310c5
   createdAt DateTime        @default(now())
   clinicaId String
   clinica   Clinica         @relation(fields: [clinicaId], references: [id])
