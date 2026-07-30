@@ -1,7 +1,10 @@
+import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import cloudinary from '../lib/cloudinary';
 import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModules';
 import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
+import { cleanRut, isValidRut } from '../utils/rut';
 
 export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
@@ -48,8 +51,10 @@ export async function withStats() {
   return clinicas.map((c) => ({
     id: c.id,
     name: c.name,
+    rut: c.rut,
     active: c.active,
     tipo: c.tipo,
+    logoUrl: c.logoUrl,
     rxEnabled: c.rxEnabled,
     modules: parseClinicaModules(c.modules),
     createdAt: c.createdAt,
@@ -73,6 +78,93 @@ export async function withStats() {
 
 export async function list(req: Request, res: Response) {
   return res.json({ clinicas: await withStats() });
+}
+
+const VALID_TIPOS = ['dental', 'estetica'];
+
+export async function create(req: Request, res: Response) {
+  const { name, rut, tipo, adminName, adminEmail, adminPassword } = req.body as {
+    name?: string;
+    rut?: string;
+    tipo?: string;
+    adminName?: string;
+    adminEmail?: string;
+    adminPassword?: string;
+  };
+  const file = req.file;
+
+  if (!name?.trim()) {
+    return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
+  }
+  if (rut?.trim() && !isValidRut(rut)) {
+    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  }
+  if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
+    return res.status(400).json({ error: 'Tipo de clínica inválido' });
+  }
+  if (!adminName?.trim() || !adminEmail?.trim() || !adminPassword) {
+    return res.status(400).json({ error: 'Nombre, email y contraseña del administrador son requeridos' });
+  }
+  if (adminPassword.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+
+  const normalizedEmail = adminEmail.trim().toLowerCase();
+  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (existing) {
+    return res.status(409).json({ error: `Ya existe un usuario con el email ${normalizedEmail}` });
+  }
+
+  const cleanedRut = rut?.trim() ? cleanRut(rut) : null;
+  if (cleanedRut) {
+    const existingRut = await prisma.clinica.findFirst({ where: { rut: cleanedRut } });
+    if (existingRut) {
+      return res.status(409).json({ error: `Ya existe una clínica con el RUT ${cleanedRut}` });
+    }
+  }
+
+  let logo: { secure_url: string; public_id: string } | null = null;
+  if (file) {
+    logo = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { resource_type: 'image', folder: 'dentalcloud/clinicas/logos' },
+        (error, result) => {
+          if (error || !result) return reject(error);
+          resolve({ secure_url: result.secure_url, public_id: result.public_id });
+        }
+      );
+      stream.end(file.buffer);
+    });
+  }
+
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
+
+  const clinicaId = await prisma.$transaction(async (tx) => {
+    const clinica = await tx.clinica.create({
+      data: {
+        name: name.trim(),
+        rut: cleanedRut,
+        tipo: tipo ?? 'dental',
+        logoUrl: logo?.secure_url,
+        logoPublicId: logo?.public_id,
+      },
+    });
+
+    await tx.user.create({
+      data: {
+        name: adminName.trim(),
+        email: normalizedEmail,
+        passwordHash,
+        role: 'admin',
+        clinicaId: clinica.id,
+      },
+    });
+
+    return clinica.id;
+  });
+
+  const created = (await withStats()).find((c) => c.id === clinicaId);
+  return res.status(201).json({ clinica: created });
 }
 
 export async function listAllPatients(req: Request, res: Response) {
@@ -263,8 +355,9 @@ export async function listAllObservations(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { name, active, tipo, rxEnabled, modules } = req.body as {
+  const { name, rut, active, tipo, rxEnabled, modules } = req.body as {
     name?: string;
+    rut?: string;
     active?: boolean;
     tipo?: string;
     rxEnabled?: boolean;
@@ -274,10 +367,26 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   if (tipo !== undefined && tipo !== 'dental' && tipo !== 'estetica') {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
   }
+  if (rut !== undefined && rut.trim() && !isValidRut(rut)) {
+    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  }
 
   const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
   if (!clinica) {
     return res.status(404).json({ error: 'Clínica no encontrada' });
+  }
+
+  let cleanedRut: string | null | undefined;
+  if (rut !== undefined) {
+    cleanedRut = rut.trim() ? cleanRut(rut) : null;
+    if (cleanedRut) {
+      const existingRut = await prisma.clinica.findFirst({
+        where: { rut: cleanedRut, id: { not: req.params.id } },
+      });
+      if (existingRut) {
+        return res.status(409).json({ error: `Ya existe una clínica con el RUT ${cleanedRut}` });
+      }
+    }
   }
 
   const mergedModules = modules ? { ...parseClinicaModules(clinica.modules), ...modules } : undefined;
@@ -286,6 +395,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
+      ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(tipo !== undefined ? { tipo } : {}),
       ...(rxEnabled !== undefined ? { rxEnabled } : {}),
