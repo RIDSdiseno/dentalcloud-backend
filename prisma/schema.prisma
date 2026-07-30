@@ -203,8 +203,10 @@ model TreatmentItem {
   listPrice               Int           @default(0)
   prestacionId            String?
   toothNumber             String?
-  // Trazabilidad de insumo aplicado (clínicas "estetica": lote/vencimiento de
-  // producto inyectable) y notas clínicas libres del procedimiento.
+  // Observación clínica del procedimiento (ej. cantidad de producto usado,
+  // reacción del paciente) — distinta de las notas generales del presupuesto.
+  // En clínicas "estetica" además se registra trazabilidad del insumo
+  // inyectable aplicado (lote/vencimiento).
   notes                   String?
   productName             String?
   productLot              String?
@@ -267,8 +269,12 @@ model Prestacion {
   name      String
   basePrice Int             @default(0)
   active    Boolean         @default(true)
-  // Zonas donde aplica esta prestación (ej. clínicas "estetica": "nariz", etc.).
-  allowedZones String[]     @default([])
+
+  // Zonas del mapa facial (ver facialZoneConfig.ts en el front) donde puede
+  // aplicarse esta prestación — solo relevante para clínicas tipo "estetica".
+  // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
+  // por defecto, y el único que existe para clínicas dentales).
+  allowedZones String[]      @default([])
   createdAt DateTime        @default(now())
   clinicaId String
   clinica   Clinica         @relation(fields: [clinicaId], references: [id])

@@ -182,8 +182,19 @@ export async function listPrestaciones(req: Request, res: Response) {
   return res.json({ prestaciones });
 }
 
+function sanitizeAllowedZones(allowedZones: unknown): string[] | undefined {
+  if (allowedZones === undefined) return undefined;
+  if (!Array.isArray(allowedZones)) return [];
+  return allowedZones.filter((z): z is string => typeof z === 'string' && z.trim().length > 0);
+}
+
 export async function createPrestacion(req: Request, res: Response) {
-  const { name, code, basePrice } = req.body as { name?: string; code?: string; basePrice?: number };
+  const { name, code, basePrice, allowedZones } = req.body as {
+    name?: string;
+    code?: string;
+    basePrice?: number;
+    allowedZones?: unknown;
+  };
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la prestación es requerido' });
   }
@@ -195,7 +206,13 @@ export async function createPrestacion(req: Request, res: Response) {
     }
   }
   const prestacion = await prisma.prestacion.create({
-    data: { name: name.trim(), code: code?.trim() || null, basePrice: Math.max(0, Math.round(basePrice ?? 0)), clinicaId },
+    data: {
+      name: name.trim(),
+      code: code?.trim() || null,
+      basePrice: Math.max(0, Math.round(basePrice ?? 0)),
+      allowedZones: sanitizeAllowedZones(allowedZones) ?? [],
+      clinicaId,
+    },
   });
   return res.status(201).json({ prestacion });
 }
@@ -205,12 +222,14 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
   if (!prestacion) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
-  const { name, code, basePrice, active } = req.body as {
+  const { name, code, basePrice, active, allowedZones } = req.body as {
     name?: string;
     code?: string | null;
     basePrice?: number;
     active?: boolean;
+    allowedZones?: unknown;
   };
+  const sanitizedZones = sanitizeAllowedZones(allowedZones);
   const updated = await prisma.prestacion.update({
     where: { id: req.params.id },
     data: {
@@ -218,6 +237,7 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
       ...(code !== undefined ? { code: code?.trim() || null } : {}),
       ...(basePrice !== undefined ? { basePrice: Math.max(0, Math.round(basePrice)) } : {}),
       ...(active !== undefined ? { active } : {}),
+      ...(sanitizedZones !== undefined ? { allowedZones: sanitizedZones } : {}),
     },
   });
   return res.json({ prestacion: updated });

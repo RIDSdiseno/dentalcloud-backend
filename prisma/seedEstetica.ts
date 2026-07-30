@@ -83,23 +83,15 @@ async function main() {
   });
   console.log(`Paciente de ejemplo listo: ${patient.firstName} ${patient.lastName}`);
 
-  // Catálogo de estética facial, basado en zonas de Ácido Hialurónico y Toxina
-  // Botulínica. Los precios son valores de referencia (CLP), editables luego
-  // desde la clínica real.
+  // Catálogo de estética facial: prestaciones genéricas (no atadas a una
+  // zona específica), porque un mismo implemento (ej. una jeringa de ácido
+  // hialurónico o toxina botulínica) se aplica indistintamente en una o
+  // varias zonas del mapa facial durante una misma sesión — el precio es por
+  // implemento/procedimiento, no por zona. Los precios son valores de
+  // referencia (CLP), editables luego desde la clínica real.
   const prestaciones: Array<{ code: string; name: string; basePrice: number }> = [
-    { code: 'AH-01', name: 'Ácido Hialurónico - Labios', basePrice: 180000 },
-    { code: 'AH-02', name: 'Ácido Hialurónico - Nariz (Rinomodelación)', basePrice: 220000 },
-    { code: 'AH-03', name: 'Ácido Hialurónico - Ojeras', basePrice: 200000 },
-    { code: 'AH-04', name: 'Ácido Hialurónico - Pómulos y mejillas', basePrice: 250000 },
-    { code: 'AH-05', name: 'Ácido Hialurónico - Mentón', basePrice: 200000 },
-    { code: 'AH-06', name: 'Ácido Hialurónico - Mandíbula', basePrice: 260000 },
-    { code: 'AH-07', name: 'Ácido Hialurónico - Sienes', basePrice: 220000 },
-    { code: 'AH-08', name: 'Ácido Hialurónico - Surcos nasogenianos / marioneta', basePrice: 190000 },
-    { code: 'BTX-01', name: 'Toxina Botulínica - Frente', basePrice: 120000 },
-    { code: 'BTX-02', name: 'Toxina Botulínica - Entrecejo', basePrice: 100000 },
-    { code: 'BTX-03', name: 'Toxina Botulínica - Patas de gallo', basePrice: 110000 },
-    { code: 'BTX-04', name: 'Toxina Botulínica - Párpados', basePrice: 90000 },
-    { code: 'BTX-05', name: 'Toxina Botulínica - Mandíbula (bruxismo/maseteros)', basePrice: 150000 },
+    { code: 'AH-01', name: 'Ácido Hialurónico', basePrice: 200000 },
+    { code: 'BTX-01', name: 'Toxina Botulínica', basePrice: 120000 },
   ];
 
   for (const p of prestaciones) {
@@ -108,6 +100,14 @@ async function main() {
       update: { name: p.name, basePrice: p.basePrice },
       create: { ...p, clinicaId: clinica.id },
     });
+  }
+
+  const currentCodes = prestaciones.map((p) => p.code);
+  const removed = await prisma.prestacion.deleteMany({
+    where: { clinicaId: clinica.id, code: { notIn: currentCodes } },
+  });
+  if (removed.count > 0) {
+    console.log(`Prestaciones antiguas por zona eliminadas: ${removed.count}`);
   }
   console.log(`Prestaciones de estética listas: ${prestaciones.length}`);
 }

@@ -28,6 +28,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     cost?: number;
     completed?: boolean;
     toothNumber?: string | null;
+    notes?: string | null;
   };
   const item = await prisma.treatmentItem.findUnique({ where: { id: req.params.id } });
   if (!item) {
@@ -41,6 +42,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...(body.cost !== undefined ? { cost: Math.round(body.cost) } : {}),
       ...(body.completed !== undefined ? { completed: body.completed } : {}),
       ...(body.toothNumber !== undefined ? { toothNumber: body.toothNumber?.trim() || null } : {}),
+      ...(body.notes !== undefined ? { notes: body.notes?.trim() || null } : {}),
     },
   });
 
