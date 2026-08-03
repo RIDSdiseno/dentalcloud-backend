@@ -19,6 +19,7 @@ import rxRoutes from './routes/rx';
 import dataConsentsRoutes from './routes/dataConsents';
 import publicConsentsRoutes from './routes/publicConsents';
 import clinicasRoutes from './routes/clinicas';
+import clinicaSettingsRoutes from './routes/clinicaSettings';
 
 const app = express();
 
@@ -61,6 +62,7 @@ app.use('/api/rx', rxRoutes);
 app.use('/api/data-consents', dataConsentsRoutes);
 app.use('/api/public/consents', publicConsentsRoutes);
 app.use('/api/clinicas', clinicasRoutes);
+app.use('/api/clinica/role-permissions', clinicaSettingsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
