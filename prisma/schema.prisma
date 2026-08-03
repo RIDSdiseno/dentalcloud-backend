@@ -237,6 +237,13 @@ model TreatmentItem {
   // Observación clínica del procedimiento (ej. cantidad de producto usado,
   // reacción del paciente) — distinta de las notas generales del presupuesto.
   notes                   String?
+  // Trazabilidad del producto usado (ej. Ácido Hialurónico): nombre, lote,
+  // vencimiento y cantidad — se registran por procedimiento puntual, no por
+  // presupuesto completo, porque un mismo plan puede usar distintos productos.
+  productName             String?
+  productLot              String?
+  productExpiresAt        DateTime?
+  productQuantity         String?
   clinicaId               String
   clinica                 Clinica              @relation(fields: [clinicaId], references: [id])
   prestacion              Prestacion?          @relation(fields: [prestacionId], references: [id])

@@ -4,14 +4,12 @@ import { authenticate } from '../middleware/authenticate';
 import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
 
 import { list, create, update, remove, addItem, uploadPlanPhoto, removePlanPhoto } from '../controllers/treatmentPlansController';
+import { requireRolePermission } from '../middleware/requireRolePermission';
 
 const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
 });
-
-import { requireRolePermission } from '../middleware/requireRolePermission';
-import { list, create, update, remove, addItem } from '../controllers/treatmentPlansController';
 
 
 const router = Router();
