@@ -4,17 +4,27 @@ import { computeTreatmentStatus } from '../utils/treatmentStatus';
 
 const include = {
   professional: { select: { id: true, name: true } },
+  createdBy: { select: { id: true, name: true } },
   sucursal: true,
   prevision: true,
   convenio: true,
-  items: { orderBy: { createdAt: 'asc' as const }, include: { prestacion: true } },
-} as const;
+  // Los ítems creados junto con el plan comparten el mismo `createdAt` (misma
+  // transacción) — sin un segundo criterio de desempate, el orden de un empate
+  // no es estable entre consultas y cambia con cada UPDATE (nueva versión
+  // física de la fila). `id` nunca cambia, así que fija el orden visual.
+  items: {
+    orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }],
+    include: { prestacion: true, treatedBy: { select: { id: true, name: true } } },
+  },
+};
 
 async function recalculatePlan(treatmentPlanId: string) {
-  const plan = await prisma.treatmentPlan.findUniqueOrThrow({ where: { id: treatmentPlanId } });
-  const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId } });
-  const amount = items.reduce((sum, i) => sum + i.cost, 0);
-  const status = computeTreatmentStatus(items, plan.status);
+  const plan = await prisma.treatmentPlan.findUniqueOrThrow({
+    where: { id: treatmentPlanId },
+    include: { items: true },
+  });
+  const amount = plan.items.reduce((sum, i) => sum + i.cost, 0);
+  const status = computeTreatmentStatus(plan.items, plan.status);
   return prisma.treatmentPlan.update({
     where: { id: treatmentPlanId },
     data: { amount, status },
@@ -40,7 +50,17 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     data: {
       ...(body.description !== undefined ? { description: body.description.trim() } : {}),
       ...(body.cost !== undefined ? { cost: Math.round(body.cost) } : {}),
-      ...(body.completed !== undefined ? { completed: body.completed } : {}),
+      ...(body.completed !== undefined
+        ? {
+            completed: body.completed,
+            // Quién trató el procedimiento se registra solo (el usuario que
+            // marca el check), no requiere un selector aparte. Se limpia si
+            // se desmarca, para no dejar un "tratado por" de algo que en
+            // realidad no quedó hecho.
+            treatedById: body.completed ? req.user!.sub : null,
+            treatedAt: body.completed ? new Date() : null,
+          }
+        : {}),
       ...(body.toothNumber !== undefined ? { toothNumber: body.toothNumber?.trim() || null } : {}),
       ...(body.notes !== undefined ? { notes: body.notes?.trim() || null } : {}),
     },

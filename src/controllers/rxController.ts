@@ -1,3 +1,4 @@
+import fs from 'fs';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import prisma from '../lib/prisma';
@@ -20,6 +21,10 @@ import {
   uploadOrderFiles,
   deleteOrderFile,
 } from '../lib/dimageClient';
+import { resolveExamGroups } from '../lib/dimageExamGroups';
+import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
+import { listOrderDicomFiles, isRidsRxStorageConfigured } from '../lib/ridsRxStorage';
+import { signDicomViewerToken } from '../utils/tokens';
 
 function dimageErrorMessage(err: unknown, fallback: string) {
   if (axios.isAxiosError(err) && typeof err.response?.data?.error === 'string') {
@@ -31,7 +36,7 @@ function dimageErrorMessage(err: unknown, fallback: string) {
 function requireDimageConfigured(res: Response) {
   if (!isDimageConfigured()) {
     res.status(503).json({
-      error: 'La integración con Dimage/RIDS RX no está configurada. Falta DIMAGE_API_URL/DIMAGE_API_KEY en el servidor.',
+      error: 'La integración con RIDS RX no está configurada. Falta DIMAGE_API_URL/DIMAGE_API_KEY en el servidor.',
     });
     return false;
   }
@@ -50,8 +55,8 @@ async function getPatientOrFail(patientId: string, res: Response) {
 export async function examCatalog(req: Request, res: Response) {
   if (!requireDimageConfigured(res)) return;
   try {
-    const [types, groups] = await Promise.all([fetchExamTypes(), fetchExamGroups()]);
-    return res.json({ types, groups });
+    const [types, rawGroups] = await Promise.all([fetchExamTypes(), fetchExamGroups()]);
+    return res.json({ types, groups: resolveExamGroups(rawGroups) });
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo cargar el catálogo de exámenes') });
   }
@@ -69,7 +74,7 @@ export async function patientStatus(req: Request, res: Response) {
     const dimagePatient = await findPatientByRut(formatRut(patient.rut));
     return res.json({ synced: Boolean(dimagePatient), patient: dimagePatient });
   } catch (err) {
-    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo consultar el estado del paciente en Dimage') });
+    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo consultar el estado del paciente en RIDS RX') });
   }
 }
 
@@ -93,7 +98,7 @@ export async function syncPatient(req: Request, res: Response) {
     });
     return res.json({ patient: dimagePatient });
   } catch (err) {
-    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo sincronizar el paciente con Dimage') });
+    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo sincronizar el paciente con RIDS RX') });
   }
 }
 
@@ -115,6 +120,9 @@ export async function listOrders(req: Request, res: Response) {
 
 export async function createRxOrder(req: Request, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (req.user!.role === 'radiologo') {
+    return res.status(403).json({ error: 'Los radiólogos no pueden crear órdenes Rx.' });
+  }
   const body = req.body as {
     patientId?: string;
     professionalId?: string;
@@ -136,7 +144,7 @@ export async function createRxOrder(req: Request, res: Response) {
   if (!sucursal) return res.status(400).json({ error: 'La sucursal seleccionada no existe' });
   if (!sucursal.dimageClinicId) {
     return res.status(400).json({
-      error: `La sucursal "${sucursal.name}" no tiene configurado su ID de clínica en Dimage. Pídele a un administrador que lo configure.`,
+      error: `La sucursal "${sucursal.name}" no tiene configurado su ID de clínica en RIDS RX. Pídele a un administrador que lo configure.`,
     });
   }
 
@@ -157,7 +165,7 @@ export async function createRxOrder(req: Request, res: Response) {
       await createOdontologo({ rut: odontologoRut, name: professional.name, email: professional.email });
     }
 
-    await syncPatientIfNeeded(patient.id);
+    await syncPatientToDimageIfNeeded(patient);
 
     const order = await createOrder({
       paciente: formatRut(patient.rut),
@@ -175,24 +183,8 @@ export async function createRxOrder(req: Request, res: Response) {
     });
     return res.status(201).json(order);
   } catch (err) {
-    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo crear la orden en Dimage') });
+    return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo crear la orden en RIDS RX') });
   }
-}
-
-async function syncPatientIfNeeded(patientId: string) {
-  const patient = await prisma.patient.findUnique({ where: { id: patientId } });
-  if (!patient) return;
-  const existing = await findPatientByRut(formatRut(patient.rut));
-  if (existing) return;
-  await upsertPatient({
-    rut: formatRut(patient.rut),
-    name: `${patient.firstName} ${patient.lastName}`,
-    email: patient.email,
-    celphone: patient.phone,
-    address: patient.address,
-    dateofbirth: patient.birthDate ? patient.birthDate.toISOString().slice(0, 10) : null,
-    id_externo: patient.id,
-  });
 }
 
 export async function sendOrder(req: Request<{ id: string }>, res: Response) {
@@ -232,6 +224,29 @@ export async function orderDetail(req: Request<{ id: string }>, res: Response) {
     return res.json(order);
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo cargar el detalle de la orden') });
+  }
+}
+
+// Emite un token de corta duración para el visor 3D (Med3Web) y le indica el
+// primer archivo DICOM de la serie — el visor deriva la "carpeta" de esa URL
+// y desde ahí pide el resto (ver routes/rxViewer.ts). Se listan los archivos
+// directo desde el storage S3 de RIDS RX en vez de confiar en `ruta_dcm` (que
+// hoy apunta a la carpeta, no a un archivo, y no viene acompañado de un
+// manifiesto utilizable).
+export async function dicomViewerToken(req: Request<{ id: string }>, res: Response) {
+  if (!isRidsRxStorageConfigured()) {
+    return res.status(503).json({ error: 'El visor 3D no está configurado en el servidor.' });
+  }
+  try {
+    const files = await listOrderDicomFiles(req.params.id);
+    if (files.length === 0) {
+      return res.status(404).json({ error: 'Esta orden no tiene archivos DICOM disponibles.' });
+    }
+    const token = signDicomViewerToken(req.params.id);
+    return res.json({ token, entryFilename: files[0] });
+  } catch (err) {
+    console.error('No se pudo preparar el visor 3D', err);
+    return res.status(502).json({ error: 'No se pudo preparar el visor 3D.' });
   }
 }
 
@@ -284,11 +299,16 @@ export async function uploadOrderFilesController(req: Request<{ id: string; exam
     const result = await uploadOrderFiles(
       req.params.id,
       req.params.examinationId,
-      files.map((f) => ({ buffer: f.buffer, originalname: f.originalname }))
+      files.map((f) => ({ path: f.path, originalname: f.originalname }))
     );
     return res.status(201).json(result);
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudieron subir los archivos') });
+  } finally {
+    // Los archivos quedan como temporales en disco (multer diskStorage, para no
+    // bufferear en RAM archivos grandes de hasta 3 GB) — se limpian siempre,
+    // haya salido bien la subida a Dimage o no.
+    await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => {})));
   }
 }
 

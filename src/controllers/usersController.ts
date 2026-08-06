@@ -1,7 +1,36 @@
+import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
+import { isDimageConfigured, fetchOdontologosByHolding, fetchRadiologosByHolding } from '../lib/dimageClient';
+
+const DIMAGE_SYNCED_ROLES = ['odontologo', 'radiologo'];
+
+async function tryDimageSync(user: { rut: string | null; name: string; email: string; role: string; clinicaId: string | null }) {
+  if (!user.rut || !DIMAGE_SYNCED_ROLES.includes(user.role) || !user.clinicaId) {
+    return { dimageGeneratedPassword: null, dimageSyncError: null };
+  }
+  const clinica = await prisma.clinica.findUnique({ where: { id: user.clinicaId }, select: { rxEnabled: true } });
+  if (!clinica?.rxEnabled) {
+    return { dimageGeneratedPassword: null, dimageSyncError: null };
+  }
+  try {
+    const sucursal = await prisma.sucursal.findFirst({
+      where: { clinicaId: user.clinicaId, dimageClinicId: { not: null } },
+      select: { dimageClinicId: true },
+    });
+    const { generatedPassword } = await syncProfessionalToDimageIfNeeded({
+      ...user,
+      dimageClinicId: sucursal?.dimageClinicId,
+    });
+    return { dimageGeneratedPassword: generatedPassword, dimageSyncError: null };
+  } catch (err) {
+    console.error('No se pudo sincronizar el profesional con RIDS RX', err);
+    return { dimageGeneratedPassword: null, dimageSyncError: 'No se pudo sincronizar con RIDS RX. Intenta más tarde.' };
+  }
+}
 
 const VALID_ROLES = ['admin', 'odontologo', 'radiologo', 'operador'];
 
@@ -35,11 +64,12 @@ export async function list(req: Request, res: Response) {
 }
 
 export async function create(req: Request, res: Response) {
-  const { name, email, password, role } = req.body as {
+  const { name, email, password, role, rut } = req.body as {
     name?: string;
     email?: string;
     password?: string;
     role?: string;
+    rut?: string;
   };
 
   if (!name?.trim() || !email?.trim() || !password) {
@@ -51,6 +81,9 @@ export async function create(req: Request, res: Response) {
   if (!role || !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: `El rol debe ser uno de: ${VALID_ROLES.join(', ')}` });
   }
+  if (rut?.trim() && !isValidRut(rut)) {
+    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  }
 
   const normalizedEmail = email.trim().toLowerCase();
   const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
@@ -60,9 +93,18 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name: name.trim(), email: normalizedEmail, passwordHash, role, clinicaId: req.user!.clinicaId! },
+    data: {
+      name: name.trim(),
+      email: normalizedEmail,
+      passwordHash,
+      role,
+      rut: rut?.trim() ? cleanRut(rut) : null,
+      clinicaId: req.user!.clinicaId!,
+    },
   });
-  return res.status(201).json({ user: toPublicUser(user) });
+
+  const { dimageGeneratedPassword, dimageSyncError } = await tryDimageSync(user);
+  return res.status(201).json({ user: toPublicUser(user), dimageGeneratedPassword, dimageSyncError });
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
@@ -88,5 +130,71 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     data: { ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}) },
   });
-  return res.json({ user: toPublicUser(updated) });
+
+  const gainedRut = !user.rut && cleanedRut;
+  const { dimageGeneratedPassword, dimageSyncError } = gainedRut
+    ? await tryDimageSync(updated)
+    : { dimageGeneratedPassword: null, dimageSyncError: null };
+
+  return res.json({ user: toPublicUser(updated), dimageGeneratedPassword, dimageSyncError });
+}
+
+type DimageStaffRow = { rut: string; name: string; email: string };
+
+// Trae odontólogos/radiólogos que ya existen en RIDS RX pero todavía no en
+// fordentcloud (RIDS RX -> fordentcloud). Genera una contraseña local nueva por
+// cada uno (no conocemos ni podemos reutilizar la de RIDS RX) y la devuelve una
+// única vez para que el admin se la pase a esa persona.
+export async function importFromDimage(req: Request, res: Response) {
+  const clinicaId = req.user!.clinicaId!;
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { rxEnabled: true } });
+  if (!clinica?.rxEnabled) {
+    return res.status(403).json({ error: 'El módulo Rx no está habilitado para tu clínica' });
+  }
+  if (!isDimageConfigured()) {
+    return res.status(503).json({ error: 'La integración con RIDS RX no está configurada.' });
+  }
+
+  const [odontologos, radiologos] = await Promise.all([
+    fetchOdontologosByHolding().catch(() => [] as DimageStaffRow[]),
+    fetchRadiologosByHolding().catch(() => [] as DimageStaffRow[]),
+  ]);
+
+  const candidates = [
+    ...(odontologos as DimageStaffRow[]).map((o) => ({ ...o, role: 'odontologo' })),
+    ...(radiologos as DimageStaffRow[]).map((r) => ({ ...r, role: 'radiologo' })),
+  ].filter((c) => c.rut && c.email);
+
+  const existingUsers = await prisma.user.findMany({ where: { clinicaId }, select: { rut: true } });
+  const existingRuts = new Set(existingUsers.map((u) => u.rut).filter((r): r is string => !!r).map(cleanRut));
+
+  const imported: Array<{ name: string; rut: string; role: string; generatedPassword: string }> = [];
+
+  for (const candidate of candidates) {
+    const cleanedRut = cleanRut(candidate.rut);
+    if (existingRuts.has(cleanedRut)) continue;
+
+    const normalizedEmail = candidate.email.trim().toLowerCase();
+    const existingByEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingByEmail) continue;
+
+    const generatedPassword = crypto.randomBytes(9).toString('base64url');
+    const passwordHash = await bcrypt.hash(generatedPassword, 10);
+
+    await prisma.user.create({
+      data: {
+        name: candidate.name || `${candidate.role === 'radiologo' ? 'Radiólogo' : 'Odontólogo'} ${cleanedRut}`,
+        email: normalizedEmail,
+        passwordHash,
+        role: candidate.role,
+        rut: cleanedRut,
+        clinicaId,
+      },
+    });
+
+    existingRuts.add(cleanedRut);
+    imported.push({ name: candidate.name, rut: cleanedRut, role: candidate.role, generatedPassword });
+  }
+
+  return res.json({ imported });
 }

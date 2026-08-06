@@ -54,6 +54,7 @@ export async function withStats() {
     rut: c.rut,
     active: c.active,
     tipo: c.tipo,
+    pais: c.pais,
     logoUrl: c.logoUrl,
     rxEnabled: c.rxEnabled,
     modules: parseClinicaModules(c.modules),
@@ -80,13 +81,29 @@ export async function list(req: Request, res: Response) {
   return res.json({ clinicas: await withStats() });
 }
 
-const VALID_TIPOS = ['dental', 'estetica'];
+const VALID_TIPOS = ['dental', 'estetica', 'ambas'];
+const VALID_PAISES = [
+  'Chile',
+  'Argentina',
+  'Perú',
+  'Colombia',
+  'México',
+  'Bolivia',
+  'Ecuador',
+  'Uruguay',
+  'Paraguay',
+  'Venezuela',
+  'España',
+  'Estados Unidos',
+  'Otro',
+];
 
 export async function create(req: Request, res: Response) {
-  const { name, rut, tipo, adminName, adminEmail, adminPassword } = req.body as {
+  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword } = req.body as {
     name?: string;
     rut?: string;
     tipo?: string;
+    pais?: string;
     adminName?: string;
     adminEmail?: string;
     adminPassword?: string;
@@ -101,6 +118,9 @@ export async function create(req: Request, res: Response) {
   }
   if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
+  }
+  if (pais !== undefined && !VALID_PAISES.includes(pais)) {
+    return res.status(400).json({ error: 'País inválido' });
   }
   if (!adminName?.trim() || !adminEmail?.trim() || !adminPassword) {
     return res.status(400).json({ error: 'Nombre, email y contraseña del administrador son requeridos' });
@@ -145,6 +165,7 @@ export async function create(req: Request, res: Response) {
         name: name.trim(),
         rut: cleanedRut,
         tipo: tipo ?? 'dental',
+        pais: pais ?? 'Chile',
         logoUrl: logo?.secure_url,
         logoPublicId: logo?.public_id,
       },
@@ -355,17 +376,21 @@ export async function listAllObservations(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { name, rut, active, tipo, rxEnabled, modules } = req.body as {
+  const { name, rut, active, tipo, pais, rxEnabled, modules } = req.body as {
     name?: string;
     rut?: string;
     active?: boolean;
     tipo?: string;
+    pais?: string;
     rxEnabled?: boolean;
     modules?: Partial<Record<ClinicaModuleKey, boolean>>;
   };
 
-  if (tipo !== undefined && tipo !== 'dental' && tipo !== 'estetica') {
+  if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
+  }
+  if (pais !== undefined && !VALID_PAISES.includes(pais)) {
+    return res.status(400).json({ error: 'País inválido' });
   }
   if (rut !== undefined && rut.trim() && !isValidRut(rut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
@@ -398,9 +423,48 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(tipo !== undefined ? { tipo } : {}),
+      ...(pais !== undefined ? { pais } : {}),
       ...(rxEnabled !== undefined ? { rxEnabled } : {}),
       ...(mergedModules !== undefined ? { modules: mergedModules } : {}),
     },
+  });
+
+  const updated = (await withStats()).find((c) => c.id === req.params.id);
+  return res.json({ clinica: updated });
+}
+
+export async function updateLogo(req: Request<{ id: string }>, res: Response) {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de logo' });
+  }
+
+  const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
+  if (!clinica) {
+    return res.status(404).json({ error: 'Clínica no encontrada' });
+  }
+
+  const logo = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'image', folder: 'dentalcloud/clinicas/logos' },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  if (clinica.logoPublicId) {
+    await cloudinary.uploader.destroy(clinica.logoPublicId).catch(() => {
+      // Best-effort: si el logo anterior ya no existe en Cloudinary o falla el
+      // borrado, no bloquea la actualización del nuevo logo.
+    });
+  }
+
+  await prisma.clinica.update({
+    where: { id: req.params.id },
+    data: { logoUrl: logo.secure_url, logoPublicId: logo.public_id },
   });
 
   const updated = (await withStats()).find((c) => c.id === req.params.id);
