@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import cloudinary from '../lib/cloudinary';
 import { TREATMENT_STATUSES, computeTreatmentStatus } from '../utils/treatmentStatus';
 
 const include = {
@@ -13,8 +14,13 @@ const include = {
   // como desempate para que el orden no cambie al actualizar una fila.
   items: {
     orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }],
-    include: { prestacion: true, treatedBy: { select: { id: true, name: true } } },
+    include: {
+      prestacion: true,
+      treatedBy: { select: { id: true, name: true } },
+      photos: { orderBy: { createdAt: 'asc' as const } },
+    },
   },
+  photos: { orderBy: { position: 'asc' as const } },
 };
 
 type ItemInput = {
@@ -25,6 +31,10 @@ type ItemInput = {
   listPrice?: number;
   convenioDiscountPercent?: number;
   notes?: string;
+  productName?: string;
+  productLot?: string;
+  productExpiresAt?: string;
+  productQuantity?: string;
 };
 type PlanInput = {
   patientId?: string;
@@ -37,6 +47,8 @@ type PlanInput = {
   notes?: string;
   diagramType?: string;
   items?: ItemInput[];
+  facialAnnotations?: unknown;
+  facialGender?: string;
 };
 
 export async function list(req: Request, res: Response) {
@@ -122,6 +134,8 @@ export async function create(req: Request, res: Response) {
       amount,
       notes: body.notes?.trim() || null,
       diagramType,
+      facialAnnotations: body.facialAnnotations === undefined ? undefined : (body.facialAnnotations as object),
+      facialGender: body.facialGender === 'hombre' || body.facialGender === 'mujer' ? body.facialGender : null,
       clinicaId,
       items: {
         // Todos los ítems se crean en la misma transacción y por lo tanto
@@ -136,6 +150,10 @@ export async function create(req: Request, res: Response) {
           listPrice: Math.round(i.listPrice ?? i.cost ?? 0),
           convenioDiscountPercent: Math.round(i.convenioDiscountPercent ?? 0),
           notes: i.notes?.trim() || null,
+          productName: i.productName?.trim() || null,
+          productLot: i.productLot?.trim() || null,
+          productExpiresAt: i.productExpiresAt ? new Date(i.productExpiresAt) : null,
+          productQuantity: i.productQuantity?.trim() || null,
           clinicaId,
           createdAt: new Date(Date.now() + index),
         })),
@@ -206,6 +224,10 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
       listPrice: Math.round(body.listPrice ?? body.cost ?? 0),
       convenioDiscountPercent: Math.round(body.convenioDiscountPercent ?? 0),
       notes: body.notes?.trim() || null,
+      productName: body.productName?.trim() || null,
+      productLot: body.productLot?.trim() || null,
+      productExpiresAt: body.productExpiresAt ? new Date(body.productExpiresAt) : null,
+      productQuantity: body.productQuantity?.trim() || null,
       clinicaId: plan.clinicaId,
     },
   });
@@ -220,4 +242,69 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
     include,
   });
   return res.status(201).json({ plan: updated });
+}
+
+export async function uploadPlanPhoto(req: Request<{ id: string }>, res: Response) {
+  const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
+  if (!plan) {
+    return res.status(404).json({ error: 'Presupuesto no encontrado' });
+  }
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo' });
+  }
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    return res.status(503).json({
+      error: 'La subida de fotos no está configurada. Falta CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET en el servidor.',
+    });
+  }
+  const label = typeof req.body?.label === 'string' ? req.body.label.trim() : '';
+
+  try {
+    const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { resource_type: 'image', folder: `dentalcloud/${plan.clinicaId}/treatment-plans/${plan.id}` },
+        (error, result) => {
+          if (error || !result) return reject(error);
+          resolve(result as { secure_url: string; public_id: string });
+        }
+      );
+      stream.end(file.buffer);
+    });
+
+    const photoCount = await prisma.treatmentPlanPhoto.count({ where: { treatmentPlanId: plan.id } });
+    await prisma.treatmentPlanPhoto.create({
+      data: {
+        treatmentPlanId: plan.id,
+        url: uploadResult.secure_url,
+        publicId: uploadResult.public_id,
+        label: label || null,
+        position: photoCount,
+        clinicaId: plan.clinicaId,
+      },
+    });
+
+    const updated = await prisma.treatmentPlan.update({ where: { id: plan.id }, data: {}, include });
+    return res.status(201).json({ plan: updated });
+  } catch (err) {
+    console.error('Error subiendo foto a Cloudinary', err);
+    return res.status(502).json({ error: 'No se pudo subir la foto. Intenta nuevamente.' });
+  }
+}
+
+export async function removePlanPhoto(req: Request<{ photoId: string }>, res: Response) {
+  const photo = await prisma.treatmentPlanPhoto.findUnique({ where: { id: req.params.photoId } });
+  if (!photo) {
+    return res.status(404).json({ error: 'Foto no encontrada' });
+  }
+
+  try {
+    await cloudinary.uploader.destroy(photo.publicId, { resource_type: 'image' });
+  } catch (err) {
+    console.error('Error eliminando foto de Cloudinary', err);
+  }
+
+  await prisma.treatmentPlanPhoto.delete({ where: { id: photo.id } });
+  const updated = await prisma.treatmentPlan.update({ where: { id: photo.treatmentPlanId }, data: {}, include });
+  return res.json({ plan: updated });
 }
