@@ -1,31 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { computeTreatmentStatus } from '../utils/treatmentStatus';
-
-const include = {
-  professional: { select: { id: true, name: true } },
-  sucursal: true,
-  prevision: true,
-  convenio: true,
-  items: {
-    orderBy: { createdAt: 'asc' as const },
-    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
-  },
-  photos: { orderBy: { position: 'asc' as const } },
-} as const;
-
-async function recalculatePlan(treatmentPlanId: string) {
-  const plan = await prisma.treatmentPlan.findUniqueOrThrow({ where: { id: treatmentPlanId } });
-  const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId } });
-  const amount = items.reduce((sum, i) => sum + i.cost, 0);
-  const status = computeTreatmentStatus(items, plan.status);
-  return prisma.treatmentPlan.update({
-    where: { id: treatmentPlanId },
-    data: { amount, status },
-    include,
-  });
-}
+import { recalculatePlan } from '../lib/treatmentPlanLifecycle';
 
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as {
@@ -61,7 +37,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     },
   });
 
-  const plan = await recalculatePlan(item.treatmentPlanId);
+  const plan = await recalculatePlan(item.treatmentPlanId, req.user!.sub);
   return res.json({ plan });
 }
 
@@ -73,7 +49,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
 
   const treatmentPlanId = item.treatmentPlanId;
   await prisma.treatmentItem.delete({ where: { id: item.id } });
-  const plan = await recalculatePlan(treatmentPlanId);
+  const plan = await recalculatePlan(treatmentPlanId, req.user!.sub);
   return res.json({ plan });
 }
 
@@ -115,7 +91,7 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
       },
     });
 
-    const plan = await recalculatePlan(item.treatmentPlanId);
+    const plan = await recalculatePlan(item.treatmentPlanId, req.user!.sub);
     return res.status(201).json({ plan });
   } catch (err) {
     console.error('Error subiendo foto a Cloudinary', err);
@@ -137,6 +113,6 @@ export async function removePhoto(req: Request<{ photoId: string }>, res: Respon
 
   const item = await prisma.treatmentItem.findUniqueOrThrow({ where: { id: photo.treatmentItemId } });
   await prisma.treatmentItemPhoto.delete({ where: { id: photo.id } });
-  const plan = await recalculatePlan(item.treatmentPlanId);
+  const plan = await recalculatePlan(item.treatmentPlanId, req.user!.sub);
   return res.json({ plan });
 }

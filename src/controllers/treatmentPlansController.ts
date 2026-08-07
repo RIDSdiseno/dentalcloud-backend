@@ -1,19 +1,8 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { TREATMENT_STATUSES, computeTreatmentStatus } from '../utils/treatmentStatus';
-
-const include = {
-  professional: { select: { id: true, name: true } },
-  sucursal: true,
-  prevision: true,
-  convenio: true,
-  items: {
-    orderBy: { createdAt: 'asc' as const },
-    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
-  },
-  photos: { orderBy: { position: 'asc' as const } },
-} as const;
+import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
+import { TREATMENT_PLAN_INCLUDE as include, recalculatePlan, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 
 type ItemInput = {
   description?: string;
@@ -112,6 +101,7 @@ export async function create(req: Request, res: Response) {
       notes: body.notes?.trim() || null,
       facialAnnotations: body.facialAnnotations === undefined ? undefined : (body.facialAnnotations as object),
       facialGender: body.facialGender === 'hombre' || body.facialGender === 'mujer' ? body.facialGender : null,
+      createdByUserId: req.user!.sub,
       clinicaId,
       items: {
         create: items.map((i) => ({
@@ -154,7 +144,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   const updated = await prisma.treatmentPlan.update({
     where: { id: req.params.id },
     data: {
-      ...(body.status ? { status: body.status } : {}),
+      ...(body.status ? { status: body.status, ...lifecycleStampsForManualStatusChange(plan, body.status, req.user!.sub) } : {}),
       ...(body.notes !== undefined ? { notes: body.notes?.trim() || null } : {}),
       ...(body.professionalId !== undefined ? { professionalId: body.professionalId || null } : {}),
       ...(body.name !== undefined ? { name: body.name?.trim() || null } : {}),
@@ -203,15 +193,7 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
     },
   });
 
-  const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId: plan.id } });
-  const amount = items.reduce((sum, i) => sum + i.cost, 0);
-  const status = computeTreatmentStatus(items, plan.status);
-
-  const updated = await prisma.treatmentPlan.update({
-    where: { id: plan.id },
-    data: { amount, status },
-    include,
-  });
+  const updated = await recalculatePlan(plan.id, req.user!.sub);
   return res.status(201).json({ plan: updated });
 }
 

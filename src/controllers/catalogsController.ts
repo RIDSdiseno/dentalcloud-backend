@@ -189,11 +189,12 @@ function sanitizeAllowedZones(allowedZones: unknown): string[] | undefined {
 }
 
 export async function createPrestacion(req: Request, res: Response) {
-  const { name, code, basePrice, allowedZones } = req.body as {
+  const { name, code, basePrice, allowedZones, requiresProductTracking } = req.body as {
     name?: string;
     code?: string;
     basePrice?: number;
     allowedZones?: unknown;
+    requiresProductTracking?: boolean;
   };
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la prestación es requerido' });
@@ -211,6 +212,7 @@ export async function createPrestacion(req: Request, res: Response) {
       code: code?.trim() || null,
       basePrice: Math.max(0, Math.round(basePrice ?? 0)),
       allowedZones: sanitizeAllowedZones(allowedZones) ?? [],
+      requiresProductTracking: requiresProductTracking === true,
       clinicaId,
     },
   });
@@ -222,12 +224,13 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
   if (!prestacion) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
-  const { name, code, basePrice, active, allowedZones } = req.body as {
+  const { name, code, basePrice, active, allowedZones, requiresProductTracking } = req.body as {
     name?: string;
     code?: string | null;
     basePrice?: number;
     active?: boolean;
     allowedZones?: unknown;
+    requiresProductTracking?: boolean;
   };
   const sanitizedZones = sanitizeAllowedZones(allowedZones);
   const updated = await prisma.prestacion.update({
@@ -238,6 +241,7 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
       ...(basePrice !== undefined ? { basePrice: Math.max(0, Math.round(basePrice)) } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(sanitizedZones !== undefined ? { allowedZones: sanitizedZones } : {}),
+      ...(requiresProductTracking !== undefined ? { requiresProductTracking } : {}),
     },
   });
   return res.json({ prestacion: updated });
