@@ -27,7 +27,12 @@ function isAuthError(err: unknown): boolean {
   return axios.isAxiosError(err) && (err.response?.status === 401 || err.response?.status === 403);
 }
 
-async function sendViaGraph(token: string, opts: { to: string; subject: string; html: string }) {
+type MailAttachment = { filename: string; contentBytes: string; contentType: string };
+
+async function sendViaGraph(
+  token: string,
+  opts: { to: string; subject: string; html: string; attachments?: MailAttachment[] }
+) {
   const sender = process.env.MS_GRAPH_SENDER;
   await axios.post(
     `https://graph.microsoft.com/v1.0/users/${sender}/sendMail`,
@@ -36,6 +41,16 @@ async function sendViaGraph(token: string, opts: { to: string; subject: string; 
         subject: opts.subject,
         body: { contentType: 'HTML', content: opts.html },
         toRecipients: [{ emailAddress: { address: opts.to } }],
+        ...(opts.attachments?.length
+          ? {
+              attachments: opts.attachments.map((a) => ({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: a.filename,
+                contentBytes: a.contentBytes,
+                contentType: a.contentType,
+              })),
+            }
+          : {}),
       },
       saveToSentItems: true,
     },
@@ -43,7 +58,7 @@ async function sendViaGraph(token: string, opts: { to: string; subject: string; 
   );
 }
 
-export async function sendMail(opts: { to: string; subject: string; html: string }) {
+export async function sendMail(opts: { to: string; subject: string; html: string; attachments?: MailAttachment[] }) {
   const token = await getAccessToken();
   try {
     await sendViaGraph(token, opts);

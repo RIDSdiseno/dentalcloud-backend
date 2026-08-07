@@ -1,3 +1,4 @@
+import fs from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
 
@@ -61,8 +62,33 @@ export async function findOdontologoByRut(rut: string) {
   }
 }
 
-export async function createOdontologo(input: { rut: string; name: string; email?: string | null }) {
+export async function createOdontologo(input: { rut: string; name: string; email?: string | null; clinic_id?: string | null }) {
   const { data } = await dimage.post('/odontologo/create', input);
+  return data;
+}
+
+export async function fetchOdontologosByHolding() {
+  const { data } = await dimage.get('/odontologo/by-holding');
+  return data;
+}
+
+export async function findRadiologoByRut(rut: string) {
+  try {
+    const { data } = await dimage.get(`/radiologo/by-rut/${rut}`);
+    return data;
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function createRadiologo(input: { rut: string; name: string; email: string; password: string }) {
+  const { data } = await dimage.post('/radiologo', input);
+  return data;
+}
+
+export async function fetchRadiologosByHolding() {
+  const { data } = await dimage.get('/radiologo/by-holding');
   return data;
 }
 
@@ -137,14 +163,22 @@ export async function updateOrder(
 export async function uploadOrderFiles(
   orderId: number | string,
   examinationId: number | string,
-  files: Array<{ buffer: Buffer; originalname: string }>
+  files: Array<{ path: string; originalname: string }>
 ) {
   const form = new FormData();
   for (const file of files) {
-    form.append('archivos[]', file.buffer, { filename: file.originalname });
+    // Stream desde disco (no buffer en memoria) — los ZIP de estudios CBCT
+    // pueden pesar hasta ~3 GB, y bufferear eso en RAM por archivo/request
+    // es un riesgo real de OOM en el proceso de Node.
+    form.append('archivos[]', fs.createReadStream(file.path), { filename: file.originalname });
   }
+  // Un archivo de varios GB puede tardar bastante en subir — el timeout corto
+  // (15s) que usan las demás llamadas de este cliente no alcanza acá.
   const { data } = await dimage.post(`/order/${orderId}/files/${examinationId}`, form, {
     headers: form.getHeaders(),
+    timeout: 30 * 60 * 1000,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
   });
   return data;
 }

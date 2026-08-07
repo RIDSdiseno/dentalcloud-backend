@@ -8,21 +8,26 @@ datasource db {
 }
 
 model Clinica {
-  id                         String                      @id @default(uuid())
-  name                       String
-  active                     Boolean                     @default(true)
-  createdAt                  DateTime                    @default(now())
-  rxEnabled                  Boolean                     @default(true)
-  modules                    Json                        @default("{\"cartola\": true, \"evoluciones\": true, \"observaciones\": true, \"documentosClinicos\": true}")
-  tipo                       String                      @default("dental")
-  logoUrl                    String?
-  logoPublicId               String?
-  rut                        String?                     @unique
-  rolePermissions            Json                        @default("{}")
-  pais                       String                      @default("Chile")
-  slotDurationMinutes        Int                         @default(15)
-  administrativeObservations AdministrativeObservation[]
-  appointments               Appointment[]
+  id           String   @id @default(uuid())
+  name         String
+  rut          String?  @unique
+  active       Boolean  @default(true)
+  rxEnabled    Boolean  @default(true)
+  // "dental" | "estetica" — determina paleta de color y flujos disponibles en el front.
+  tipo         String   @default("dental")
+  logoUrl      String?
+  logoPublicId String?
+  // Permisos de módulos adicionales (documentos clínicos, cartola, evoluciones,
+  // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
+  // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.
+  modules      Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
+  // Permisos por perfil (odontologo/radiologo/operador) dentro de la clínica —
+  // segundo nivel de control debajo de `modules`, editable por el admin de la
+  // clínica. Ver src/lib/rolePermissions.ts.
+  rolePermissions Json  @default("{}")
+  createdAt    DateTime @default(now())
+
+  users                      User[]
   chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
   consentTypes               ConsentType[]
@@ -46,29 +51,24 @@ model Clinica {
 }
 
 model User {
-  id                                                 String                      @id @default(uuid())
-  email                                              String                      @unique
-  passwordHash                                       String
-  name                                               String
-  role                                               String                      @default("odontologo")
-  createdAt                                          DateTime                    @default(now())
-  updatedAt                                          DateTime                    @updatedAt
-  rut                                                String?
-  clinicaId                                          String?
-  administrativeObservations                         AdministrativeObservation[]
-  appointments                                       Appointment[]
-  clinicalDocuments                                  ClinicalDocument[]
-  consentsSent                                       Consent[]                   @relation("ConsentsSentBy")
-  evolutions                                         Evolution[]
-  ledgerMovements                                    LedgerMovement[]
-  treatment_items                                    TreatmentItem[]
-  treatmentPlansCompleted                            TreatmentPlan[]             @relation("TreatmentPlanCompletedBy")
-  treatment_plans_treatment_plans_createdByIdTousers TreatmentPlan[]             @relation("treatment_plans_createdByIdTousers")
-  treatmentPlansCreated                              TreatmentPlan[]             @relation("TreatmentPlanCreatedBy")
-  treatmentPlans                                     TreatmentPlan[]             @relation("TreatmentPlanProfessional")
-  treatmentPlansStarted                              TreatmentPlan[]             @relation("TreatmentPlanStartedBy")
-  clinica                                            Clinica?                    @relation(fields: [clinicaId], references: [id])
-  workSchedules                                      WorkSchedule[]
+  id                         String                      @id @default(uuid())
+  email                      String                      @unique
+  passwordHash               String
+  name                       String
+  role                       String                      @default("odontologo")
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  rut                        String?
+  clinicaId                  String?
+  clinica                    Clinica?                    @relation(fields: [clinicaId], references: [id])
+  administrativeObservations AdministrativeObservation[]
+  appointments               Appointment[]
+  clinicalDocuments          ClinicalDocument[]
+  evolutions                 Evolution[]
+  ledgerMovements            LedgerMovement[]
+  treatmentPlans             TreatmentPlan[]
+  workSchedules              WorkSchedule[]
+  consentsSent               Consent[]                   @relation("ConsentsSentBy")
 
   @@index([clinicaId])
   @@map("users")
@@ -121,17 +121,15 @@ model Patient {
 }
 
 model ConsentType {
-  id          String    @id @default(uuid())
-  code        String
-  name        String
-  legalText   String
-  active      Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  clinicaId   String
-  pdfPublicId String?
-  pdfUrl      String?
-  clinica     Clinica   @relation(fields: [clinicaId], references: [id])
-  consents    Consent[]
+  id        String    @id @default(uuid())
+  code      String
+  name      String
+  legalText String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  clinicaId String
+  clinica   Clinica   @relation(fields: [clinicaId], references: [id])
+  consents  Consent[]
 
   @@unique([clinicaId, code])
   @@map("consent_types")
@@ -153,6 +151,14 @@ model Consent {
   userAgent       String?
   sentById        String?
   contentSnapshot String?
+  // Copia propia (Cloudinary) del PDF del tipo al momento de enviar/firmar —
+  // independiente del `pdfUrl` "vivo" del ConsentType, para que un reemplazo
+  // posterior del PDF no altere retroactivamente este consentimiento.
+  pdfSnapshotUrl  String?
+  // Firma dibujada por el paciente (canvas) al aceptar — imagen PNG subida a
+  // Cloudinary. Obligatoria para aceptar; nunca se pide para rechazar.
+  signatureUrl      String?
+  signaturePublicId String?
   clinicaId       String
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
@@ -168,43 +174,38 @@ model Consent {
 }
 
 model TreatmentPlan {
-  id                                       String               @id @default(uuid())
-  number                                   Int                  @unique @default(autoincrement())
-  patientId                                String
-  professionalId                           String?
-  status                                   String               @default("sin_iniciar")
-  amount                                   Int                  @default(0)
-  notes                                    String?
-  createdAt                                DateTime             @default(now())
-  updatedAt                                DateTime             @updatedAt
-  convenioId                               String?
-  name                                     String?
-  paymentMethod                            String?
-  previsionId                              String?
-  sucursalId                               String?
-  clinicaId                                String
-  diagramType                              String               @default("dental")
-  createdById                              String?
-  facialAnnotations                        Json?
-  facialGender                             String?
-  createdByUserId                          String?
-  startedByUserId                          String?
-  startedAt                                DateTime?
-  completedByUserId                        String?
-  completedAt                              DateTime?
-  ledgerMovements                          LedgerMovement[]
-  items                                    TreatmentItem[]
-  photos                                   TreatmentPlanPhoto[]
-  clinica                                  Clinica              @relation(fields: [clinicaId], references: [id])
-  completedBy                              User?                @relation("TreatmentPlanCompletedBy", fields: [completedByUserId], references: [id])
-  convenio                                 Convenio?            @relation(fields: [convenioId], references: [id])
-  users_treatment_plans_createdByIdTousers User?                @relation("treatment_plans_createdByIdTousers", fields: [createdById], references: [id])
-  createdBy                                User?                @relation("TreatmentPlanCreatedBy", fields: [createdByUserId], references: [id])
-  patient                                  Patient              @relation(fields: [patientId], references: [id])
-  prevision                                Prevision?           @relation(fields: [previsionId], references: [id])
-  professional                             User?                @relation("TreatmentPlanProfessional", fields: [professionalId], references: [id])
-  startedBy                                User?                @relation("TreatmentPlanStartedBy", fields: [startedByUserId], references: [id])
-  sucursal                                 Sucursal?            @relation(fields: [sucursalId], references: [id])
+  id              String           @id @default(uuid())
+  number          Int              @unique @default(autoincrement())
+  patientId       String
+  professionalId  String?
+  status          String           @default("sin_iniciar")
+  amount          Int              @default(0)
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  convenioId      String?
+  name            String?
+  paymentMethod   String?
+  previsionId     String?
+  sucursalId      String?
+  // Trazos dibujados a mano sobre el mapa facial (frontal/perfil) al crear el
+  // presupuesto — JSON con la forma { frontal, perfilDerecho, perfilIzquierdo },
+  // cada uno un array de Stroke (ver FacialMap.tsx en el frontend).
+  facialAnnotations Json?
+  // Género usado para el mapa facial ("hombre" | "mujer") al crear el
+  // presupuesto — queda fijo una vez guardado (no así piel/músculos, que es
+  // solo una capa visual del mismo par de fotos).
+  facialGender    String?
+  clinicaId       String
+  clinica         Clinica              @relation(fields: [clinicaId], references: [id])
+  ledgerMovements LedgerMovement[]
+  items           TreatmentItem[]
+  photos          TreatmentPlanPhoto[]
+  convenio        Convenio?            @relation(fields: [convenioId], references: [id])
+  patient         Patient              @relation(fields: [patientId], references: [id])
+  prevision       Prevision?           @relation(fields: [previsionId], references: [id])
+  professional    User?                @relation(fields: [professionalId], references: [id])
+  sucursal        Sucursal?            @relation(fields: [sucursalId], references: [id])
 
   @@index([clinicaId])
   @@index([completedByUserId])
@@ -247,12 +248,12 @@ model TreatmentItem {
   productLot              String?
   productExpiresAt        DateTime?
   productQuantity         String?
-  treatedAt               DateTime?
-  treatedById             String?
+  clinicaId               String
   clinica                 Clinica              @relation(fields: [clinicaId], references: [id])
   prestacion              Prestacion?          @relation(fields: [prestacionId], references: [id])
   users                   User?                @relation(fields: [treatedById], references: [id])
   treatmentPlan           TreatmentPlan        @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
+  treatedBy               User?                @relation(fields: [treatedById], references: [id])
   photos                  TreatmentItemPhoto[]
 
   @@index([clinicaId])
@@ -322,17 +323,21 @@ model Convenio {
 }
 
 model Prestacion {
-  id                      String          @id @default(uuid())
-  code                    String?
-  name                    String
-  basePrice               Int             @default(0)
-  active                  Boolean         @default(true)
-  createdAt               DateTime        @default(now())
-  clinicaId               String
-  allowedZones            String[]        @default([])
-  requiresProductTracking Boolean         @default(false)
-  clinica                 Clinica         @relation(fields: [clinicaId], references: [id])
-  items                   TreatmentItem[]
+  id        String          @id @default(uuid())
+  code      String?
+  name      String
+  basePrice Int             @default(0)
+  active    Boolean         @default(true)
+
+  // Zonas del mapa facial (ver facialZoneConfig.ts en el front) donde puede
+  // aplicarse esta prestación — solo relevante para clínicas tipo "estetica".
+  // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
+  // por defecto, y el único que existe para clínicas dentales).
+  allowedZones String[]      @default([])
+  createdAt DateTime        @default(now())
+  clinicaId String
+  clinica   Clinica         @relation(fields: [clinicaId], references: [id])
+  items     TreatmentItem[]
 
   @@unique([clinicaId, code])
   @@map("prestaciones")

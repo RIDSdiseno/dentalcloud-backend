@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
+import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 
 type PatientInput = {
   rut?: string;
@@ -113,6 +114,18 @@ export async function create(req: Request, res: Response) {
   }
 
   const patient = await prisma.patient.create({ data: { rut, clinicaId, ...toPatientData(body) } });
+
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { rxEnabled: true } });
+  if (clinica?.rxEnabled) {
+    // Best-effort: si la clínica tiene el módulo Rx habilitado, el paciente
+    // queda disponible en RIDS RX desde su creación (no solo al crear una
+    // orden), para poder generar órdenes desde cualquiera de los dos sistemas.
+    // No bloquea ni falla la creación del paciente si Dimage no responde.
+    syncPatientToDimageIfNeeded(patient).catch((err) => {
+      console.error('No se pudo sincronizar el paciente recién creado con RIDS RX', err);
+    });
+  }
+
   return res.status(201).json({ patient });
 }
 

@@ -1,3 +1,5 @@
+import os from 'os';
+import crypto from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
@@ -13,14 +15,21 @@ import {
   orderPdf,
   orderZip,
   orderDetail,
+  dicomViewerToken,
   updateRxOrder,
   uploadOrderFilesController,
   deleteOrderFileController,
 } from '../controllers/rxController';
 
+// Los estudios CBCT (Cone Beam) se entregan como ZIP con series DICOM completas
+// y pueden pesar hasta ~3 GB — muy por sobre lo que conviene bufferear en RAM,
+// así que se guardan como temporales en disco (streaming) y no en memoria.
 const uploadMiddleware = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, file, cb) => cb(null, `rx-upload-${crypto.randomUUID()}-${file.originalname}`),
+  }),
+  limits: { fileSize: 3 * 1024 * 1024 * 1024 },
 });
 
 const router = Router();
@@ -34,6 +43,7 @@ router.post('/patient-sync', syncPatient);
 router.get('/orders', listOrders);
 router.post('/orders', createRxOrder);
 router.get('/orders/:id', orderDetail);
+router.post('/orders/:id/dicom-viewer-token', dicomViewerToken);
 router.put('/orders/:id', updateRxOrder);
 router.patch('/orders/:id/send', sendOrder);
 router.get('/orders/:id/pdf', orderPdf);

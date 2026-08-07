@@ -49,6 +49,7 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     clinicaName: user.clinica ? user.clinica.name : null,
     clinicaLogoUrl: user.clinica ? user.clinica.logoUrl : null,
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
+    slotDurationMinutes: user.clinica ? user.clinica.slotDurationMinutes : null,
     permissions: resolvePermissions(user.role, user.clinica),
   };
 }

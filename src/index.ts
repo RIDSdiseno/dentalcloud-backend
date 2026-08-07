@@ -16,10 +16,12 @@ import ledgerRoutes from './routes/ledger';
 import observationsRoutes from './routes/observations';
 import documentsRoutes from './routes/documents';
 import rxRoutes from './routes/rx';
+import rxViewerRoutes from './routes/rxViewer';
 import dataConsentsRoutes from './routes/dataConsents';
 import publicConsentsRoutes from './routes/publicConsents';
 import clinicasRoutes from './routes/clinicas';
 import clinicaSettingsRoutes from './routes/clinicaSettings';
+import agendaSettingsRoutes from './routes/agendaSettings';
 
 const app = express();
 
@@ -59,10 +61,12 @@ app.use('/api/ledger', ledgerRoutes);
 app.use('/api/observations', observationsRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/rx', rxRoutes);
+app.use('/api/rx-viewer', rxViewerRoutes);
 app.use('/api/data-consents', dataConsentsRoutes);
 app.use('/api/public/consents', publicConsentsRoutes);
 app.use('/api/clinicas', clinicasRoutes);
 app.use('/api/clinica/role-permissions', clinicaSettingsRoutes);
+app.use('/api/clinica/agenda-settings', agendaSettingsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -70,3 +74,4 @@ const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`);
 });
+

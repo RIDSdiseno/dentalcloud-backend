@@ -1,8 +1,19 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
-import { TREATMENT_PLAN_INCLUDE as include, recalculatePlan, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
+import { TREATMENT_STATUSES, computeTreatmentStatus } from '../utils/treatmentStatus';
+
+const include = {
+  professional: { select: { id: true, name: true } },
+  sucursal: true,
+  prevision: true,
+  convenio: true,
+  items: {
+    orderBy: { createdAt: 'asc' as const },
+    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
+  },
+  photos: { orderBy: { position: 'asc' as const } },
+} as const;
 
 type ItemInput = {
   description?: string;
@@ -26,6 +37,7 @@ type PlanInput = {
   name?: string;
   paymentMethod?: string;
   notes?: string;
+  diagramType?: string;
   items?: ItemInput[];
   facialAnnotations?: unknown;
   facialGender?: string;
@@ -88,10 +100,24 @@ export async function create(req: Request, res: Response) {
   const amount = items.reduce((sum, i) => sum + Math.round(i.cost ?? 0), 0);
   const clinicaId = req.user!.clinicaId!;
 
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { tipo: true } });
+  let diagramType: string;
+  if (clinica?.tipo === 'ambas') {
+    if (body.diagramType !== 'dental' && body.diagramType !== 'estetica') {
+      return res.status(400).json({ error: 'Debes indicar si el plan usa odontograma o mapa facial' });
+    }
+    diagramType = body.diagramType;
+  } else {
+    diagramType = clinica?.tipo === 'estetica' ? 'estetica' : 'dental';
+  }
+
   const plan = await prisma.treatmentPlan.create({
     data: {
       patientId: body.patientId,
       professionalId,
+      // Quién efectivamente creó el registro (usuario logueado) — distinto de
+      // `professionalId`, que un admin puede asignar a otro profesional.
+      createdById: req.user!.sub,
       sucursalId: body.sucursalId || null,
       previsionId: body.previsionId || null,
       convenioId: body.convenioId || null,
@@ -99,12 +125,17 @@ export async function create(req: Request, res: Response) {
       paymentMethod: body.paymentMethod?.trim() || null,
       amount,
       notes: body.notes?.trim() || null,
+      diagramType,
       facialAnnotations: body.facialAnnotations === undefined ? undefined : (body.facialAnnotations as object),
       facialGender: body.facialGender === 'hombre' || body.facialGender === 'mujer' ? body.facialGender : null,
       createdByUserId: req.user!.sub,
       clinicaId,
       items: {
-        create: items.map((i) => ({
+        // Todos los ítems se crean en la misma transacción y por lo tanto
+        // compartirían el mismo `createdAt` (ver nota del `orderBy` más abajo)
+        // — se escalona 1ms por índice para que el orden de la lista refleje
+        // el orden en que se ingresaron en el formulario.
+        create: items.map((i, index) => ({
           description: i.description!.trim(),
           cost: Math.round(i.cost ?? 0),
           prestacionId: i.prestacionId || null,
@@ -117,6 +148,7 @@ export async function create(req: Request, res: Response) {
           productExpiresAt: i.productExpiresAt ? new Date(i.productExpiresAt) : null,
           productQuantity: i.productQuantity?.trim() || null,
           clinicaId,
+          createdAt: new Date(Date.now() + index),
         })),
       },
     },

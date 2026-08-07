@@ -16,6 +16,24 @@ export async function getRolePermissions(req: Request, res: Response) {
   return res.json({ rolePermissions: parseRolePermissions(clinica?.rolePermissions) });
 }
 
+const VALID_SLOT_DURATIONS = [15, 30, 60];
+
+export async function updateAgendaSettings(req: Request, res: Response) {
+  const { slotDurationMinutes } = req.body as { slotDurationMinutes?: number };
+  if (!VALID_SLOT_DURATIONS.includes(slotDurationMinutes as number)) {
+    return res
+      .status(400)
+      .json({ error: `slotDurationMinutes debe ser uno de: ${VALID_SLOT_DURATIONS.join(', ')}` });
+  }
+
+  const clinica = await prisma.clinica.update({
+    where: { id: req.user!.clinicaId! },
+    data: { slotDurationMinutes },
+  });
+
+  return res.json({ slotDurationMinutes: clinica.slotDurationMinutes });
+}
+
 export async function updateRolePermissions(req: Request, res: Response) {
   const patch = req.body as Partial<Record<string, Partial<Record<string, boolean>>>>;
 

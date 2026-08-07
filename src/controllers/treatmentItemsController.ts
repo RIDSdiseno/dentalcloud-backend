@@ -1,7 +1,31 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { recalculatePlan } from '../lib/treatmentPlanLifecycle';
+import { computeTreatmentStatus } from '../utils/treatmentStatus';
+
+const include = {
+  professional: { select: { id: true, name: true } },
+  sucursal: true,
+  prevision: true,
+  convenio: true,
+  items: {
+    orderBy: { createdAt: 'asc' as const },
+    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
+  },
+  photos: { orderBy: { position: 'asc' as const } },
+} as const;
+
+async function recalculatePlan(treatmentPlanId: string) {
+  const plan = await prisma.treatmentPlan.findUniqueOrThrow({ where: { id: treatmentPlanId } });
+  const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId } });
+  const amount = items.reduce((sum, i) => sum + i.cost, 0);
+  const status = computeTreatmentStatus(items, plan.status);
+  return prisma.treatmentPlan.update({
+    where: { id: treatmentPlanId },
+    data: { amount, status },
+    include,
+  });
+}
 
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as {
@@ -25,7 +49,17 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     data: {
       ...(body.description !== undefined ? { description: body.description.trim() } : {}),
       ...(body.cost !== undefined ? { cost: Math.round(body.cost) } : {}),
-      ...(body.completed !== undefined ? { completed: body.completed } : {}),
+      ...(body.completed !== undefined
+        ? {
+            completed: body.completed,
+            // Quién trató el procedimiento se registra solo (el usuario que
+            // marca el check), no requiere un selector aparte. Se limpia si
+            // se desmarca, para no dejar un "tratado por" de algo que en
+            // realidad no quedó hecho.
+            treatedById: body.completed ? req.user!.sub : null,
+            treatedAt: body.completed ? new Date() : null,
+          }
+        : {}),
       ...(body.toothNumber !== undefined ? { toothNumber: body.toothNumber?.trim() || null } : {}),
       ...(body.notes !== undefined ? { notes: body.notes?.trim() || null } : {}),
       ...(body.productName !== undefined ? { productName: body.productName?.trim() || null } : {}),

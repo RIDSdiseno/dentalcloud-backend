@@ -13,6 +13,7 @@ import {
   listAllPatients,
   listAllTreatmentPlans,
   update,
+  updateLogo,
 } from '../controllers/clinicasController';
 
 const uploadMiddleware = multer({
@@ -34,5 +35,6 @@ router.get('/evoluciones', listAllEvolutions);
 router.get('/observaciones', listAllObservations);
 router.post('/', uploadMiddleware.single('logo'), create);
 router.patch('/:id', update);
+router.patch('/:id/logo', uploadMiddleware.single('logo'), updateLogo);
 
 export default router;
