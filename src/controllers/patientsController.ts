@@ -4,6 +4,7 @@ import { cleanRut, isValidRut } from '../utils/rut';
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
+import { syncPatientToFederation } from '../lib/federationSync';
 
 type PatientInput = {
   rut?: string;
@@ -126,6 +127,12 @@ export async function create(req: Request, res: Response) {
     });
   }
 
+  // Best-effort: si la clínica de este paciente está emparejada con
+  // Dental-Demo-Back, lo espeja allá para que administración lo vea también.
+  syncPatientToFederation(patient).catch((err) => {
+    console.error('No se pudo sincronizar el paciente recién creado con Dental-Demo-Back', err);
+  });
+
   return res.status(201).json({ patient });
 }
 
@@ -147,5 +154,10 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...toPatientPatch(body),
     },
   });
+
+  syncPatientToFederation(updated).catch((err) => {
+    console.error('No se pudo sincronizar la edición del paciente con Dental-Demo-Back', err);
+  });
+
   return res.json({ patient: updated });
 }

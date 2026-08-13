@@ -22,6 +22,7 @@ import publicConsentsRoutes from './routes/publicConsents';
 import clinicasRoutes from './routes/clinicas';
 import clinicaSettingsRoutes from './routes/clinicaSettings';
 import agendaSettingsRoutes from './routes/agendaSettings';
+import { startFederationRetryLoop } from './lib/federationRetry';
 
 const app = express();
 
@@ -73,5 +74,6 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`);
+  startFederationRetryLoop();
 });
 

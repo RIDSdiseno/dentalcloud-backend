@@ -2,6 +2,12 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
 import { TREATMENT_STATUSES, computeTreatmentStatus } from '../utils/treatmentStatus';
+import {
+  syncTreatmentItemToFederation,
+  syncTreatmentItemRemovalToFederation,
+  syncTreatmentPlanToFederation,
+  syncTreatmentPlanRemovalToFederation,
+} from '../lib/federationSync';
 
 const include = {
   professional: { select: { id: true, name: true } },
@@ -161,6 +167,22 @@ export async function create(req: Request, res: Response) {
     },
     include,
   });
+
+  // Best-effort: si el paciente está emparejado con Dental-Demo-Back, se
+  // espeja el presupuesto y cada ítem recién creado. No bloquea ni falla la
+  // creación si la otra plataforma no responde. Los ítems se sincronizan uno
+  // a la vez (no en paralelo): el otro lado recalcula el total sumando todos
+  // los ítems existentes en cada llamada, y dos llamadas concurrentes se
+  // pisarían esa recalculación entre sí.
+  (async () => {
+    await syncTreatmentPlanToFederation(plan);
+    for (const item of plan.items) {
+      await syncTreatmentItemToFederation(item);
+    }
+  })().catch((err) => {
+    console.error('No se pudo sincronizar el presupuesto recién creado con Dental-Demo-Back', err);
+  });
+
   return res.status(201).json({ plan });
 }
 
@@ -191,6 +213,11 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     },
     include,
   });
+
+  syncTreatmentPlanToFederation(updated).catch((err) => {
+    console.error('No se pudo sincronizar la edición del presupuesto con Dental-Demo-Back', err);
+  });
+
   return res.json({ plan: updated });
 }
 
@@ -198,6 +225,14 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
   if (!plan) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
+  }
+  // DentalCloud borra el presupuesto de verdad (no tiene estado archivado
+  // propio) — si tiene espejo, se avisa antes de borrar para que
+  // Dental-Demo-Back lo archive en vez de quedar huérfano y activo.
+  if (plan.federatedTreatmentPlanId) {
+    syncTreatmentPlanRemovalToFederation(plan).catch((err) => {
+      console.error('No se pudo avisar el borrado del presupuesto a Dental-Demo-Back', err);
+    });
   }
   await prisma.treatmentPlan.delete({ where: { id: req.params.id } });
   return res.status(204).send();
@@ -214,7 +249,7 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
 
-  await prisma.treatmentItem.create({
+  const newItem = await prisma.treatmentItem.create({
     data: {
       treatmentPlanId: plan.id,
       description: body.description.trim(),
@@ -230,6 +265,10 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
       productQuantity: body.productQuantity?.trim() || null,
       clinicaId: plan.clinicaId,
     },
+  });
+
+  syncTreatmentItemToFederation(newItem).catch((err) => {
+    console.error('No se pudo sincronizar el procedimiento recién agregado con Dental-Demo-Back', err);
   });
 
   const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId: plan.id } });

@@ -6,6 +6,7 @@ import prisma from '../lib/prisma';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { parseClinicaModules } from '../lib/clinicaModules';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
+import { applyPermissionOverrides, applyModuleOverrides } from '../lib/userAccessOverrides';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
@@ -27,30 +28,34 @@ function refreshCookieOptions(): CookieOptions {
   };
 }
 
-// Permisos YA resueltos para el rol de este usuario específico (no la matriz
-// completa) — así el frontend no necesita otro fetch para saber qué puede
-// ver. `admin`/`super_admin` y roles desconocidos/legacy: acceso completo.
-function resolvePermissions(role: string, clinica?: Clinica | null): Record<PermissionKey, boolean> {
+// Permisos YA resueltos para este usuario específico (no la matriz completa):
+// default de su rol + sus excepciones individuales (`user.permissionOverrides`)
+// — así el frontend no necesita otro fetch para saber qué puede ver.
+// `admin`/`super_admin` y roles desconocidos/legacy: acceso completo, sin
+// excepciones posibles (mismo invariante que ya regía antes de agregar
+// excepciones por usuario).
+function resolvePermissions(user: User, clinica?: Clinica | null): Record<PermissionKey, boolean> {
   const allTrue = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Record<PermissionKey, boolean>;
-  if (role === 'admin' || role === 'super_admin' || !isPermissionedRole(role)) return allTrue;
-  if (!clinica) return allTrue;
-  return parseRolePermissions(clinica.rolePermissions)[role];
+  if (user.role === 'admin' || user.role === 'super_admin' || !isPermissionedRole(user.role)) return allTrue;
+  const base = clinica ? parseRolePermissions(clinica.rolePermissions)[user.role] : allTrue;
+  return applyPermissionOverrides(base, user.permissionOverrides);
 }
 
 function toPublicUser(user: User & { clinica?: Clinica | null }) {
+  const baseModules = user.clinica ? parseClinicaModules(user.clinica.modules) : null;
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
     clinicaId: user.clinicaId,
-    clinicaModules: user.clinica ? parseClinicaModules(user.clinica.modules) : null,
+    clinicaModules: baseModules ? applyModuleOverrides(baseModules, user.moduleOverrides) : null,
     clinicaTipo: user.clinica ? user.clinica.tipo : null,
     clinicaName: user.clinica ? user.clinica.name : null,
     clinicaLogoUrl: user.clinica ? user.clinica.logoUrl : null,
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
     slotDurationMinutes: user.clinica ? user.clinica.slotDurationMinutes : null,
-    permissions: resolvePermissions(user.role, user.clinica),
+    permissions: resolvePermissions(user, user.clinica),
   };
 }
 

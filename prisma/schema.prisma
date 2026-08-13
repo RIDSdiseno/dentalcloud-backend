@@ -31,6 +31,15 @@ model Clinica {
   // en minutos. Debe ser uno de 15/30/60 — validado en el controller.
   slotDurationMinutes Int @default(15)
   createdAt    DateTime @default(now())
+  // Id de la Clinic espejo en Dental-Demo-Back, si esta clínica fue creada (o
+  // emparejada) por federación. Null = clínica local, sin par en el otro sistema.
+  federatedClinicId String? @unique
+  // Emparejamientos retroactivos de clínicas que ya operaban con datos reales
+  // (pacientes/citas propios) sólo deben compartir catálogo (convenios,
+  // prestaciones, previsiones) — nunca replicar pacientes/citas/presupuestos
+  // reales sin que alguien lo pida explícitamente. Si es true, todo el sync
+  // de paciente/cita/presupuesto/ítem se omite aunque haya federatedClinicId.
+  federationCatalogOnly Boolean @default(false)
 
   users                      User[]
   chairs                     Chair[]
@@ -66,6 +75,13 @@ model User {
   updatedAt                  DateTime                    @updatedAt
   rut                        String?
   clinicaId                  String?
+  // Excepciones de permisos/módulos para ESTE usuario puntual, por encima del
+  // default de su rol (`Clinica.rolePermissions`) y del plan de la clínica
+  // (`Clinica.modules`). Sólo se guardan las llaves explícitamente distintas
+  // del default — null/ausente = hereda el default normal. Ver
+  // src/lib/userAccessOverrides.ts.
+  permissionOverrides        Json?
+  moduleOverrides             Json?
   clinica                    Clinica?                    @relation(fields: [clinicaId], references: [id])
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
@@ -118,6 +134,10 @@ model Patient {
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
+  // Id del Patient espejo en Dental-Demo-Back, si la clínica de este paciente
+  // está emparejada por federación. Null = paciente sin espejo (aún, o porque
+  // su clínica no está emparejada).
+  federatedPatientId         String?                     @unique
   clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
@@ -229,6 +249,15 @@ model TreatmentPlan {
   completedByUserId String?
   completedAt       DateTime?
   clinicaId       String
+  // Id del TreatmentPlan espejo en Dental-Demo-Back, si el paciente de este
+  // presupuesto está emparejado por federación.
+  federatedTreatmentPlanId String? @unique
+  // Nombre del profesional a cargo, sólo cuando este plan nació en
+  // Dental-Demo-Back — no hay federación de cuentas de staff entre ambos
+  // sistemas, así que no existe un `professionalId` real que enlazar; se
+  // guarda el nombre como texto puramente informativo (ver `professional`
+  // para el vínculo real cuando el plan nació en esta misma plataforma).
+  remoteProfessionalName String?
   clinica         Clinica              @relation(fields: [clinicaId], references: [id])
   ledgerMovements LedgerMovement[]
   items           TreatmentItem[]
@@ -295,6 +324,8 @@ model TreatmentItem {
   treatedById             String?
   treatedAt               DateTime?
   clinicaId               String
+  // Id del TreatmentPlanItem espejo en Dental-Demo-Back.
+  federatedTreatmentItemId String? @unique
   clinica                 Clinica              @relation(fields: [clinicaId], references: [id])
   prestacion              Prestacion?          @relation(fields: [prestacionId], references: [id])
   treatmentPlan           TreatmentPlan        @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
@@ -345,6 +376,9 @@ model Prevision {
   active         Boolean         @default(true)
   createdAt      DateTime        @default(now())
   clinicaId      String
+  // Id del Prevision espejo en Dental-Demo-Back, si esta clínica está
+  // emparejada por federación. Null = previsión local, sin par en el otro sistema.
+  federatedPrevisionId String?    @unique
   clinica        Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans TreatmentPlan[]
 
@@ -359,6 +393,9 @@ model Convenio {
   active          Boolean         @default(true)
   createdAt       DateTime        @default(now())
   clinicaId       String
+  // Id del ClinicAgreement espejo en Dental-Demo-Back, si esta clínica está
+  // emparejada por federación. Null = convenio local, sin par en el otro sistema.
+  federatedConvenioId String?     @unique
   clinica         Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans  TreatmentPlan[]
 
@@ -373,8 +410,20 @@ model Prestacion {
   basePrice Int             @default(0)
   active    Boolean         @default(true)
 
+  // "dental" | "estetica" — sólo relevante para elegir si esta prestación
+  // puntual usa el odontograma o el mapa facial en clínicas tipo "ambas".
+  category  String          @default("dental")
+
+  // Modo de selección del odontograma para esta prestación (sólo aplica si
+  // category = "dental"): 'session' | 'tooth' | 'surface' | 'extraction' |
+  // 'cuadrante' | 'sextante' | 'arcada'. Ver OdontogramMode en el front.
+  // Se sugiere automáticamente por palabras clave del nombre al crear/editar
+  // (ver odontogramConfig.ts), pero queda guardado y editable — deja de
+  // depender de adivinar el modo cada vez que se muestra el odontograma.
+  odontogramMode String       @default("tooth")
+
   // Zonas del mapa facial (ver facialZoneConfig.ts en el front) donde puede
-  // aplicarse esta prestación — solo relevante para clínicas tipo "estetica".
+  // aplicarse esta prestación — solo relevante cuando category = "estetica".
   // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
   // por defecto, y el único que existe para clínicas dentales).
   allowedZones String[]      @default([])
@@ -384,6 +433,9 @@ model Prestacion {
   // sin lógica nueva.
   requiresProductTracking Boolean @default(false)
   clinicaId String
+  // Id del Prestacion espejo en Dental-Demo-Back, si esta clínica está
+  // emparejada por federación. Null = prestación local, sin par en el otro sistema.
+  federatedPrestacionId String? @unique
   clinica   Clinica         @relation(fields: [clinicaId], references: [id])
   items     TreatmentItem[]
 
@@ -404,6 +456,9 @@ model Appointment {
   professionalId String?
   type           String   @default("cita")
   clinicaId      String
+  // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
+  // sincronizada) por federación.
+  federatedAppointmentId String? @unique
   clinica        Clinica  @relation(fields: [clinicaId], references: [id])
   chair          Chair    @relation(fields: [chairId], references: [id])
   patient        Patient  @relation(fields: [patientId], references: [id])
@@ -525,4 +580,21 @@ model WorkSchedule {
   @@index([professionalId, weekday])
   @@index([clinicaId])
   @@map("work_schedules")
+}
+
+// Cola de reintento para escrituras de federación (hacia Dental-Demo-Back)
+// que fallaron. Sin infraestructura de colas nueva: un intervalo en el
+// proceso (ver src/lib/federationRetry.ts) barre esta tabla periódicamente.
+model FederationSyncFailure {
+  id         String   @id @default(uuid())
+  entityType String
+  localId    String
+  payload    Json
+  lastError  String?
+  attempts   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([entityType, localId])
+  @@map("federation_sync_failures")
 }

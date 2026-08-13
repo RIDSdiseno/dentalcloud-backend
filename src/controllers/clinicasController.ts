@@ -1,10 +1,20 @@
 import bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
 import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModules';
+import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
 import { cleanRut, isValidRut } from '../utils/rut';
+import {
+  fetchRemoteAppointments,
+  fetchRemoteClinics,
+  fetchRemotePatients,
+  isFederationConfigured,
+} from '../lib/federationClient';
+import { syncClinicaActiveStateToFederation, syncClinicaToFederation } from '../lib/federationSync';
+import { computeTreatmentStatus } from '../utils/treatmentStatus';
 
 export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
@@ -159,7 +169,7 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(adminPassword, 10);
 
-  const clinicaId = await prisma.$transaction(async (tx) => {
+  const clinica = await prisma.$transaction(async (tx) => {
     const clinica = await tx.clinica.create({
       data: {
         name: name.trim(),
@@ -181,14 +191,21 @@ export async function create(req: Request, res: Response) {
       },
     });
 
-    return clinica.id;
+    return clinica;
   });
 
-  const created = (await withStats()).find((c) => c.id === clinicaId);
+  // Best-effort: crea el espejo de esta clínica en Dental-Demo-Back para que
+  // ambas plataformas compartan sus pacientes y agenda desde ahora. No
+  // bloquea ni falla la creación si la otra plataforma no responde.
+  syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
+    console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
+  });
+
+  const created = (await withStats()).find((c) => c.id === clinica.id);
   return res.status(201).json({ clinica: created });
 }
 
-export async function listAllPatients(req: Request, res: Response) {
+async function getLocalPatients() {
   const patients = await prisma.patient.findMany({
     orderBy: [{ clinica: { name: 'asc' } }, { lastName: 'asc' }, { firstName: 'asc' }],
     select: {
@@ -203,17 +220,19 @@ export async function listAllPatients(req: Request, res: Response) {
   });
 
   const summaries = await fetchPrivacyConsentSummaries(patients.map((p) => p.id));
-  return res.json({
-    patients: patients.map(({ clinica, ...p }) => ({
-      ...p,
-      clinicaName: clinica.name,
-      ...(summaries.get(p.id) ?? {
-        privacyConsentStatus: 'pendiente' as const,
-        privacyConsentSentAt: null,
-        privacyConsentAt: null,
-      }),
-    })),
-  });
+  return patients.map(({ clinica, ...p }) => ({
+    ...p,
+    clinicaName: clinica.name,
+    ...(summaries.get(p.id) ?? {
+      privacyConsentStatus: 'pendiente' as const,
+      privacyConsentSentAt: null,
+      privacyConsentAt: null,
+    }),
+  }));
+}
+
+export async function listAllPatients(req: Request, res: Response) {
+  return res.json({ patients: await getLocalPatients() });
 }
 
 function snippet(html: string, maxLength = 100): string {
@@ -223,7 +242,7 @@ function snippet(html: string, maxLength = 100): string {
 
 const DETAIL_LIST_TAKE = 200;
 
-export async function listAllAppointments(req: Request, res: Response) {
+async function getLocalAppointments() {
   const appointments = await prisma.appointment.findMany({
     orderBy: { startAt: 'desc' },
     take: DETAIL_LIST_TAKE,
@@ -239,13 +258,42 @@ export async function listAllAppointments(req: Request, res: Response) {
     },
   });
 
-  return res.json({
-    appointments: appointments.map(({ clinica, patient, ...a }) => ({
-      ...a,
-      clinicaName: clinica.name,
-      patientName: `${patient.firstName} ${patient.lastName}`,
-    })),
-  });
+  return appointments.map(({ clinica, patient, ...a }) => ({
+    ...a,
+    clinicaName: clinica.name,
+    patientName: `${patient.firstName} ${patient.lastName}`,
+  }));
+}
+
+export async function listAllAppointments(req: Request, res: Response) {
+  return res.json({ appointments: await getLocalAppointments() });
+}
+
+// Vista combinada para el super-admin: clínicas/pacientes/citas propias de
+// DentalCloud + las de Dental-Demo-Back, obtenidas en vivo (sin copia local).
+// Si Dental-Demo-Back no responde o no está configurado, se devuelve sólo lo
+// local en vez de tumbar el endpoint — mismo criterio que dimageClient.
+export async function getFederatedOverview(req: Request, res: Response) {
+  const local = {
+    clinicas: await withStats(),
+    patients: await getLocalPatients(),
+    appointments: await getLocalAppointments(),
+  };
+
+  if (!isFederationConfigured()) {
+    return res.json({ local, remote: null, remoteAvailable: false });
+  }
+
+  try {
+    const [clinics, patients, appointments] = await Promise.all([
+      fetchRemoteClinics(),
+      fetchRemotePatients(),
+      fetchRemoteAppointments(),
+    ]);
+    return res.json({ local, remote: { clinics, patients, appointments }, remoteAvailable: true });
+  } catch {
+    return res.json({ local, remote: null, remoteAvailable: false });
+  }
 }
 
 export async function listAllTreatmentPlans(req: Request, res: Response) {
@@ -416,7 +464,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
 
   const mergedModules = modules ? { ...parseClinicaModules(clinica.modules), ...modules } : undefined;
 
-  await prisma.clinica.update({
+  const updatedClinica = await prisma.clinica.update({
     where: { id: req.params.id },
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
@@ -428,6 +476,15 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...(mergedModules !== undefined ? { modules: mergedModules } : {}),
     },
   });
+
+  if (active !== undefined) {
+    // Best-effort: si la clínica está emparejada, activar/desactivarla acá
+    // (equivalente a "eliminarla" de forma reversible) también suspende o
+    // reactiva su espejo en Dental-Demo-Back.
+    syncClinicaActiveStateToFederation(updatedClinica).catch((err) => {
+      console.error('No se pudo sincronizar el estado activo de la clínica con Dental-Demo-Back', err);
+    });
+  }
 
   const updated = (await withStats()).find((c) => c.id === req.params.id);
   return res.json({ clinica: updated });
@@ -469,4 +526,481 @@ export async function updateLogo(req: Request<{ id: string }>, res: Response) {
 
   const updated = (await withStats()).find((c) => c.id === req.params.id);
   return res.json({ clinica: updated });
+}
+
+// --- Endpoints "mirror": reciben escrituras de federación desde
+// Dental-Demo-Back (X-API-KEY, ver requireFederationOrSuperAdmin). Todos son
+// upsert por id externo, así que son seguros de reintentar sin duplicar.
+
+export async function mirrorClinica(req: Request, res: Response) {
+  const { externalId, name, pais, adminName, adminEmail, adminPassword, active } = req.body as {
+    externalId?: string;
+    name?: string;
+    pais?: string;
+    adminName?: string | null;
+    adminEmail?: string | null;
+    adminPassword?: string | null;
+    active?: boolean;
+  };
+  if (!externalId || !name?.trim()) {
+    return res.status(400).json({ error: 'externalId y name son requeridos' });
+  }
+
+  const existing = await prisma.clinica.findUnique({
+    where: { federatedClinicId: externalId },
+    include: { chairs: true },
+  });
+
+  if (existing) {
+    const updated = await prisma.clinica.update({
+      where: { id: existing.id },
+      data: { name: name.trim(), ...(pais ? { pais } : {}), ...(active !== undefined ? { active } : {}) },
+    });
+    return res.json({ id: updated.id, chairId: existing.chairs[0]?.id ?? null });
+  }
+
+  const created = await prisma.$transaction(async (tx) => {
+    const clinica = await tx.clinica.create({
+      data: {
+        name: name.trim(),
+        pais: pais || 'Chile',
+        federatedClinicId: externalId,
+        ...(active !== undefined ? { active } : {}),
+      },
+    });
+    const chair = await tx.chair.create({
+      data: { clinicaId: clinica.id, number: 1, name: 'Sillón externo' },
+    });
+    // Sin esto, un holding creado por federación nace sin ninguna Sucursal
+    // ("Clínica" en la UI) — y como los presupuestos exigen elegir una en el
+    // formulario, ningún profesional puede crear presupuestos ahí hasta que
+    // alguien la cree a mano. Se crea junto con la Clinica, igual que el Chair.
+    const sucursal = await tx.sucursal.create({
+      data: { clinicaId: clinica.id, name: 'Clínica federada' },
+    });
+    return { clinica, chair, sucursal };
+  });
+
+  // Espeja también al administrador, con la misma contraseña que se ingresó
+  // al crear la clínica del otro lado, para que pueda loguearse en ambas
+  // plataformas sin pasos manuales. Si esta llamada llegó por un reintento
+  // (falló la primera vez) ya no hay contraseña en texto plano disponible —
+  // se genera una temporal en su lugar.
+  const normalizedAdminEmail = adminEmail?.trim().toLowerCase();
+  if (normalizedAdminEmail) {
+    const existingUser = await prisma.user.findUnique({ where: { email: normalizedAdminEmail } });
+    if (!existingUser) {
+      const passwordToUse = adminPassword?.trim() || randomBytes(12).toString('hex');
+      const passwordHash = await bcrypt.hash(passwordToUse, 10);
+      await prisma.user.create({
+        data: {
+          name: adminName?.trim() || name.trim(),
+          email: normalizedAdminEmail,
+          passwordHash,
+          role: 'admin',
+          clinicaId: created.clinica.id,
+        },
+      });
+    }
+  }
+
+  return res.status(201).json({ id: created.clinica.id, chairId: created.chair.id });
+}
+
+export async function mirrorPatient(req: Request, res: Response) {
+  const { clinicaId, externalId, firstName, lastName, rut, email, phone, birthDate, heightCm, weightKg, allergies, allergyNotes, medicalConditions, currentMedications } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    firstName?: string;
+    lastName?: string;
+    rut?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    birthDate?: string | null;
+    heightCm?: number | null;
+    weightKg?: number | null;
+    allergies?: string[];
+    allergyNotes?: string | null;
+    medicalConditions?: string | null;
+    currentMedications?: string | null;
+  };
+
+  if (!clinicaId || !externalId || !firstName?.trim() || !lastName?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId, firstName y lastName son requeridos' });
+  }
+  if (!rut?.trim()) {
+    // DentalCloud exige RUT (identidad del paciente, único por clínica) — un
+    // paciente creado sin RUT en Dental-Demo-Back no se puede espejar todavía.
+    return res.status(422).json({ error: 'DentalCloud requiere RUT para crear un paciente' });
+  }
+
+  const validAllergyKeys: readonly string[] = ALLERGY_KEYS;
+  const data = {
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
+    rut: rut.trim(),
+    email: email?.trim() || null,
+    phone: phone?.trim() || null,
+    birthDate: birthDate ? new Date(birthDate) : null,
+    heightCm: heightCm ?? null,
+    weightKg: weightKg ?? null,
+    allergies: Array.isArray(allergies) ? allergies.filter((a) => validAllergyKeys.includes(a)) : [],
+    allergyNotes: allergyNotes?.trim() || null,
+    medicalConditions: medicalConditions?.trim() || null,
+    currentMedications: currentMedications?.trim() || null,
+  };
+
+  const existing = await prisma.patient.findUnique({ where: { federatedPatientId: externalId } });
+  if (existing) {
+    const updated = await prisma.patient.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  // El rut es único por clínica: si ya había un paciente local con ese rut
+  // (creado antes de que la clínica se emparejara), lo vinculamos en vez de
+  // duplicar.
+  const byRut = await prisma.patient.findFirst({ where: { clinicaId, rut: data.rut } });
+  if (byRut) {
+    const linked = await prisma.patient.update({
+      where: { id: byRut.id },
+      data: { ...data, federatedPatientId: externalId },
+    });
+    return res.json({ id: linked.id });
+  }
+
+  const created = await prisma.patient.create({ data: { ...data, clinicaId, federatedPatientId: externalId } });
+  return res.status(201).json({ id: created.id });
+}
+
+export async function mirrorAppointment(req: Request, res: Response) {
+  const { clinicaId, patientId, externalId, startAt, endAt, status, notes } = req.body as {
+    clinicaId?: string;
+    patientId?: string;
+    externalId?: string;
+    startAt?: string;
+    endAt?: string;
+    status?: string;
+    notes?: string | null;
+  };
+
+  if (!clinicaId || !patientId || !externalId || !startAt || !endAt) {
+    return res.status(400).json({ error: 'clinicaId, patientId, externalId, startAt y endAt son requeridos' });
+  }
+
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, include: { chairs: true } });
+  const chairId = clinica?.chairs.find((c) => c.name === 'Sillón externo')?.id ?? clinica?.chairs[0]?.id;
+  if (!chairId) {
+    return res.status(422).json({ error: 'La clínica espejo no tiene un sillón disponible para agendar' });
+  }
+
+  const localStatus = status === 'CANCELLED' || status === 'NO_SHOW' ? 'cancelada' : 'agendada';
+  const data = {
+    startAt: new Date(startAt),
+    endAt: new Date(endAt),
+    status: localStatus,
+    notes: notes?.trim() || null,
+  };
+
+  const existing = await prisma.appointment.findUnique({ where: { federatedAppointmentId: externalId } });
+  if (existing) {
+    const updated = await prisma.appointment.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  const created = await prisma.appointment.create({
+    data: {
+      ...data,
+      chairId,
+      patientId,
+      clinicaId,
+      federatedAppointmentId: externalId,
+    },
+  });
+  return res.status(201).json({ id: created.id });
+}
+
+async function recalcTreatmentPlanTotals(treatmentPlanId: string) {
+  const plan = await prisma.treatmentPlan.findUniqueOrThrow({
+    where: { id: treatmentPlanId },
+    include: { items: true },
+  });
+  const amount = plan.items.reduce((sum, i) => sum + i.cost, 0);
+  const status = computeTreatmentStatus(plan.items, plan.status);
+  await prisma.treatmentPlan.update({ where: { id: treatmentPlanId }, data: { amount, status } });
+}
+
+export async function mirrorTreatmentPlan(req: Request, res: Response) {
+  const { patientId, externalId, title, description, planType, status, convenioId, previsionId, professionalName } = req.body as {
+    patientId?: string;
+    externalId?: string;
+    title?: string;
+    description?: string | null;
+    planType?: 'DENTAL' | 'ESTHETIC';
+    status?: string;
+    convenioId?: string;
+    previsionId?: string;
+    professionalName?: string;
+  };
+
+  if (!patientId || !externalId || !title?.trim()) {
+    return res.status(400).json({ error: 'patientId, externalId y title son requeridos' });
+  }
+
+  const patient = await prisma.patient.findUnique({
+    where: { id: patientId },
+    select: { clinicaId: true, clinica: { select: { tipo: true } } },
+  });
+  if (!patient) {
+    return res.status(400).json({ error: 'El paciente indicado no existe' });
+  }
+
+  // convenioId/previsionId ya vienen resueltos al id local de este lado (el
+  // emisor los tradujo vía su propio federatedConvenioId/federatedPrevisionId)
+  // — se valida que existan y sean de la misma clínica antes de enlazarlos.
+  const [convenio, prevision] = await Promise.all([
+    convenioId ? prisma.convenio.findFirst({ where: { id: convenioId, clinicaId: patient.clinicaId } }) : null,
+    previsionId ? prisma.prevision.findFirst({ where: { id: previsionId, clinicaId: patient.clinicaId } }) : null,
+  ]);
+
+  const data = {
+    name: title.trim(),
+    notes: description?.trim() || null,
+    // Sólo "alta" se fuerza — el resto de los estados los deriva
+    // computeTreatmentStatus a partir de los ítems del plan.
+    ...(status === 'alta' ? { status: 'alta' } : {}),
+    ...(convenioId !== undefined ? { convenioId: convenio?.id ?? null } : {}),
+    ...(previsionId !== undefined ? { previsionId: prevision?.id ?? null } : {}),
+    // No hay federación de cuentas de staff — sólo se guarda el nombre como
+    // dato informativo (no un professionalId real).
+    ...(professionalName !== undefined ? { remoteProfessionalName: professionalName?.trim() || null } : {}),
+  };
+
+  const existing = await prisma.treatmentPlan.findUnique({ where: { federatedTreatmentPlanId: externalId } });
+  if (existing) {
+    const updated = await prisma.treatmentPlan.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  // Igual criterio que en la creación humana (treatmentPlansController.ts):
+  // el tipo de diagrama sigue el tipo de la clínica salvo que sea "ambas",
+  // donde recién ahí importa lo que traiga el plan de origen.
+  const diagramType =
+    patient.clinica.tipo === 'ambas' ? (planType === 'ESTHETIC' ? 'estetica' : 'dental') : patient.clinica.tipo === 'estetica' ? 'estetica' : 'dental';
+
+  const created = await prisma.treatmentPlan.create({
+    data: {
+      ...data,
+      patientId,
+      clinicaId: patient.clinicaId,
+      diagramType,
+      federatedTreatmentPlanId: externalId,
+    },
+  });
+  return res.status(201).json({ id: created.id });
+}
+
+export async function mirrorTreatmentItem(req: Request, res: Response) {
+  const {
+    treatmentPlanId,
+    externalId,
+    name,
+    description,
+    tooth,
+    unitPrice,
+    removed,
+    prestacionId,
+    listPrice,
+    convenioDiscountPercent,
+    productName,
+    productLot,
+    productExpiresAt,
+    productQuantity,
+  } = req.body as {
+    treatmentPlanId?: string;
+    externalId?: string;
+    name?: string;
+    description?: string | null;
+    tooth?: string | null;
+    unitPrice?: number;
+    completed?: boolean;
+    removed?: boolean;
+    prestacionId?: string;
+    listPrice?: number;
+    convenioDiscountPercent?: number;
+    productName?: string;
+    productLot?: string;
+    productExpiresAt?: string;
+    productQuantity?: string;
+  };
+
+  if (!treatmentPlanId || !externalId) {
+    return res.status(400).json({ error: 'treatmentPlanId y externalId son requeridos' });
+  }
+
+  const existing = await prisma.treatmentItem.findUnique({ where: { federatedTreatmentItemId: externalId } });
+
+  if (removed) {
+    if (existing) {
+      await prisma.treatmentItem.delete({ where: { id: existing.id } });
+      await recalcTreatmentPlanTotals(treatmentPlanId);
+    }
+    return res.json({ id: existing?.id ?? null });
+  }
+
+  if (!name?.trim()) {
+    return res.status(400).json({ error: 'name es requerido' });
+  }
+
+  // prestacionId ya viene resuelto al id local de este lado (el emisor lo
+  // tradujo vía su propio federatedPrestacionId).
+  const prestacion = prestacionId ? await prisma.prestacion.findUnique({ where: { id: prestacionId } }) : null;
+
+  const data = {
+    description: name.trim(),
+    cost: Math.round(unitPrice ?? 0),
+    listPrice: Math.round(listPrice ?? unitPrice ?? 0),
+    toothNumber: tooth?.trim() || null,
+    notes: description?.trim() || null,
+    completed: Boolean(req.body?.completed),
+    prestacionId: prestacion?.id ?? null,
+    convenioDiscountPercent: Math.round(convenioDiscountPercent ?? 0),
+    productName: productName?.trim() || null,
+    productLot: productLot?.trim() || null,
+    productExpiresAt: productExpiresAt ? new Date(productExpiresAt) : null,
+    productQuantity: productQuantity?.trim() || null,
+  };
+
+  let itemId: string;
+  if (existing) {
+    const updated = await prisma.treatmentItem.update({ where: { id: existing.id }, data });
+    itemId = updated.id;
+  } else {
+    const plan = await prisma.treatmentPlan.findUnique({ where: { id: treatmentPlanId }, select: { clinicaId: true } });
+    if (!plan) {
+      return res.status(400).json({ error: 'El presupuesto indicado no existe' });
+    }
+    const created = await prisma.treatmentItem.create({
+      data: { ...data, treatmentPlanId, clinicaId: plan.clinicaId, federatedTreatmentItemId: externalId },
+    });
+    itemId = created.id;
+  }
+
+  await recalcTreatmentPlanTotals(treatmentPlanId);
+  return res.status(existing ? 200 : 201).json({ id: itemId });
+}
+
+export async function mirrorConvenio(req: Request, res: Response) {
+  const { clinicaId, externalId, name, discountPercent, active } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    name?: string;
+    discountPercent?: number;
+    active?: boolean;
+  };
+
+  if (!clinicaId || !externalId || !name?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId y name son requeridos' });
+  }
+
+  const data = {
+    name: name.trim(),
+    discountPercent: Math.min(100, Math.max(0, Math.round(discountPercent ?? 0))),
+    active: active ?? true,
+  };
+
+  const existing = await prisma.convenio.findUnique({ where: { federatedConvenioId: externalId } });
+  if (existing) {
+    const updated = await prisma.convenio.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  // El nombre es único por clínica: si ya había un convenio local con ese
+  // nombre (creado antes de que la clínica se emparejara, o desde el otro
+  // lado sin id todavía guardado), lo vinculamos en vez de duplicar.
+  const byName = await prisma.convenio.findFirst({ where: { clinicaId, name: data.name } });
+  if (byName) {
+    const linked = await prisma.convenio.update({ where: { id: byName.id }, data: { ...data, federatedConvenioId: externalId } });
+    return res.json({ id: linked.id });
+  }
+
+  const created = await prisma.convenio.create({ data: { ...data, clinicaId, federatedConvenioId: externalId } });
+  return res.status(201).json({ id: created.id });
+}
+
+export async function mirrorPrestacion(req: Request, res: Response) {
+  const { clinicaId, externalId, name, code, basePrice, active, odontogramMode } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    name?: string;
+    code?: string | null;
+    basePrice?: number;
+    active?: boolean;
+    odontogramMode?: string;
+  };
+
+  if (!clinicaId || !externalId || !name?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId y name son requeridos' });
+  }
+
+  const data = {
+    name: name.trim(),
+    code: code?.trim() || null,
+    basePrice: Math.max(0, Math.round(basePrice ?? 0)),
+    active: active ?? true,
+    // Dental-Demo-Back no distingue categoría (todas sus prestaciones son
+    // dentales) — siempre manda un modo válido para esta columna.
+    ...(odontogramMode ? { odontogramMode } : {}),
+  };
+
+  const existing = await prisma.prestacion.findUnique({ where: { federatedPrestacionId: externalId } });
+  if (existing) {
+    const updated = await prisma.prestacion.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  // El código es único por clínica: si ya había una prestación local con ese
+  // código, la vinculamos en vez de duplicar (sólo aplica si viene código).
+  const byCode = data.code
+    ? await prisma.prestacion.findFirst({ where: { clinicaId, code: data.code } })
+    : null;
+  if (byCode) {
+    const linked = await prisma.prestacion.update({ where: { id: byCode.id }, data: { ...data, federatedPrestacionId: externalId } });
+    return res.json({ id: linked.id });
+  }
+
+  const created = await prisma.prestacion.create({ data: { ...data, clinicaId, federatedPrestacionId: externalId } });
+  return res.status(201).json({ id: created.id });
+}
+
+export async function mirrorPrevision(req: Request, res: Response) {
+  const { clinicaId, externalId, name, active } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    name?: string;
+    active?: boolean;
+  };
+
+  if (!clinicaId || !externalId || !name?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId y name son requeridos' });
+  }
+
+  const data = {
+    name: name.trim(),
+    active: active ?? true,
+  };
+
+  const existing = await prisma.prevision.findUnique({ where: { federatedPrevisionId: externalId } });
+  if (existing) {
+    const updated = await prisma.prevision.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  const byName = await prisma.prevision.findFirst({ where: { clinicaId, name: data.name } });
+  if (byName) {
+    const linked = await prisma.prevision.update({ where: { id: byName.id }, data: { ...data, federatedPrevisionId: externalId } });
+    return res.json({ id: linked.id });
+  }
+
+  const created = await prisma.prevision.create({ data: { ...data, clinicaId, federatedPrevisionId: externalId } });
+  return res.status(201).json({ id: created.id });
 }

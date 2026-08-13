@@ -13,6 +13,7 @@ type ConsentPdfInput = {
     signerRut: string | null;
     signerIp: string | null;
     respondedAt: Date | null;
+    signatureUrl?: string | null;
   };
 };
 
@@ -40,6 +41,7 @@ async function downloadLogo(logoUrl: string): Promise<Buffer | null> {
 
 export async function buildConsentPdf({ clinica, patient, consentType, consent }: ConsentPdfInput): Promise<Buffer> {
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
+  const signatureBuffer = consent.signatureUrl ? await downloadLogo(consent.signatureUrl) : null;
 
   const doc = new PDFDocument({ size: 'A4', margin: 56 });
   const chunks: Buffer[] = [];
@@ -86,6 +88,16 @@ export async function buildConsentPdf({ clinica, patient, consentType, consent }
   }
   if (consent.signerIp) {
     doc.text(`IP de origen: ${consent.signerIp}`);
+  }
+
+  if (signatureBuffer) {
+    doc.moveDown(0.8);
+    doc.font('Helvetica-Bold').fontSize(9).text('Firma:');
+    try {
+      doc.image(signatureBuffer, { fit: [220, 90] });
+    } catch {
+      // Formato de imagen no soportado por pdfkit — el resto del PDF sigue igual.
+    }
   }
 
   doc.moveDown(2);

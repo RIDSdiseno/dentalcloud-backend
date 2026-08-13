@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { syncAppointmentToFederation } from '../lib/federationSync';
 
 type AppointmentInput = {
   chairId?: string;
@@ -127,6 +128,11 @@ export async function create(req: Request, res: Response) {
     },
     include,
   });
+
+  syncAppointmentToFederation(appointment).catch((err) => {
+    console.error('No se pudo sincronizar la cita recién creada con Dental-Demo-Back', err);
+  });
+
   return res.status(201).json({ appointment });
 }
 
@@ -140,9 +146,14 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     return res.status(403).json({ error: 'No puedes cancelar una cita de otro profesional' });
   }
 
-  await prisma.appointment.update({
+  const cancelled = await prisma.appointment.update({
     where: { id: req.params.id },
     data: { status: 'cancelada' },
   });
+
+  syncAppointmentToFederation(cancelled).catch((err) => {
+    console.error('No se pudo sincronizar la cancelación de la cita con Dental-Demo-Back', err);
+  });
+
   return res.status(204).send();
 }

@@ -5,6 +5,16 @@ import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
 import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
 import { isDimageConfigured, fetchOdontologosByHolding, fetchRadiologosByHolding } from '../lib/dimageClient';
+import { parseClinicaModules } from '../lib/clinicaModules';
+import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
+import {
+  CLINICA_MODULE_KEYS,
+  parsePermissionOverrides,
+  parseModuleOverrides,
+  mergePermissionOverrides,
+  mergeModuleOverrides,
+} from '../lib/userAccessOverrides';
+import type { ClinicaModuleKey } from '../lib/clinicaModules';
 
 const DIMAGE_SYNCED_ROLES = ['odontologo', 'radiologo'];
 
@@ -197,4 +207,96 @@ export async function importFromDimage(req: Request, res: Response) {
   }
 
   return res.json({ imported });
+}
+
+// Trae, para un usuario puntual de la clínica del admin logueado: el default
+// de su rol/clínica (`permissionDefaults`/`moduleDefaults`), sus excepciones
+// guardadas (`permissionOverrides`/`moduleOverrides`, sólo las llaves que
+// difieren del default) y el resultado ya combinado (`effectivePermissions`/
+// `effectiveModules`) — para que el panel de permisos individuales no tenga
+// que reimplementar el merge que ya hacen `resolvePermissions`/`toPublicUser`.
+export async function getPermissions(req: Request<{ id: string }>, res: Response) {
+  const targetUser = await prisma.user.findFirst({
+    where: { id: req.params.id, clinicaId: req.user!.clinicaId! },
+    select: { id: true, role: true, permissionOverrides: true, moduleOverrides: true },
+  });
+  if (!targetUser) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: req.user!.clinicaId! },
+    select: { rolePermissions: true, modules: true },
+  });
+
+  const allTrue = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Record<PermissionKey, boolean>;
+  const permissionDefaults = isPermissionedRole(targetUser.role)
+    ? parseRolePermissions(clinica?.rolePermissions)[targetUser.role]
+    : allTrue;
+  const moduleDefaults = parseClinicaModules(clinica?.modules);
+
+  const permissionOverrides = parsePermissionOverrides(targetUser.permissionOverrides);
+  const moduleOverrides = parseModuleOverrides(targetUser.moduleOverrides);
+
+  return res.json({
+    role: targetUser.role,
+    isPermissionedRole: isPermissionedRole(targetUser.role),
+    permissionDefaults,
+    moduleDefaults,
+    permissionOverrides,
+    moduleOverrides,
+    effectivePermissions: { ...permissionDefaults, ...permissionOverrides },
+    effectiveModules: { ...moduleDefaults, ...moduleOverrides },
+  });
+}
+
+export async function updatePermissions(req: Request<{ id: string }>, res: Response) {
+  const { permissionOverrides, moduleOverrides } = req.body as {
+    permissionOverrides?: Partial<Record<string, boolean | null>>;
+    moduleOverrides?: Partial<Record<string, boolean | null>>;
+  };
+
+  const targetUser = await prisma.user.findFirst({
+    where: { id: req.params.id, clinicaId: req.user!.clinicaId! },
+    select: { id: true, role: true, permissionOverrides: true, moduleOverrides: true },
+  });
+  if (!targetUser) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+
+  const data: { permissionOverrides?: Record<PermissionKey, boolean>; moduleOverrides?: Record<ClinicaModuleKey, boolean> } = {};
+
+  if (permissionOverrides !== undefined) {
+    if (!isPermissionedRole(targetUser.role)) {
+      return res.status(400).json({ error: 'Este rol siempre tiene acceso completo; no admite excepciones de permisos' });
+    }
+    for (const key of Object.keys(permissionOverrides)) {
+      if (!(PERMISSION_KEYS as readonly string[]).includes(key)) {
+        return res.status(400).json({ error: `Permiso inválido: ${key}` });
+      }
+    }
+    data.permissionOverrides = mergePermissionOverrides(
+      targetUser.permissionOverrides,
+      permissionOverrides as Partial<Record<PermissionKey, boolean | null>>
+    );
+  }
+
+  if (moduleOverrides !== undefined) {
+    for (const key of Object.keys(moduleOverrides)) {
+      if (!(CLINICA_MODULE_KEYS as readonly string[]).includes(key)) {
+        return res.status(400).json({ error: `Módulo inválido: ${key}` });
+      }
+    }
+    data.moduleOverrides = mergeModuleOverrides(
+      targetUser.moduleOverrides,
+      moduleOverrides as Partial<Record<ClinicaModuleKey, boolean | null>>
+    );
+  }
+
+  const updated = await prisma.user.update({ where: { id: targetUser.id }, data });
+
+  return res.json({
+    permissionOverrides: parsePermissionOverrides(updated.permissionOverrides),
+    moduleOverrides: parseModuleOverrides(updated.moduleOverrides),
+  });
 }

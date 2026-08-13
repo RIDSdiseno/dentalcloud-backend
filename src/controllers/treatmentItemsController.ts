@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
 import { computeTreatmentStatus } from '../utils/treatmentStatus';
+import { syncTreatmentItemRemovalToFederation, syncTreatmentItemToFederation } from '../lib/federationSync';
 
 const include = {
   professional: { select: { id: true, name: true } },
@@ -55,7 +56,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
   }
 
-  await prisma.treatmentItem.update({
+  const updatedItem = await prisma.treatmentItem.update({
     where: { id: item.id },
     data: {
       ...(body.description !== undefined ? { description: body.description.trim() } : {}),
@@ -82,6 +83,10 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     },
   });
 
+  syncTreatmentItemToFederation(updatedItem).catch((err) => {
+    console.error('No se pudo sincronizar la edición del procedimiento con Dental-Demo-Back', err);
+  });
+
   const plan = await recalculatePlan(item.treatmentPlanId);
   return res.json({ plan });
 }
@@ -94,6 +99,11 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
 
   const treatmentPlanId = item.treatmentPlanId;
   await prisma.treatmentItem.delete({ where: { id: item.id } });
+
+  syncTreatmentItemRemovalToFederation(item).catch((err) => {
+    console.error('No se pudo sincronizar la eliminación del procedimiento con Dental-Demo-Back', err);
+  });
+
   const plan = await recalculatePlan(treatmentPlanId);
   return res.json({ plan });
 }

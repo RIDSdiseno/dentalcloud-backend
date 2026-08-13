@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation } from '../lib/federationSync';
+import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
 
 export async function listSucursales(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
@@ -82,6 +84,9 @@ export async function createPrevision(req: Request, res: Response) {
     return res.status(409).json({ error: 'Ya existe una previsión con ese nombre' });
   }
   const prevision = await prisma.prevision.create({ data: { name: name.trim(), clinicaId } });
+  syncPrevisionToFederation(prevision).catch((err) => {
+    console.error('No se pudo sincronizar la previsión recién creada con Dental-Demo-Back', err);
+  });
   return res.status(201).json({ prevision });
 }
 
@@ -98,6 +103,9 @@ export async function updatePrevision(req: Request<{ id: string }>, res: Respons
       ...(active !== undefined ? { active } : {}),
     },
   });
+  syncPrevisionToFederation(updated).catch((err) => {
+    console.error('No se pudo sincronizar la edición de la previsión con Dental-Demo-Back', err);
+  });
   return res.json({ prevision: updated });
 }
 
@@ -109,6 +117,13 @@ export async function removePrevision(req: Request<{ id: string }>, res: Respons
   const planCount = await prisma.treatmentPlan.count({ where: { previsionId: req.params.id } });
   if (planCount > 0) {
     return res.status(409).json({ error: 'No se puede eliminar una previsión con presupuestos asociados. Desactívala en su lugar.' });
+  }
+  // Si tiene par federado, lo archivamos allá antes de borrar localmente:
+  // de lo contrario quedaría un espejo activo huérfano en Dental-Demo-Back.
+  if (prevision.federatedPrevisionId) {
+    syncPrevisionToFederation({ ...prevision, active: false }).catch((err) => {
+      console.error('No se pudo archivar el espejo de la previsión eliminada en Dental-Demo-Back', err);
+    });
   }
   await prisma.prevision.delete({ where: { id: req.params.id } });
   return res.status(204).send();
@@ -135,6 +150,9 @@ export async function createConvenio(req: Request, res: Response) {
   }
   const pct = Math.min(100, Math.max(0, Math.round(discountPercent ?? 0)));
   const convenio = await prisma.convenio.create({ data: { name: name.trim(), discountPercent: pct, clinicaId } });
+  syncConvenioToFederation(convenio).catch((err) => {
+    console.error('No se pudo sincronizar el convenio recién creado con Dental-Demo-Back', err);
+  });
   return res.status(201).json({ convenio });
 }
 
@@ -152,6 +170,9 @@ export async function updateConvenio(req: Request<{ id: string }>, res: Response
       ...(active !== undefined ? { active } : {}),
     },
   });
+  syncConvenioToFederation(updated).catch((err) => {
+    console.error('No se pudo sincronizar la edición del convenio con Dental-Demo-Back', err);
+  });
   return res.json({ convenio: updated });
 }
 
@@ -163,6 +184,13 @@ export async function removeConvenio(req: Request<{ id: string }>, res: Response
   const planCount = await prisma.treatmentPlan.count({ where: { convenioId: req.params.id } });
   if (planCount > 0) {
     return res.status(409).json({ error: 'No se puede eliminar un convenio con presupuestos asociados. Desactívalo en su lugar.' });
+  }
+  // Si tiene par federado, lo archivamos allá antes de borrar localmente:
+  // de lo contrario quedaría un espejo activo huérfano en Dental-Demo-Back.
+  if (convenio.federatedConvenioId) {
+    syncConvenioToFederation({ ...convenio, active: false }).catch((err) => {
+      console.error('No se pudo archivar el espejo del convenio eliminado en Dental-Demo-Back', err);
+    });
   }
   await prisma.convenio.delete({ where: { id: req.params.id } });
   return res.status(204).send();
@@ -188,11 +216,23 @@ function sanitizeAllowedZones(allowedZones: unknown): string[] | undefined {
   return allowedZones.filter((z): z is string => typeof z === 'string' && z.trim().length > 0);
 }
 
+function sanitizeCategory(category: unknown): 'dental' | 'estetica' | undefined {
+  if (category === undefined) return undefined;
+  return category === 'estetica' ? 'estetica' : 'dental';
+}
+
+function sanitizeOdontogramMode(mode: unknown): OdontogramMode | undefined {
+  if (typeof mode !== 'string') return undefined;
+  return (ODONTOGRAM_MODES as string[]).includes(mode) ? (mode as OdontogramMode) : undefined;
+}
+
 export async function createPrestacion(req: Request, res: Response) {
-  const { name, code, basePrice, allowedZones } = req.body as {
+  const { name, code, basePrice, category, odontogramMode, allowedZones } = req.body as {
     name?: string;
     code?: string;
     basePrice?: number;
+    category?: unknown;
+    odontogramMode?: unknown;
     allowedZones?: unknown;
   };
   if (!name?.trim()) {
@@ -205,14 +245,25 @@ export async function createPrestacion(req: Request, res: Response) {
       return res.status(409).json({ error: 'Ya existe una prestación con ese código' });
     }
   }
+  const resolvedCategory = sanitizeCategory(category) ?? 'dental';
+  const trimmedName = name.trim();
+  // Si el front no manda un modo explícito (p.ej. una carga masiva), se
+  // sugiere por palabras clave del nombre en vez de forzar siempre 'tooth'.
+  const resolvedMode = sanitizeOdontogramMode(odontogramMode) ?? guessOdontogramMode(trimmedName);
   const prestacion = await prisma.prestacion.create({
     data: {
-      name: name.trim(),
+      name: trimmedName,
       code: code?.trim() || null,
       basePrice: Math.max(0, Math.round(basePrice ?? 0)),
-      allowedZones: sanitizeAllowedZones(allowedZones) ?? [],
+      category: resolvedCategory,
+      odontogramMode: resolvedMode,
+      // Las zonas sólo aplican a prestaciones estéticas; una dental nunca las usa.
+      allowedZones: resolvedCategory === 'estetica' ? sanitizeAllowedZones(allowedZones) ?? [] : [],
       clinicaId,
     },
+  });
+  syncPrestacionToFederation(prestacion).catch((err) => {
+    console.error('No se pudo sincronizar la prestación recién creada con Dental-Demo-Back', err);
   });
   return res.status(201).json({ prestacion });
 }
@@ -222,14 +273,19 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
   if (!prestacion) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
-  const { name, code, basePrice, active, allowedZones } = req.body as {
+  const { name, code, basePrice, active, category, odontogramMode, allowedZones } = req.body as {
     name?: string;
     code?: string | null;
     basePrice?: number;
     active?: boolean;
+    category?: unknown;
+    odontogramMode?: unknown;
     allowedZones?: unknown;
   };
+  const sanitizedCategory = sanitizeCategory(category);
+  const resolvedCategory = sanitizedCategory ?? prestacion.category;
   const sanitizedZones = sanitizeAllowedZones(allowedZones);
+  const sanitizedMode = sanitizeOdontogramMode(odontogramMode);
   const updated = await prisma.prestacion.update({
     where: { id: req.params.id },
     data: {
@@ -237,8 +293,18 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
       ...(code !== undefined ? { code: code?.trim() || null } : {}),
       ...(basePrice !== undefined ? { basePrice: Math.max(0, Math.round(basePrice)) } : {}),
       ...(active !== undefined ? { active } : {}),
-      ...(sanitizedZones !== undefined ? { allowedZones: sanitizedZones } : {}),
+      ...(sanitizedCategory !== undefined ? { category: sanitizedCategory } : {}),
+      ...(sanitizedMode !== undefined ? { odontogramMode: sanitizedMode } : {}),
+      // Si pasa a "dental" (o ya lo era), las zonas quedan vacías: no aplican.
+      ...(resolvedCategory === 'dental'
+        ? { allowedZones: [] }
+        : sanitizedZones !== undefined
+          ? { allowedZones: sanitizedZones }
+          : {}),
     },
+  });
+  syncPrestacionToFederation(updated).catch((err) => {
+    console.error('No se pudo sincronizar la edición de la prestación con Dental-Demo-Back', err);
   });
   return res.json({ prestacion: updated });
 }
@@ -251,6 +317,13 @@ export async function removePrestacion(req: Request<{ id: string }>, res: Respon
   const itemCount = await prisma.treatmentItem.count({ where: { prestacionId: req.params.id } });
   if (itemCount > 0) {
     return res.status(409).json({ error: 'No se puede eliminar una prestación usada en presupuestos. Desactívala en su lugar.' });
+  }
+  // Si tiene par federado, lo archivamos allá antes de borrar localmente:
+  // de lo contrario quedaría un espejo activo huérfano en Dental-Demo-Back.
+  if (prestacion.federatedPrestacionId) {
+    syncPrestacionToFederation({ ...prestacion, active: false }).catch((err) => {
+      console.error('No se pudo archivar el espejo de la prestación eliminada en Dental-Demo-Back', err);
+    });
   }
   await prisma.prestacion.delete({ where: { id: req.params.id } });
   return res.status(204).send();

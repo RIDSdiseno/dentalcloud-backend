@@ -42,6 +42,33 @@ async function snapshotConsentTypePdf(pdfUrl: string, clinicaId: string, consent
   }
 }
 
+function isPngDataUrl(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('data:image/png;base64,') && value.length > 'data:image/png;base64,'.length;
+}
+
+// Firma dibujada por el paciente (canvas) al aceptar — sube el PNG a
+// Cloudinary y devuelve la URL/public_id a guardar en el Consent. Se manda
+// como data URL directamente (sin multer/FormData): más simple para un
+// canvas y evita agregar middleware multipart a las rutas públicas.
+async function uploadConsentSignature(
+  dataUrl: string,
+  clinicaId: string,
+  consentId: string
+): Promise<{ url: string; publicId: string } | null> {
+  try {
+    const result = await cloudinary.uploader.upload(dataUrl, {
+      resource_type: 'image',
+      folder: `dentalcloud/${clinicaId}/firmas-consentimientos`,
+      public_id: consentId,
+      overwrite: true,
+    });
+    return { url: result.secure_url, publicId: result.public_id };
+  } catch (err) {
+    console.error('No se pudo subir la firma del consentimiento', err);
+    return null;
+  }
+}
+
 // Envío best-effort del PDF formal al paciente tras firmar — si falla (correo
 // caído, logo inalcanzable, etc.) se registra el error pero no se revierte ni
 // se falla la respuesta HTTP: el consentimiento ya quedó registrado igual.
@@ -275,11 +302,12 @@ export async function getByToken(req: Request<{ token: string }>, res: Response)
 }
 
 export async function respond(req: Request<{ token: string }>, res: Response) {
-  const { decision, signerName, signerRut, readConfirmed } = req.body as {
+  const { decision, signerName, signerRut, readConfirmed, signatureDataUrl } = req.body as {
     decision?: string;
     signerName?: string;
     signerRut?: string;
     readConfirmed?: boolean;
+    signatureDataUrl?: string;
   };
 
   const consent = await findConsentByToken(req.params.token);
@@ -305,6 +333,20 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
   if (!signerRut || !isValidRut(signerRut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
+  // Obligatoria para aceptar; nunca se pide para rechazar (ver comentario en el schema).
+  if (decision === 'firmado' && !isPngDataUrl(signatureDataUrl)) {
+    return res.status(400).json({ error: 'Debes dibujar tu firma antes de aceptar' });
+  }
+
+  let signature: { url: string; publicId: string } | null = null;
+  if (decision === 'firmado' && signatureDataUrl) {
+    signature = await uploadConsentSignature(signatureDataUrl, consent.clinicaId, consent.id);
+    if (!signature) {
+      // Sin firma no queda respaldo legal del "firmado" — no se registra la
+      // respuesta y se deja que el paciente reintente en vez de aceptar sin ella.
+      return res.status(502).json({ error: 'No se pudo guardar tu firma. Intenta nuevamente.' });
+    }
+  }
 
   const respondedAt = new Date();
   const updated = await prisma.consent.update({
@@ -316,6 +358,7 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
       signerRut: cleanRut(signerRut),
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
+      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
   });
 
@@ -337,11 +380,12 @@ export async function respondInPerson(
   req: Request<{ patientId: string; consentTypeId: string }>,
   res: Response
 ) {
-  const { decision, signerName, signerRut, readConfirmed } = req.body as {
+  const { decision, signerName, signerRut, readConfirmed, signatureDataUrl } = req.body as {
     decision?: string;
     signerName?: string;
     signerRut?: string;
     readConfirmed?: boolean;
+    signatureDataUrl?: string;
   };
 
   const patient = await prisma.patient.findUnique({ where: { id: req.params.patientId } });
@@ -372,6 +416,23 @@ export async function respondInPerson(
   if (!signerRut || !isValidRut(signerRut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
+  // Obligatoria para aceptar; nunca se pide para rechazar (ver comentario en el schema).
+  if (decision === 'firmado' && !isPngDataUrl(signatureDataUrl)) {
+    return res.status(400).json({ error: 'Falta la firma del paciente' });
+  }
+
+  // Se fija el id de antemano (en vez de dejar que Prisma lo genere en el
+  // `create`) para poder subir la firma a Cloudinary con ese mismo id ANTES
+  // del upsert — así, si la subida falla, no se llega a registrar el
+  // consentimiento como "firmado" sin firma.
+  const consentId = existing?.id ?? crypto.randomUUID();
+  let signature: { url: string; publicId: string } | null = null;
+  if (decision === 'firmado' && signatureDataUrl) {
+    signature = await uploadConsentSignature(signatureDataUrl, patient.clinicaId, consentId);
+    if (!signature) {
+      return res.status(502).json({ error: 'No se pudo guardar la firma. Intenta nuevamente.' });
+    }
+  }
 
   const respondedAt = new Date();
   const updated = await prisma.consent.upsert({
@@ -385,8 +446,10 @@ export async function respondInPerson(
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       contentSnapshot: consentType.legalText,
+      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
     create: {
+      id: consentId,
       patientId: patient.id,
       consentTypeId: consentType.id,
       clinicaId: patient.clinicaId,
@@ -398,6 +461,7 @@ export async function respondInPerson(
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       contentSnapshot: consentType.legalText,
+      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
   });
 
