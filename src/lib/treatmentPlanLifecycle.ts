@@ -11,7 +11,11 @@ export const TREATMENT_PLAN_INCLUDE = {
   convenio: true,
   items: {
     orderBy: { createdAt: 'asc' as const },
-    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
+    include: {
+      prestacion: true,
+      treatedBy: { select: { id: true, name: true } },
+      photos: { orderBy: { createdAt: 'asc' as const } },
+    },
   },
   photos: { orderBy: { position: 'asc' as const } },
 } as const;
@@ -64,4 +68,13 @@ export function lifecycleStampsForManualStatusChange(
   actingUserId: string
 ) {
   return lifecycleStamps(plan, nextStatus, actingUserId);
+}
+
+// Un presupuesto "de alta" queda congelado — ninguna acción de edición lo
+// puede tocar (ítems, fotos, motivo de modificación, etc.), solo se puede
+// ver el detalle. Pedido explícito del usuario, ver TreatmentPlanTab.tsx
+// `isAlta`. `computeTreatmentStatus` ya trata "alta" como estado terminal
+// (no se revierte solo), así que una vez alcanzado es intencionalmente final.
+export function isPlanAlta(plan: { status: string }): boolean {
+  return plan.status === 'alta';
 }

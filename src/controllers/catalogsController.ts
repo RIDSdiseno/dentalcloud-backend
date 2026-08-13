@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 
 export async function listSucursales(req: Request, res: Response) {
@@ -188,14 +189,34 @@ function sanitizeAllowedZones(allowedZones: unknown): string[] | undefined {
   return allowedZones.filter((z): z is string => typeof z === 'string' && z.trim().length > 0);
 }
 
+// `raw` es undefined/null cuando el cliente no quiere precio por zona (todas
+// las zonas comparten `basePrice`, comportamiento de siempre). Si es un
+// objeto, se interpreta como "sí, precio por zona" y se completa cualquier
+// zona faltante con `basePrice` — así nunca queda una zona sin precio aunque
+// el cliente mande datos incompletos.
+function sanitizeZonePrices(raw: unknown, zones: string[], basePrice: number): Record<string, number> | null {
+  if (zones.length < 2 || typeof raw !== 'object' || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+  const result: Record<string, number> = {};
+  for (const zone of zones) {
+    const value = obj[zone];
+    result[zone] = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : basePrice;
+  }
+  return result;
+}
+
 export async function createPrestacion(req: Request, res: Response) {
-  const { name, code, basePrice, allowedZones, requiresProductTracking } = req.body as {
-    name?: string;
-    code?: string;
-    basePrice?: number;
-    allowedZones?: unknown;
-    requiresProductTracking?: boolean;
-  };
+  const { name, code, basePrice, allowedZones, requiresProductTracking, appliesToWholeFace, zonesApplyTogether, zonePrices } =
+    req.body as {
+      name?: string;
+      code?: string;
+      basePrice?: number;
+      allowedZones?: unknown;
+      requiresProductTracking?: boolean;
+      appliesToWholeFace?: boolean;
+      zonesApplyTogether?: boolean;
+      zonePrices?: unknown;
+    };
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la prestación es requerido' });
   }
@@ -206,13 +227,23 @@ export async function createPrestacion(req: Request, res: Response) {
       return res.status(409).json({ error: 'Ya existe una prestación con ese código' });
     }
   }
+  const wholeFace = appliesToWholeFace === true;
+  // Si aplica a todo el rostro, las zonas no tienen sentido — se ignoran
+  // aunque el cliente las haya enviado.
+  const finalZones = wholeFace ? [] : sanitizeAllowedZones(allowedZones) ?? [];
+  const finalBasePrice = Math.max(0, Math.round(basePrice ?? 0));
   const prestacion = await prisma.prestacion.create({
     data: {
       name: name.trim(),
       code: code?.trim() || null,
-      basePrice: Math.max(0, Math.round(basePrice ?? 0)),
-      allowedZones: sanitizeAllowedZones(allowedZones) ?? [],
+      basePrice: finalBasePrice,
+      allowedZones: finalZones,
       requiresProductTracking: requiresProductTracking === true,
+      appliesToWholeFace: wholeFace,
+      // Sin efecto con 0 o 1 zona — se guarda false para no dejar un valor
+      // engañoso que no aplica a nada.
+      zonesApplyTogether: zonesApplyTogether === true && finalZones.length > 1,
+      zonePrices: sanitizeZonePrices(zonePrices, finalZones, finalBasePrice) ?? undefined,
       clinicaId,
     },
   });
@@ -224,24 +255,35 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
   if (!prestacion) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
-  const { name, code, basePrice, active, allowedZones, requiresProductTracking } = req.body as {
-    name?: string;
-    code?: string | null;
-    basePrice?: number;
-    active?: boolean;
-    allowedZones?: unknown;
-    requiresProductTracking?: boolean;
-  };
-  const sanitizedZones = sanitizeAllowedZones(allowedZones);
+  const { name, code, basePrice, active, allowedZones, requiresProductTracking, appliesToWholeFace, zonesApplyTogether, zonePrices } =
+    req.body as {
+      name?: string;
+      code?: string | null;
+      basePrice?: number;
+      active?: boolean;
+      allowedZones?: unknown;
+      requiresProductTracking?: boolean;
+      appliesToWholeFace?: boolean;
+      zonesApplyTogether?: boolean;
+      zonePrices?: unknown;
+    };
+  const wholeFace = appliesToWholeFace ?? prestacion.appliesToWholeFace;
+  const sanitizedZones = wholeFace ? [] : sanitizeAllowedZones(allowedZones);
+  const finalZones = sanitizedZones ?? prestacion.allowedZones;
+  const finalTogether = (zonesApplyTogether ?? prestacion.zonesApplyTogether) && finalZones.length > 1;
+  const finalBasePrice = basePrice !== undefined ? Math.max(0, Math.round(basePrice)) : prestacion.basePrice;
   const updated = await prisma.prestacion.update({
     where: { id: req.params.id },
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
       ...(code !== undefined ? { code: code?.trim() || null } : {}),
-      ...(basePrice !== undefined ? { basePrice: Math.max(0, Math.round(basePrice)) } : {}),
+      ...(basePrice !== undefined ? { basePrice: finalBasePrice } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(sanitizedZones !== undefined ? { allowedZones: sanitizedZones } : {}),
       ...(requiresProductTracking !== undefined ? { requiresProductTracking } : {}),
+      ...(appliesToWholeFace !== undefined ? { appliesToWholeFace: wholeFace } : {}),
+      zonesApplyTogether: finalTogether,
+      zonePrices: sanitizeZonePrices(zonePrices, finalZones, finalBasePrice) ?? Prisma.DbNull,
     },
   });
   return res.json({ prestacion: updated });

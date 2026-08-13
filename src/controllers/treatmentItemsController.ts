@@ -1,31 +1,12 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
-import cloudinary from '../lib/cloudinary';
-import { computeTreatmentStatus } from '../utils/treatmentStatus';
-
-const include = {
-  professional: { select: { id: true, name: true } },
-  sucursal: true,
-  prevision: true,
-  convenio: true,
-  items: {
-    orderBy: { createdAt: 'asc' as const },
-    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
-  },
-  photos: { orderBy: { position: 'asc' as const } },
-} as const;
-
-async function recalculatePlan(treatmentPlanId: string) {
-  const plan = await prisma.treatmentPlan.findUniqueOrThrow({ where: { id: treatmentPlanId } });
-  const items = await prisma.treatmentItem.findMany({ where: { treatmentPlanId } });
-  const amount = items.reduce((sum, i) => sum + i.cost, 0);
-  const status = computeTreatmentStatus(items, plan.status);
-  return prisma.treatmentPlan.update({
-    where: { id: treatmentPlanId },
-    data: { amount, status },
-    include,
-  });
-}
+import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
+import {
+  assertCloudinaryConfigured,
+  CloudinaryNotConfiguredError,
+  deleteImageFromCloudinary,
+  uploadImageToCloudinary,
+} from '../lib/cloudinaryUpload';
 
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as {
@@ -39,9 +20,15 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     productExpiresAt?: string | null;
     productQuantity?: string | null;
   };
-  const item = await prisma.treatmentItem.findUnique({ where: { id: req.params.id } });
+  const item = await prisma.treatmentItem.findUnique({
+    where: { id: req.params.id },
+    include: { treatmentPlan: { select: { status: true } } },
+  });
   if (!item) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
+  }
+  if (isPlanAlta(item.treatmentPlan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
 
   await prisma.treatmentItem.update({
@@ -76,9 +63,15 @@ export async function update(req: Request<{ id: string }>, res: Response) {
 }
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
-  const item = await prisma.treatmentItem.findUnique({ where: { id: req.params.id } });
+  const item = await prisma.treatmentItem.findUnique({
+    where: { id: req.params.id },
+    include: { treatmentPlan: { select: { status: true } } },
+  });
   if (!item) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
+  }
+  if (isPlanAlta(item.treatmentPlan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
 
   const treatmentPlanId = item.treatmentPlanId;
@@ -88,38 +81,36 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
 }
 
 export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
-  const item = await prisma.treatmentItem.findUnique({ where: { id: req.params.id } });
+  const item = await prisma.treatmentItem.findUnique({
+    where: { id: req.params.id },
+    include: { treatmentPlan: { select: { status: true } } },
+  });
   if (!item) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
+  }
+  if (isPlanAlta(item.treatmentPlan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'Se requiere un archivo' });
   }
-  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-    return res.status(503).json({
-      error: 'La subida de fotos no está configurada. Falta CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET en el servidor.',
-    });
+  try {
+    assertCloudinaryConfigured();
+  } catch (err) {
+    if (err instanceof CloudinaryNotConfiguredError) return res.status(503).json({ error: err.message });
+    throw err;
   }
   const label = typeof req.body?.label === 'string' ? req.body.label.trim() : '';
 
   try {
-    const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        { resource_type: 'image', folder: `dentalcloud/${item.clinicaId}/treatment-items/${item.id}` },
-        (error, result) => {
-          if (error || !result) return reject(error);
-          resolve(result as { secure_url: string; public_id: string });
-        }
-      );
-      stream.end(file.buffer);
-    });
+    const uploaded = await uploadImageToCloudinary(file.buffer, `dentalcloud/${item.clinicaId}/treatment-items/${item.id}`);
 
     await prisma.treatmentItemPhoto.create({
       data: {
         treatmentItemId: item.id,
-        url: uploadResult.secure_url,
-        publicId: uploadResult.public_id,
+        url: uploaded.url,
+        publicId: uploaded.publicId,
         label: label || null,
         clinicaId: item.clinicaId,
       },
@@ -134,16 +125,18 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
 }
 
 export async function removePhoto(req: Request<{ photoId: string }>, res: Response) {
-  const photo = await prisma.treatmentItemPhoto.findUnique({ where: { id: req.params.photoId } });
+  const photo = await prisma.treatmentItemPhoto.findUnique({
+    where: { id: req.params.photoId },
+    include: { treatmentItem: { select: { treatmentPlanId: true, treatmentPlan: { select: { status: true } } } } },
+  });
   if (!photo) {
     return res.status(404).json({ error: 'Foto no encontrada' });
   }
-
-  try {
-    await cloudinary.uploader.destroy(photo.publicId, { resource_type: 'image' });
-  } catch (err) {
-    console.error('Error eliminando foto de Cloudinary', err);
+  if (isPlanAlta(photo.treatmentItem.treatmentPlan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
+
+  await deleteImageFromCloudinary(photo.publicId);
 
   const item = await prisma.treatmentItem.findUniqueOrThrow({ where: { id: photo.treatmentItemId } });
   await prisma.treatmentItemPhoto.delete({ where: { id: photo.id } });

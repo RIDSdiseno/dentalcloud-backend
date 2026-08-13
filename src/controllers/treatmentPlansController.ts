@@ -1,19 +1,20 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
-import cloudinary from '../lib/cloudinary';
-import { TREATMENT_STATUSES, computeTreatmentStatus } from '../utils/treatmentStatus';
-
-const include = {
-  professional: { select: { id: true, name: true } },
-  sucursal: true,
-  prevision: true,
-  convenio: true,
-  items: {
-    orderBy: { createdAt: 'asc' as const },
-    include: { prestacion: true, photos: { orderBy: { createdAt: 'asc' as const } } },
-  },
-  photos: { orderBy: { position: 'asc' as const } },
-} as const;
+import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
+import {
+  TREATMENT_PLAN_INCLUDE as include,
+  recalculatePlan,
+  lifecycleStampsForManualStatusChange,
+  isPlanAlta,
+} from '../lib/treatmentPlanLifecycle';
+import {
+  assertCloudinaryConfigured,
+  CloudinaryNotConfiguredError,
+  deleteImageFromCloudinary,
+  uploadImageToCloudinary,
+} from '../lib/cloudinaryUpload';
+import { buildTreatmentPlanReportPdf } from '../lib/treatmentPlanReportPdf';
+import { buildTreatmentPlanReportDocx } from '../lib/treatmentPlanReportDocx';
 
 type ItemInput = {
   description?: string;
@@ -169,6 +170,9 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   if (!plan) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
+  if (isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
+  }
   if (body.status && !TREATMENT_STATUSES.includes(body.status)) {
     return res.status(400).json({ error: `El estado debe ser uno de: ${TREATMENT_STATUSES.join(', ')}` });
   }
@@ -192,6 +196,9 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   if (!plan) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
+  if (isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede eliminar' });
+  }
   await prisma.treatmentPlan.delete({ where: { id: req.params.id } });
   return res.status(204).send();
 }
@@ -205,6 +212,9 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
   if (!plan) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
+  }
+  if (isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
 
   await prisma.treatmentItem.create({
@@ -229,40 +239,65 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
   return res.status(201).json({ plan: updated });
 }
 
+// Motivo por el que se modifica un presupuesto que ya está "en tratamiento"
+// (pedido explícito para dejar trazabilidad de quién y por qué) — se guarda
+// como una fila nueva, no se sobrescribe un solo campo, porque un presupuesto
+// se puede modificar más de una vez.
+export async function addEdit(req: Request<{ id: string }>, res: Response) {
+  const body = req.body as { reason?: string };
+  if (!body.reason?.trim()) {
+    return res.status(400).json({ error: 'El motivo de la modificación es requerido' });
+  }
+
+  const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
+  if (!plan) {
+    return res.status(404).json({ error: 'Presupuesto no encontrado' });
+  }
+  if (isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
+  }
+
+  const edit = await prisma.treatmentPlanEdit.create({
+    data: {
+      treatmentPlanId: plan.id,
+      reason: body.reason.trim(),
+      userId: req.user!.sub,
+      clinicaId: plan.clinicaId,
+    },
+    include: { user: { select: { id: true, name: true } } },
+  });
+  return res.status(201).json({ edit });
+}
+
 export async function uploadPlanPhoto(req: Request<{ id: string }>, res: Response) {
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
   if (!plan) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
+  if (isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
+  }
   const file = req.file;
   if (!file) {
     return res.status(400).json({ error: 'Se requiere un archivo' });
   }
-  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-    return res.status(503).json({
-      error: 'La subida de fotos no está configurada. Falta CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET en el servidor.',
-    });
+  try {
+    assertCloudinaryConfigured();
+  } catch (err) {
+    if (err instanceof CloudinaryNotConfiguredError) return res.status(503).json({ error: err.message });
+    throw err;
   }
   const label = typeof req.body?.label === 'string' ? req.body.label.trim() : '';
 
   try {
-    const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        { resource_type: 'image', folder: `dentalcloud/${plan.clinicaId}/treatment-plans/${plan.id}` },
-        (error, result) => {
-          if (error || !result) return reject(error);
-          resolve(result as { secure_url: string; public_id: string });
-        }
-      );
-      stream.end(file.buffer);
-    });
+    const uploaded = await uploadImageToCloudinary(file.buffer, `dentalcloud/${plan.clinicaId}/treatment-plans/${plan.id}`);
 
     const photoCount = await prisma.treatmentPlanPhoto.count({ where: { treatmentPlanId: plan.id } });
     await prisma.treatmentPlanPhoto.create({
       data: {
         treatmentPlanId: plan.id,
-        url: uploadResult.secure_url,
-        publicId: uploadResult.public_id,
+        url: uploaded.url,
+        publicId: uploaded.publicId,
         label: label || null,
         position: photoCount,
         clinicaId: plan.clinicaId,
@@ -278,18 +313,91 @@ export async function uploadPlanPhoto(req: Request<{ id: string }>, res: Respons
 }
 
 export async function removePlanPhoto(req: Request<{ photoId: string }>, res: Response) {
-  const photo = await prisma.treatmentPlanPhoto.findUnique({ where: { id: req.params.photoId } });
+  const photo = await prisma.treatmentPlanPhoto.findUnique({
+    where: { id: req.params.photoId },
+    include: { treatmentPlan: { select: { status: true } } },
+  });
   if (!photo) {
     return res.status(404).json({ error: 'Foto no encontrada' });
   }
-
-  try {
-    await cloudinary.uploader.destroy(photo.publicId, { resource_type: 'image' });
-  } catch (err) {
-    console.error('Error eliminando foto de Cloudinary', err);
+  if (isPlanAlta(photo.treatmentPlan)) {
+    return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
+
+  await deleteImageFromCloudinary(photo.publicId);
 
   await prisma.treatmentPlanPhoto.delete({ where: { id: photo.id } });
   const updated = await prisma.treatmentPlan.update({ where: { id: photo.treatmentPlanId }, data: {}, include });
   return res.json({ plan: updated });
+}
+
+// Informe descargable (PDF o DOCX) de un presupuesto "de alta" — resumen del
+// paciente, prestaciones realizadas y fotos (plantilla + de cada
+// procedimiento). Solo tiene sentido una vez dado de alta (antes el
+// tratamiento sigue en curso), así que se exige ese estado igual que el
+// resto de las acciones de este presupuesto.
+export async function getReport(req: Request<{ id: string }>, res: Response) {
+  const format = req.query.format === 'docx' ? 'docx' : 'pdf';
+
+  const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id }, include });
+  if (!plan) {
+    return res.status(404).json({ error: 'Presupuesto no encontrado' });
+  }
+  if (!isPlanAlta(plan)) {
+    return res.status(403).json({ error: 'El informe solo está disponible una vez que el presupuesto está de alta' });
+  }
+
+  const [patient, clinica] = await Promise.all([
+    prisma.patient.findUnique({ where: { id: plan.patientId } }),
+    prisma.clinica.findUnique({ where: { id: plan.clinicaId } }),
+  ]);
+  if (!patient) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const photos = [
+    ...plan.photos.map((p) => ({ url: p.url, label: p.label })),
+    ...plan.items.flatMap((item) => item.photos.map((p) => ({ url: p.url, label: p.label ? `${item.description} — ${p.label}` : item.description }))),
+  ];
+
+  const input = {
+    clinica: { name: clinica?.name ?? '', logoUrl: clinica?.logoUrl ?? null },
+    patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut, birthDate: patient.birthDate },
+    plan: {
+      number: plan.number,
+      name: plan.name,
+      status: plan.status,
+      amount: plan.amount,
+      notes: plan.notes,
+      createdAt: plan.createdAt,
+      completedAt: plan.completedAt,
+      professional: plan.professional ? { name: plan.professional.name } : null,
+      sucursal: plan.sucursal ? { name: plan.sucursal.name } : null,
+      convenio: plan.convenio ? { name: plan.convenio.name } : null,
+      prevision: plan.prevision ? { name: plan.prevision.name } : null,
+    },
+    items: plan.items.map((item) => ({
+      description: item.description,
+      toothNumber: item.toothNumber,
+      cost: item.cost,
+      completed: item.completed,
+      treatedAt: item.treatedAt,
+      treatedBy: item.treatedBy ? { name: item.treatedBy.name } : null,
+      notes: item.notes,
+    })),
+    photos,
+  };
+
+  const fileNameBase = `informe-presupuesto-${plan.number}`;
+  if (format === 'docx') {
+    const buffer = await buildTreatmentPlanReportDocx(input);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileNameBase}.docx"`);
+    return res.send(buffer);
+  }
+
+  const buffer = await buildTreatmentPlanReportPdf(input);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${fileNameBase}.pdf"`);
+  return res.send(buffer);
 }
