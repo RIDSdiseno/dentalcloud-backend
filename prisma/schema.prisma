@@ -8,94 +8,88 @@ datasource db {
 }
 
 model Clinica {
-  id           String   @id @default(uuid())
-  name         String
-  rut          String?  @unique
-  active       Boolean  @default(true)
-  rxEnabled    Boolean  @default(true)
-  // "dental" | "estetica" | "ambas" — determina paleta de color y flujos disponibles en el front.
-  tipo         String   @default("dental")
-  // País de origen de la clínica. String libre validado en el controller (VALID_PAISES).
-  pais         String   @default("Chile")
-  logoUrl      String?
-  logoPublicId String?
-  // Permisos de módulos adicionales (documentos clínicos, cartola, evoluciones,
-  // observaciones). JSON en vez de columnas separadas para poder sumar nuevos
-  // módulos sin migraciones futuras — ver src/lib/clinicaModules.ts.
-  modules      Json     @default("{\"documentosClinicos\": true, \"cartola\": true, \"evoluciones\": true, \"observaciones\": true}")
-  // Permisos por perfil (odontologo/radiologo/operador) dentro de la clínica —
-  // segundo nivel de control debajo de `modules`, editable por el admin de la
-  // clínica. Ver src/lib/rolePermissions.ts.
-  rolePermissions Json  @default("{}")
-  // Granularidad de los bloques de la agenda (Sillones libres / Agenda general),
-  // en minutos. Debe ser uno de 15/30/60 — validado en el controller.
-  slotDurationMinutes Int @default(15)
-  createdAt    DateTime @default(now())
+  id                         String                      @id @default(uuid())
+  name                       String
+  active                     Boolean                     @default(true)
+  createdAt                  DateTime                    @default(now())
+  rxEnabled                  Boolean                     @default(true)
+  modules                    Json                        @default("{\"cartola\": true, \"evoluciones\": true, \"observaciones\": true, \"documentosClinicos\": true}")
+  tipo                       String                      @default("dental")
+  logoUrl                    String?
+  logoPublicId               String?
+  rut                        String?                     @unique
+  rolePermissions            Json                        @default("{}")
+  pais                       String                      @default("Chile")
+  slotDurationMinutes        Int                         @default(15)
   // Id de la Clinic espejo en Dental-Demo-Back, si esta clínica fue creada (o
   // emparejada) por federación. Null = clínica local, sin par en el otro sistema.
-  federatedClinicId String? @unique
+  federatedClinicId          String?                     @unique
   // Emparejamientos retroactivos de clínicas que ya operaban con datos reales
   // (pacientes/citas propios) sólo deben compartir catálogo (convenios,
   // prestaciones, previsiones) — nunca replicar pacientes/citas/presupuestos
   // reales sin que alguien lo pida explícitamente. Si es true, todo el sync
   // de paciente/cita/presupuesto/ítem se omite aunque haya federatedClinicId.
-  federationCatalogOnly Boolean @default(false)
-
-  users                      User[]
-  chairs                     Chair[]
-  patients                   Patient[]
-  appointments               Appointment[]
-  treatmentPlans             TreatmentPlan[]
-  treatmentItems             TreatmentItem[]
-  treatmentItemPhotos        TreatmentItemPhoto[]
-  treatmentPlanPhotos        TreatmentPlanPhoto[]
-  sucursales                 Sucursal[]
-  previsiones                Prevision[]
-  convenios                  Convenio[]
-  prestaciones               Prestacion[]
+  federationCatalogOnly      Boolean                     @default(false)
   administrativeObservations AdministrativeObservation[]
+  appointments               Appointment[]
+  chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
-  evolutions                 Evolution[]
-  evolutionTemplates         EvolutionTemplate[]
-  ledgerMovements            LedgerMovement[]
-  workSchedules              WorkSchedule[]
   consentTypes               ConsentType[]
   consents                   Consent[]
+  convenios                  Convenio[]
+  evolutionTemplates         EvolutionTemplate[]
+  evolutions                 Evolution[]
+  evolutionPhotos            EvolutionPhoto[]
+  evolutionDeletions         EvolutionDeletion[]
+  ledgerMovements            LedgerMovement[]
+  patients                   Patient[]
+  prestaciones               Prestacion[]
+  previsiones                Prevision[]
+  sucursales                 Sucursal[]
+  treatmentItemPhotos        TreatmentItemPhoto[]
+  treatmentItems             TreatmentItem[]
+  treatmentPlanEdits         TreatmentPlanEdit[]
+  treatmentPlanPhotos        TreatmentPlanPhoto[]
+  treatmentPlans             TreatmentPlan[]
+  users                      User[]
+  workSchedules              WorkSchedule[]
 
   @@map("clinicas")
 }
 
 model User {
-  id                         String                      @id @default(uuid())
-  email                      String                      @unique
-  passwordHash               String
-  name                       String
-  role                       String                      @default("odontologo")
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
-  rut                        String?
-  clinicaId                  String?
+  id                            String                      @id @default(uuid())
+  email                         String                      @unique
+  passwordHash                  String
+  name                          String
+  role                          String                      @default("odontologo")
+  createdAt                     DateTime                    @default(now())
+  updatedAt                     DateTime                    @updatedAt
+  rut                           String?
+  clinicaId                     String?
   // Excepciones de permisos/módulos para ESTE usuario puntual, por encima del
   // default de su rol (`Clinica.rolePermissions`) y del plan de la clínica
   // (`Clinica.modules`). Sólo se guardan las llaves explícitamente distintas
   // del default — null/ausente = hereda el default normal. Ver
   // src/lib/userAccessOverrides.ts.
-  permissionOverrides        Json?
-  moduleOverrides             Json?
-  clinica                    Clinica?                    @relation(fields: [clinicaId], references: [id])
-  administrativeObservations AdministrativeObservation[]
-  appointments               Appointment[]
-  clinicalDocuments          ClinicalDocument[]
-  evolutions                 Evolution[]
-  ledgerMovements            LedgerMovement[]
-  treatmentPlans             TreatmentPlan[]              @relation("TreatmentPlanProfessional")
-  treatmentPlansCreated      TreatmentPlan[]              @relation("TreatmentPlanCreatedBy")
-  treatmentPlansCreatedByUser TreatmentPlan[]             @relation("TreatmentPlanCreatedByUser")
-  treatmentPlansStarted      TreatmentPlan[]              @relation("TreatmentPlanStartedBy")
-  treatmentPlansCompleted    TreatmentPlan[]              @relation("TreatmentPlanCompletedBy")
-  treatmentItemsTreated      TreatmentItem[]
-  workSchedules              WorkSchedule[]
-  consentsSent               Consent[]                   @relation("ConsentsSentBy")
+  permissionOverrides           Json?
+  moduleOverrides               Json?
+  administrativeObservations    AdministrativeObservation[]
+  appointments                  Appointment[]
+  clinicalDocuments             ClinicalDocument[]
+  consentsSent                  Consent[]                   @relation("ConsentsSentBy")
+  evolutions                    Evolution[]
+  evolutionDeletions            EvolutionDeletion[]
+  ledgerMovements               LedgerMovement[]
+  treatmentItemsTreatedBy       TreatmentItem[]
+  treatmentPlanEdits            TreatmentPlanEdit[]
+  treatmentPlansCompletedBy     TreatmentPlan[]             @relation("TreatmentPlanCompletedBy")
+  treatmentPlansCreatedBy       TreatmentPlan[]             @relation("TreatmentPlanCreatedBy")
+  treatmentPlansCreatedByLegacy TreatmentPlan[]             @relation("TreatmentPlanCreatedByLegacy")
+  treatmentPlans                TreatmentPlan[]             @relation("TreatmentPlanProfessional")
+  treatmentPlansStartedBy       TreatmentPlan[]             @relation("TreatmentPlanStartedBy")
+  clinica                       Clinica?                    @relation(fields: [clinicaId], references: [id])
+  workSchedules                 WorkSchedule[]
 
   @@index([clinicaId])
   @@map("users")
@@ -108,8 +102,8 @@ model Chair {
   active        Boolean        @default(true)
   createdAt     DateTime       @default(now())
   clinicaId     String
-  clinica       Clinica        @relation(fields: [clinicaId], references: [id])
   appointments  Appointment[]
+  clinica       Clinica        @relation(fields: [clinicaId], references: [id])
   workSchedules WorkSchedule[]
 
   @@unique([clinicaId, number])
@@ -125,12 +119,6 @@ model Patient {
   email                      String?
   birthDate                  DateTime?
   address                    String?
-  heightCm                   Int?
-  weightKg                   Float?
-  allergies                  String[]                    @default([])
-  allergyNotes               String?
-  medicalConditions          String?
-  currentMedications         String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
@@ -138,14 +126,21 @@ model Patient {
   // está emparejada por federación. Null = paciente sin espejo (aún, o porque
   // su clínica no está emparejada).
   federatedPatientId         String?                     @unique
-  clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
+  allergies                  String[]                    @default([])
+  allergyNotes               String?
+  currentMedications         String?
+  heightCm                   Int?
+  medicalConditions          String?
+  weightKg                   Float?
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   clinicalDocuments          ClinicalDocument[]
-  evolutions                 Evolution[]
-  ledgerMovements            LedgerMovement[]
-  treatmentPlans             TreatmentPlan[]
   consents                   Consent[]
+  evolutions                 Evolution[]
+  evolutionDeletions         EvolutionDeletion[]
+  ledgerMovements            LedgerMovement[]
+  clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
+  treatmentPlans             TreatmentPlan[]
 
   @@unique([clinicaId, rut])
   @@map("patients")
@@ -158,11 +153,9 @@ model ConsentType {
   legalText   String
   active      Boolean   @default(true)
   createdAt   DateTime  @default(now())
-  // PDF propio de la clínica que reemplaza el texto legal (opcional). Si está
-  // seteado, el paciente ve/firma este PDF en vez de `legalText`.
-  pdfUrl      String?
-  pdfPublicId String?
   clinicaId   String
+  pdfPublicId String?
+  pdfUrl      String?
   clinica     Clinica   @relation(fields: [clinicaId], references: [id])
   consents    Consent[]
 
@@ -171,36 +164,31 @@ model ConsentType {
 }
 
 model Consent {
-  id              String      @id @default(uuid())
-  patientId       String
-  patient         Patient     @relation(fields: [patientId], references: [id])
-  consentTypeId   String
-  consentType     ConsentType @relation(fields: [consentTypeId], references: [id])
-  status          String      @default("pendiente")
-  method          String?
-  token           String?     @unique
-  sentAt          DateTime?
-  expiresAt       DateTime?
-  respondedAt     DateTime?
-  signerName      String?
-  signerRut       String?
-  signerIp        String?
-  userAgent       String?
-  sentById        String?
-  sentBy          User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
-  contentSnapshot String?
-  // Copia propia (Cloudinary) del PDF del tipo al momento de enviar/firmar —
-  // independiente del `pdfUrl` "vivo" del ConsentType, para que un reemplazo
-  // posterior del PDF no altere retroactivamente este consentimiento.
-  pdfSnapshotUrl  String?
-  // Firma dibujada por el paciente (canvas) al aceptar — imagen PNG subida a
-  // Cloudinary. Obligatoria para aceptar; nunca se pide para rechazar.
-  signatureUrl      String?
+  id                String      @id @default(uuid())
+  patientId         String
+  consentTypeId     String
+  status            String      @default("pendiente")
+  method            String?
+  token             String?     @unique
+  sentAt            DateTime?
+  expiresAt         DateTime?
+  respondedAt       DateTime?
+  signerName        String?
+  signerRut         String?
+  signerIp          String?
+  userAgent         String?
+  sentById          String?
+  contentSnapshot   String?
+  clinicaId         String
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  pdfSnapshotUrl    String?
   signaturePublicId String?
-  clinicaId       String
-  clinica         Clinica     @relation(fields: [clinicaId], references: [id])
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  signatureUrl      String?
+  clinica           Clinica     @relation(fields: [clinicaId], references: [id])
+  consentType       ConsentType @relation(fields: [consentTypeId], references: [id])
+  patient           Patient     @relation(fields: [patientId], references: [id])
+  sentBy            User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
 
   @@unique([patientId, consentTypeId])
   @@index([clinicaId])
@@ -208,81 +196,61 @@ model Consent {
 }
 
 model TreatmentPlan {
-  id              String           @id @default(uuid())
-  number          Int              @unique @default(autoincrement())
-  patientId       String
-  professionalId  String?
-  // Usuario que efectivamente creó el registro (quien está logueado al crear
-  // el presupuesto) — puede ser distinto de `professionalId`, ya que un
-  // admin puede crear el presupuesto y asignarlo a otro profesional como
-  // diagnosticador.
-  createdById     String?
-  status          String           @default("sin_iniciar")
-  amount          Int              @default(0)
-  notes           String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  convenioId      String?
-  name            String?
-  paymentMethod   String?
-  previsionId     String?
-  sucursalId      String?
-  // "dental" | "estetica" — qué diagrama (odontograma o mapa facial) se usó
-  // para armar este plan. Solo relevante para clínicas con tipo "ambas"; para
-  // clínicas dental/estetica puras coincide siempre con Clinica.tipo.
-  diagramType     String           @default("dental")
-  // Trazos dibujados a mano sobre el mapa facial (frontal/perfil) al crear el
-  // presupuesto — JSON con la forma { frontal, perfilDerecho, perfilIzquierdo },
-  // cada uno un array de Stroke (ver FacialMap.tsx en el frontend).
-  facialAnnotations Json?
-  // Género usado para el mapa facial ("hombre" | "mujer") al crear el
-  // presupuesto — queda fijo una vez guardado (no así piel/músculos, que es
-  // solo una capa visual del mismo par de fotos).
-  facialGender    String?
-  // Ya aplicadas en la base de datos compartida (migración sin versionar de
-  // otro desarrollador, detectada 2026-08-06); se reflejan aquí tal cual
-  // están, sin lógica nueva — trazabilidad del ciclo de vida del presupuesto
-  // (creación/inicio/cierre), distinta de `createdById` de arriba.
-  createdByUserId   String?
-  startedByUserId   String?
-  startedAt         DateTime?
-  completedByUserId String?
-  completedAt       DateTime?
-  clinicaId       String
+  id                       String               @id @default(uuid())
+  number                   Int                  @unique @default(autoincrement())
+  patientId                String
+  professionalId           String?
+  status                   String               @default("sin_iniciar")
+  amount                   Int                  @default(0)
+  notes                    String?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  convenioId               String?
+  name                     String?
+  paymentMethod            String?
+  previsionId              String?
+  sucursalId               String?
+  clinicaId                String
+  diagramType              String               @default("dental")
+  createdById              String?
+  facialAnnotations        Json?
+  facialGender             String?
+  createdByUserId          String?
+  startedByUserId          String?
+  startedAt                DateTime?
+  completedByUserId        String?
+  completedAt              DateTime?
   // Id del TreatmentPlan espejo en Dental-Demo-Back, si el paciente de este
   // presupuesto está emparejado por federación.
-  federatedTreatmentPlanId String? @unique
+  federatedTreatmentPlanId String?              @unique
   // Nombre del profesional a cargo, sólo cuando este plan nació en
   // Dental-Demo-Back — no hay federación de cuentas de staff entre ambos
   // sistemas, así que no existe un `professionalId` real que enlazar; se
   // guarda el nombre como texto puramente informativo (ver `professional`
   // para el vínculo real cuando el plan nació en esta misma plataforma).
-  remoteProfessionalName String?
-  clinica         Clinica              @relation(fields: [clinicaId], references: [id])
-  ledgerMovements LedgerMovement[]
-  items           TreatmentItem[]
-  photos          TreatmentPlanPhoto[]
-  convenio        Convenio?        @relation(fields: [convenioId], references: [id])
-  patient         Patient          @relation(fields: [patientId], references: [id])
-  prevision       Prevision?       @relation(fields: [previsionId], references: [id])
-  professional    User?            @relation("TreatmentPlanProfessional", fields: [professionalId], references: [id])
-  createdBy       User?            @relation("TreatmentPlanCreatedBy", fields: [createdById], references: [id])
-  sucursal        Sucursal?        @relation(fields: [sucursalId], references: [id])
-  createdByUser   User?            @relation("TreatmentPlanCreatedByUser", fields: [createdByUserId], references: [id])
-  startedByUser   User?            @relation("TreatmentPlanStartedBy", fields: [startedByUserId], references: [id])
-  completedByUser User?            @relation("TreatmentPlanCompletedBy", fields: [completedByUserId], references: [id])
+  remoteProfessionalName   String?
+  ledgerMovements          LedgerMovement[]
+  items                    TreatmentItem[]
+  photos                   TreatmentPlanPhoto[]
+  edits                    TreatmentPlanEdit[]
+  clinica                  Clinica              @relation(fields: [clinicaId], references: [id])
+  completedBy              User?                @relation("TreatmentPlanCompletedBy", fields: [completedByUserId], references: [id])
+  convenio                 Convenio?            @relation(fields: [convenioId], references: [id])
+  createdBy                User?                @relation("TreatmentPlanCreatedBy", fields: [createdById], references: [id])
+  createdByLegacy          User?                @relation("TreatmentPlanCreatedByLegacy", fields: [createdByUserId], references: [id])
+  patient                  Patient              @relation(fields: [patientId], references: [id])
+  prevision                Prevision?           @relation(fields: [previsionId], references: [id])
+  professional             User?                @relation("TreatmentPlanProfessional", fields: [professionalId], references: [id])
+  startedBy                User?                @relation("TreatmentPlanStartedBy", fields: [startedByUserId], references: [id])
+  sucursal                 Sucursal?            @relation(fields: [sucursalId], references: [id])
 
   @@index([clinicaId])
   @@map("treatment_plans")
 }
 
-// Plantilla fotográfica del presupuesto (ej. estética facial): fotos ya
-// editadas (zoom/rotación/flip/posición aplicados en el front antes de subir)
-// asociadas al plan completo, no a un procedimiento puntual.
 model TreatmentPlanPhoto {
   id              String        @id @default(uuid())
   treatmentPlanId String
-  treatmentPlan   TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
   url             String
   publicId        String
   label           String?
@@ -290,65 +258,76 @@ model TreatmentPlanPhoto {
   createdAt       DateTime      @default(now())
   clinicaId       String
   clinica         Clinica       @relation(fields: [clinicaId], references: [id])
+  treatmentPlan   TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
 
   @@index([clinicaId])
   @@index([treatmentPlanId])
   @@map("treatment_plan_photos")
 }
 
+// Motivo de cada modificación a un presupuesto ya "en tratamiento" — quién y
+// por qué agregó nuevas prestaciones a algo que ya se empezó a tratar (pedido
+// explícito de auditoría, no solo una confirmación en pantalla). Una fila por
+// cada vez que se modifica, no un solo campo que se sobrescriba.
+model TreatmentPlanEdit {
+  id              String        @id @default(uuid())
+  treatmentPlanId String
+  reason          String
+  userId          String
+  createdAt       DateTime      @default(now())
+  clinicaId       String
+  clinica         Clinica       @relation(fields: [clinicaId], references: [id])
+  treatmentPlan   TreatmentPlan @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
+  user            User          @relation(fields: [userId], references: [id])
+
+  @@index([clinicaId])
+  @@index([treatmentPlanId])
+  @@map("treatment_plan_edits")
+}
+
 model TreatmentItem {
-  id                      String        @id @default(uuid())
-  treatmentPlanId         String
-  description             String
-  cost                    Int           @default(0)
-  completed               Boolean       @default(false)
-  createdAt               DateTime      @default(now())
-  convenioDiscountPercent Int           @default(0)
-  listPrice               Int           @default(0)
-  prestacionId            String?
-  toothNumber             String?
-  // Observación clínica del procedimiento (ej. cantidad de producto usado,
-  // reacción del paciente) — distinta de las notas generales del presupuesto.
-  notes                   String?
-  // Trazabilidad del producto usado (ej. Ácido Hialurónico): nombre, lote,
-  // vencimiento y cantidad — se registran por procedimiento puntual, no por
-  // presupuesto completo, porque un mismo plan puede usar distintos productos.
-  productName             String?
-  productLot              String?
-  productExpiresAt        DateTime?
-  productQuantity         String?
-  // Profesional que efectivamente trató el procedimiento — se registra solo
-  // (usuario logueado) al marcar `completed = true`, y se limpia si se
-  // desmarca. Distinto de `TreatmentPlan.professionalId`, que es quien creó
-  // el presupuesto (puede ser otra persona).
-  treatedById             String?
-  treatedAt               DateTime?
-  clinicaId               String
+  id                       String               @id @default(uuid())
+  treatmentPlanId          String
+  description              String
+  cost                     Int                  @default(0)
+  completed                Boolean              @default(false)
+  createdAt                DateTime             @default(now())
+  convenioDiscountPercent  Int                  @default(0)
+  listPrice                Int                  @default(0)
+  prestacionId             String?
+  toothNumber              String?
+  clinicaId                String
+  notes                    String?
+  productName              String?
+  productLot               String?
+  productExpiresAt         DateTime?
+  productQuantity          String?
+  treatedAt                DateTime?
   // Id del TreatmentPlanItem espejo en Dental-Demo-Back.
-  federatedTreatmentItemId String? @unique
-  clinica                 Clinica              @relation(fields: [clinicaId], references: [id])
-  prestacion              Prestacion?          @relation(fields: [prestacionId], references: [id])
-  treatmentPlan           TreatmentPlan        @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
-  treatedBy               User?                @relation(fields: [treatedById], references: [id])
-  photos                  TreatmentItemPhoto[]
+  federatedTreatmentItemId String?              @unique
+  treatedById              String?
+  photos                   TreatmentItemPhoto[]
+  evolutions               Evolution[]
+  clinica                  Clinica              @relation(fields: [clinicaId], references: [id])
+  prestacion               Prestacion?          @relation(fields: [prestacionId], references: [id])
+  treatedBy                User?                @relation(fields: [treatedById], references: [id])
+  treatmentPlan            TreatmentPlan        @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
 
   @@index([clinicaId])
   @@index([treatmentPlanId])
   @@map("treatment_items")
 }
 
-// Fotografías (ej. antes/después) asociadas a un procedimiento puntual —
-// reutiliza el mismo patrón de subida a Cloudinary que ClinicalDocument.
 model TreatmentItemPhoto {
   id              String        @id @default(uuid())
   treatmentItemId String
-  treatmentItem   TreatmentItem @relation(fields: [treatmentItemId], references: [id], onDelete: Cascade)
   url             String
   publicId        String
   label           String?
   createdAt       DateTime      @default(now())
   clinicaId       String
   clinica         Clinica       @relation(fields: [clinicaId], references: [id])
+  treatmentItem   TreatmentItem @relation(fields: [treatmentItemId], references: [id], onDelete: Cascade)
 
   @@index([clinicaId])
   @@index([treatmentItemId])
@@ -371,98 +350,107 @@ model Sucursal {
 }
 
 model Prevision {
-  id             String          @id @default(uuid())
-  name           String
-  active         Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  clinicaId      String
+  id                   String          @id @default(uuid())
+  name                 String
+  active               Boolean         @default(true)
+  createdAt            DateTime        @default(now())
+  clinicaId            String
   // Id del Prevision espejo en Dental-Demo-Back, si esta clínica está
   // emparejada por federación. Null = previsión local, sin par en el otro sistema.
-  federatedPrevisionId String?    @unique
-  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
-  treatmentPlans TreatmentPlan[]
+  federatedPrevisionId String?         @unique
+  clinica              Clinica         @relation(fields: [clinicaId], references: [id])
+  treatmentPlans       TreatmentPlan[]
 
   @@unique([clinicaId, name])
   @@map("previsiones")
 }
 
 model Convenio {
-  id              String          @id @default(uuid())
-  name            String
-  discountPercent Int             @default(0)
-  active          Boolean         @default(true)
-  createdAt       DateTime        @default(now())
-  clinicaId       String
+  id                  String          @id @default(uuid())
+  name                String
+  discountPercent     Int             @default(0)
+  active              Boolean         @default(true)
+  createdAt           DateTime        @default(now())
+  clinicaId           String
   // Id del ClinicAgreement espejo en Dental-Demo-Back, si esta clínica está
   // emparejada por federación. Null = convenio local, sin par en el otro sistema.
-  federatedConvenioId String?     @unique
-  clinica         Clinica         @relation(fields: [clinicaId], references: [id])
-  treatmentPlans  TreatmentPlan[]
+  federatedConvenioId String?         @unique
+  clinica             Clinica         @relation(fields: [clinicaId], references: [id])
+  treatmentPlans      TreatmentPlan[]
 
   @@unique([clinicaId, name])
   @@map("convenios")
 }
 
 model Prestacion {
-  id        String          @id @default(uuid())
-  code      String?
-  name      String
-  basePrice Int             @default(0)
-  active    Boolean         @default(true)
-
+  id                      String          @id @default(uuid())
+  code                    String?
+  name                    String
+  basePrice               Int             @default(0)
+  active                  Boolean         @default(true)
   // "dental" | "estetica" — sólo relevante para elegir si esta prestación
   // puntual usa el odontograma o el mapa facial en clínicas tipo "ambas".
-  category  String          @default("dental")
-
+  category                String          @default("dental")
   // Modo de selección del odontograma para esta prestación (sólo aplica si
   // category = "dental"): 'session' | 'tooth' | 'surface' | 'extraction' |
   // 'cuadrante' | 'sextante' | 'arcada'. Ver OdontogramMode en el front.
   // Se sugiere automáticamente por palabras clave del nombre al crear/editar
   // (ver odontogramConfig.ts), pero queda guardado y editable — deja de
   // depender de adivinar el modo cada vez que se muestra el odontograma.
-  odontogramMode String       @default("tooth")
-
-  // Zonas del mapa facial (ver facialZoneConfig.ts en el front) donde puede
-  // aplicarse esta prestación — solo relevante cuando category = "estetica".
-  // Array vacío = sin restricción, aplica a cualquier zona (comportamiento
-  // por defecto, y el único que existe para clínicas dentales).
-  allowedZones String[]      @default([])
-  createdAt DateTime        @default(now())
-  // Ya aplicada en la base de datos compartida (migración sin versionar de
-  // otro desarrollador, detectada 2026-08-06); se refleja aquí tal cual está,
-  // sin lógica nueva.
-  requiresProductTracking Boolean @default(false)
-  clinicaId String
+  odontogramMode          String          @default("tooth")
+  createdAt               DateTime        @default(now())
+  clinicaId               String
+  allowedZones            String[]        @default([])
+  requiresProductTracking Boolean         @default(false)
+  // Aplica siempre al rostro completo (ej. limpieza facial) — al elegirla en
+  // un presupuesto no hace falta marcar ninguna zona (equivale al modo
+  // "sesión" del mapa facial, ver facialZoneConfig.ts). Si se marca, no tiene
+  // sentido además restringir `allowedZones` — el catálogo lo oculta.
+  appliesToWholeFace      Boolean         @default(false)
+  // Cuando `allowedZones` tiene 2 o más zonas, decide cómo se usan: si es
+  // true, el tratamiento va siempre en TODAS esas zonas juntas (se
+  // preseleccionan solas, sin clic); si es false (default), son un menú de
+  // opciones y el profesional elige cuáles aplican cada vez. Sin efecto con 0
+  // o 1 zona (sin restricción no aplica; con una sola no hay ambigüedad).
+  zonesApplyTogether      Boolean         @default(false)
+  // Precio distinto por zona (ej. Botox: Cuello $X, Frente $Y, Mentón $Z) —
+  // JSON { [zona]: precio }. Solo tiene efecto con 2+ `allowedZones`; null o
+  // vacío = comportamiento de siempre, un solo `basePrice` sin importar la
+  // zona (pensado para "un mismo implemento cubre varias zonas en la misma
+  // sesión"). Si se define, cada zona DEBE tener su precio — el catálogo lo
+  // valida. El costo de un ítem con 2+ zonas elegidas se calcula sumando el
+  // precio de cada una (ver TreatmentPlanFormModal.tsx).
+  zonePrices              Json?
   // Id del Prestacion espejo en Dental-Demo-Back, si esta clínica está
   // emparejada por federación. Null = prestación local, sin par en el otro sistema.
-  federatedPrestacionId String? @unique
-  clinica   Clinica         @relation(fields: [clinicaId], references: [id])
-  items     TreatmentItem[]
+  federatedPrestacionId   String?         @unique
+  clinica                 Clinica         @relation(fields: [clinicaId], references: [id])
+  items                   TreatmentItem[]
 
   @@unique([clinicaId, code])
   @@map("prestaciones")
 }
 
 model Appointment {
-  id             String   @id @default(uuid())
-  chairId        String
-  patientId      String
-  startAt        DateTime
-  endAt          DateTime
-  notes          String?
-  status         String   @default("agendada")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  professionalId String?
-  type           String   @default("cita")
-  clinicaId      String
+  id                     String   @id @default(uuid())
+  chairId                String
+  patientId              String
+  startAt                DateTime
+  endAt                  DateTime
+  notes                  String?
+  status                 String   @default("agendada")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  professionalId         String?
+  type                   String   @default("cita")
+  clinicaId              String
   // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
   // sincronizada) por federación.
-  federatedAppointmentId String? @unique
-  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
-  chair          Chair    @relation(fields: [chairId], references: [id])
-  patient        Patient  @relation(fields: [patientId], references: [id])
-  professional   User?    @relation(fields: [professionalId], references: [id])
+  federatedAppointmentId String?  @unique
+  chair                  Chair    @relation(fields: [chairId], references: [id])
+  clinica                Clinica  @relation(fields: [clinicaId], references: [id])
+  patient                Patient  @relation(fields: [patientId], references: [id])
+  professional           User?    @relation(fields: [professionalId], references: [id])
 
   @@index([chairId, startAt])
   @@index([professionalId, startAt])
@@ -508,21 +496,81 @@ model ClinicalDocument {
 }
 
 model Evolution {
-  id             String   @id @default(uuid())
-  patientId      String
-  professionalId String
-  content        String
-  enabled        Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  clinicaId      String
-  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
-  patient        Patient  @relation(fields: [patientId], references: [id])
-  professional   User     @relation(fields: [professionalId], references: [id])
+  id               String           @id @default(uuid())
+  patientId        String
+  professionalId   String
+  content          String
+  enabled          Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  clinicaId        String
+  // Procedimiento del presupuesto que esta evolución documenta (opcional —
+  // una evolución también puede ser una nota clínica general, sin ítem
+  // asociado). Al crearla con este campo, el ítem se marca automáticamente
+  // como realizado (ver evolutionsController.ts) — mismo campo `treatedBy`/
+  // `treatedAt` que ya existe si se marca a mano con el checkbox.
+  treatmentItemId  String?
+  // Trazabilidad del producto usado, documentada en el momento de evolucionar
+  // (no al presupuestar) — el presupuesto puede venir de otro sistema (aún
+  // por integrar); lo que realmente se hizo/usó se registra acá. Si hay
+  // `treatmentItemId`, se copia también al ítem para no romper vistas que
+  // todavía leen desde ahí (ver evolutionsController.ts).
+  productName      String?
+  productLot       String?
+  productExpiresAt DateTime?
+  productQuantity  String?
+  clinica          Clinica          @relation(fields: [clinicaId], references: [id])
+  patient          Patient          @relation(fields: [patientId], references: [id])
+  professional     User             @relation(fields: [professionalId], references: [id])
+  treatmentItem    TreatmentItem?   @relation(fields: [treatmentItemId], references: [id])
+  photos           EvolutionPhoto[]
 
   @@index([patientId, createdAt])
   @@index([clinicaId])
+  @@index([treatmentItemId])
   @@map("evolutions")
+}
+
+// Fotos (antes/después, sticker de lote) tomadas al evolucionar — mismo
+// patrón que TreatmentItemPhoto, pero la Evolución es ahora el lugar
+// "oficial" donde documentar lo que realmente se hizo.
+model EvolutionPhoto {
+  id          String    @id @default(uuid())
+  evolutionId String
+  evolution   Evolution @relation(fields: [evolutionId], references: [id], onDelete: Cascade)
+  url         String
+  publicId    String
+  label       String?
+  createdAt   DateTime  @default(now())
+  clinicaId   String
+  clinica     Clinica   @relation(fields: [clinicaId], references: [id])
+
+  @@index([clinicaId])
+  @@index([evolutionId])
+  @@map("evolution_photos")
+}
+
+// Registro de auditoría al borrar una evolución (pedido explícito: se puede
+// borrar, pero solo dando un motivo, y queda trazabilidad de qué decía y
+// quién la borró). Sin relación formal hacia `Evolution` porque esa fila ya
+// no va a existir — se guarda una copia (`content`) al momento de borrar.
+model EvolutionDeletion {
+  id              String   @id @default(uuid())
+  evolutionId     String
+  patientId       String
+  professionalId  String
+  content         String
+  reason          String
+  deletedByUserId String
+  clinicaId       String
+  createdAt       DateTime @default(now())
+  clinica         Clinica  @relation(fields: [clinicaId], references: [id])
+  patient         Patient  @relation(fields: [patientId], references: [id])
+  deletedBy       User     @relation(fields: [deletedByUserId], references: [id])
+
+  @@index([clinicaId])
+  @@index([patientId])
+  @@map("evolution_deletions")
 }
 
 model EvolutionTemplate {
@@ -573,8 +621,8 @@ model WorkSchedule {
   endTime        String
   createdAt      DateTime @default(now())
   clinicaId      String
-  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
   chair          Chair?   @relation(fields: [chairId], references: [id])
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
   professional   User     @relation(fields: [professionalId], references: [id])
 
   @@index([professionalId, weekday])

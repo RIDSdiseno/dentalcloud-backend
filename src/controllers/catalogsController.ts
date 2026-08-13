@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation } from '../lib/federationSync';
 import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
@@ -226,14 +227,45 @@ function sanitizeOdontogramMode(mode: unknown): OdontogramMode | undefined {
   return (ODONTOGRAM_MODES as string[]).includes(mode) ? (mode as OdontogramMode) : undefined;
 }
 
+// `raw` es undefined/null cuando el cliente no quiere precio por zona (todas
+// las zonas comparten `basePrice`, comportamiento de siempre). Si es un
+// objeto, se interpreta como "sí, precio por zona" y se completa cualquier
+// zona faltante con `basePrice` — así nunca queda una zona sin precio aunque
+// el cliente mande datos incompletos.
+function sanitizeZonePrices(raw: unknown, zones: string[], basePrice: number): Record<string, number> | null {
+  if (zones.length < 2 || typeof raw !== 'object' || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+  const result: Record<string, number> = {};
+  for (const zone of zones) {
+    const value = obj[zone];
+    result[zone] = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : basePrice;
+  }
+  return result;
+}
+
 export async function createPrestacion(req: Request, res: Response) {
-  const { name, code, basePrice, category, odontogramMode, allowedZones } = req.body as {
+  const {
+    name,
+    code,
+    basePrice,
+    category,
+    odontogramMode,
+    allowedZones,
+    requiresProductTracking,
+    appliesToWholeFace,
+    zonesApplyTogether,
+    zonePrices,
+  } = req.body as {
     name?: string;
     code?: string;
     basePrice?: number;
     category?: unknown;
     odontogramMode?: unknown;
     allowedZones?: unknown;
+    requiresProductTracking?: boolean;
+    appliesToWholeFace?: boolean;
+    zonesApplyTogether?: boolean;
+    zonePrices?: unknown;
   };
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la prestación es requerido' });
@@ -250,15 +282,26 @@ export async function createPrestacion(req: Request, res: Response) {
   // Si el front no manda un modo explícito (p.ej. una carga masiva), se
   // sugiere por palabras clave del nombre en vez de forzar siempre 'tooth'.
   const resolvedMode = sanitizeOdontogramMode(odontogramMode) ?? guessOdontogramMode(trimmedName);
+  const wholeFace = appliesToWholeFace === true;
+  // Las zonas (y todo lo que depende de ellas) sólo aplican a prestaciones
+  // estéticas; una dental nunca las usa. Si aplica a todo el rostro, las
+  // zonas tampoco tienen sentido — se ignoran aunque el cliente las envíe.
+  const finalZones = resolvedCategory === 'estetica' && !wholeFace ? sanitizeAllowedZones(allowedZones) ?? [] : [];
+  const finalBasePrice = Math.max(0, Math.round(basePrice ?? 0));
   const prestacion = await prisma.prestacion.create({
     data: {
       name: trimmedName,
       code: code?.trim() || null,
-      basePrice: Math.max(0, Math.round(basePrice ?? 0)),
+      basePrice: finalBasePrice,
       category: resolvedCategory,
       odontogramMode: resolvedMode,
-      // Las zonas sólo aplican a prestaciones estéticas; una dental nunca las usa.
-      allowedZones: resolvedCategory === 'estetica' ? sanitizeAllowedZones(allowedZones) ?? [] : [],
+      allowedZones: finalZones,
+      requiresProductTracking: requiresProductTracking === true,
+      appliesToWholeFace: wholeFace,
+      // Sin efecto con 0 o 1 zona — se guarda false para no dejar un valor
+      // engañoso que no aplica a nada.
+      zonesApplyTogether: zonesApplyTogether === true && finalZones.length > 1,
+      zonePrices: sanitizeZonePrices(zonePrices, finalZones, finalBasePrice) ?? undefined,
       clinicaId,
     },
   });
@@ -273,7 +316,19 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
   if (!prestacion) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
-  const { name, code, basePrice, active, category, odontogramMode, allowedZones } = req.body as {
+  const {
+    name,
+    code,
+    basePrice,
+    active,
+    category,
+    odontogramMode,
+    allowedZones,
+    requiresProductTracking,
+    appliesToWholeFace,
+    zonesApplyTogether,
+    zonePrices,
+  } = req.body as {
     name?: string;
     code?: string | null;
     basePrice?: number;
@@ -281,17 +336,26 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
     category?: unknown;
     odontogramMode?: unknown;
     allowedZones?: unknown;
+    requiresProductTracking?: boolean;
+    appliesToWholeFace?: boolean;
+    zonesApplyTogether?: boolean;
+    zonePrices?: unknown;
   };
   const sanitizedCategory = sanitizeCategory(category);
   const resolvedCategory = sanitizedCategory ?? prestacion.category;
-  const sanitizedZones = sanitizeAllowedZones(allowedZones);
   const sanitizedMode = sanitizeOdontogramMode(odontogramMode);
+  const wholeFace = appliesToWholeFace ?? prestacion.appliesToWholeFace;
+  // Las zonas sólo aplican a prestaciones estéticas sin "todo el rostro".
+  const sanitizedZones = resolvedCategory === 'dental' ? [] : wholeFace ? [] : sanitizeAllowedZones(allowedZones);
+  const finalZones = sanitizedZones ?? prestacion.allowedZones;
+  const finalTogether = (zonesApplyTogether ?? prestacion.zonesApplyTogether) && finalZones.length > 1;
+  const finalBasePrice = basePrice !== undefined ? Math.max(0, Math.round(basePrice)) : prestacion.basePrice;
   const updated = await prisma.prestacion.update({
     where: { id: req.params.id },
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
       ...(code !== undefined ? { code: code?.trim() || null } : {}),
-      ...(basePrice !== undefined ? { basePrice: Math.max(0, Math.round(basePrice)) } : {}),
+      ...(basePrice !== undefined ? { basePrice: finalBasePrice } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(sanitizedCategory !== undefined ? { category: sanitizedCategory } : {}),
       ...(sanitizedMode !== undefined ? { odontogramMode: sanitizedMode } : {}),
@@ -301,6 +365,10 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
         : sanitizedZones !== undefined
           ? { allowedZones: sanitizedZones }
           : {}),
+      ...(requiresProductTracking !== undefined ? { requiresProductTracking } : {}),
+      ...(appliesToWholeFace !== undefined ? { appliesToWholeFace: wholeFace } : {}),
+      zonesApplyTogether: finalTogether,
+      zonePrices: sanitizeZonePrices(zonePrices, finalZones, finalBasePrice) ?? Prisma.DbNull,
     },
   });
   syncPrestacionToFederation(updated).catch((err) => {

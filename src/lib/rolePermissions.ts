@@ -11,8 +11,15 @@ export function isPermissionedRole(role: string): role is PermissionedRole {
 }
 
 // Las 8 pantallas de `Clinica.modules` + Rx (que se controla aparte, vía
-// `Clinica.rxEnabled`, pero también necesita su propio permiso por perfil).
-export const PERMISSION_KEYS = [...(Object.keys(CLINICA_MODULE_LABELS) as ClinicaModuleKey[]), 'rx'] as const;
+// `Clinica.rxEnabled`, pero también necesita su propio permiso por perfil) +
+// permisos de acción puntuales que no son "ver una pantalla completa" sino
+// "hacer algo específico dentro de ella" (ej. crear presupuestos, ver
+// treatmentPlansController.ts).
+export const PERMISSION_KEYS = [
+  ...(Object.keys(CLINICA_MODULE_LABELS) as ClinicaModuleKey[]),
+  'rx',
+  'crearPresupuestos',
+] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
 export type RolePermissions = Record<PermissionedRole, Record<PermissionKey, boolean>>;
@@ -31,6 +38,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
 export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   ...CLINICA_MODULE_LABELS,
   rx: 'Módulo Rx',
+  crearPresupuestos: 'Crear presupuestos',
 };
 
 // Mismo espíritu que `parseClinicaModules`: rellena cualquier rol/llave
