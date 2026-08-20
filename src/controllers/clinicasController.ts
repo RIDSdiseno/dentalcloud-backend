@@ -15,7 +15,6 @@ import {
 } from '../lib/federationClient';
 import { syncClinicaActiveStateToFederation, syncClinicaToFederation } from '../lib/federationSync';
 import { computeTreatmentStatus } from '../utils/treatmentStatus';
-import { VALID_ROLES } from './usersController';
 
 export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
@@ -676,63 +675,6 @@ export async function mirrorPatient(req: Request, res: Response) {
   }
 
   const created = await prisma.patient.create({ data: { ...data, clinicaId, federatedPatientId: externalId } });
-  return res.status(201).json({ id: created.id });
-}
-
-export async function mirrorUser(req: Request, res: Response) {
-  const { clinicaId, externalId, name, email, role, password } = req.body as {
-    clinicaId?: string;
-    externalId?: string;
-    name?: string;
-    email?: string;
-    role?: string;
-    password?: string | null;
-  };
-
-  if (!clinicaId || !externalId || !name?.trim() || !email?.trim()) {
-    return res.status(400).json({ error: 'clinicaId, externalId, name y email son requeridos' });
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  const safeRole = role && VALID_ROLES.includes(role) ? role : 'odontologo';
-
-  const existingByFederatedId = await prisma.user.findUnique({ where: { federatedUserId: externalId } });
-  if (existingByFederatedId) {
-    const updated = await prisma.user.update({
-      where: { id: existingByFederatedId.id },
-      data: { name: name.trim(), role: safeRole },
-    });
-    return res.json({ id: updated.id });
-  }
-
-  // El email es único: si ya había un usuario local con ese email (creado
-  // antes de que esta cuenta se emparejara), lo vinculamos en vez de
-  // duplicar — mismo criterio que mirrorPatient con el rut.
-  const existingByEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (existingByEmail) {
-    const linked = await prisma.user.update({
-      where: { id: existingByEmail.id },
-      data: { name: name.trim(), role: safeRole, federatedUserId: externalId },
-    });
-    return res.json({ id: linked.id });
-  }
-
-  // Igual que en mirrorClinica: si esta llamada llegó por un reintento (falló
-  // la primera vez) ya no hay contraseña en texto plano disponible — se
-  // genera una temporal en su lugar.
-  const passwordToUse = password?.trim() || randomBytes(12).toString('hex');
-  const passwordHash = await bcrypt.hash(passwordToUse, 10);
-
-  const created = await prisma.user.create({
-    data: {
-      name: name.trim(),
-      email: normalizedEmail,
-      passwordHash,
-      role: safeRole,
-      clinicaId,
-      federatedUserId: externalId,
-    },
-  });
   return res.status(201).json({ id: created.id });
 }
 
