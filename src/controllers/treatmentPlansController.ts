@@ -405,6 +405,7 @@ export async function getReport(req: Request<{ id: string }>, res: Response) {
       number: plan.number,
       name: plan.name,
       status: plan.status,
+      diagramType: plan.diagramType === 'estetica' ? ('estetica' as const) : ('dental' as const),
       amount: plan.amount,
       notes: plan.notes,
       createdAt: plan.createdAt,

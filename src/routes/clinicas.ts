@@ -42,6 +42,7 @@ router.get('/pacientes', requireFederationOrSuperAdmin, listAllPatients);
 router.get('/citas', requireFederationOrSuperAdmin, listAllAppointments);
 router.post('/federated/mirror', requireFederationOrSuperAdmin, mirrorClinica);
 router.post('/federated/patients/mirror', requireFederationOrSuperAdmin, mirrorPatient);
+router.post('/federated/users/mirror', requireFederationOrSuperAdmin, mirrorUser);
 router.post('/federated/appointments/mirror', requireFederationOrSuperAdmin, mirrorAppointment);
 router.post('/federated/treatment-plans/mirror', requireFederationOrSuperAdmin, mirrorTreatmentPlan);
 router.post('/federated/treatment-plans/items/mirror', requireFederationOrSuperAdmin, mirrorTreatmentItem);

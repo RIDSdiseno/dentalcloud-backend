@@ -71,7 +71,7 @@ async function tryDimageSync(user: { rut: string | null; name: string; email: st
   }
 }
 
-const VALID_ROLES = ['admin', 'odontologo', 'radiologo', 'operador'];
+export const VALID_ROLES = ['admin', 'odontologo', 'radiologo', 'operador'];
 
 function toPublicUser(user: {
   id: string;

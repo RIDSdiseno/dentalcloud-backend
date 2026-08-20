@@ -67,6 +67,10 @@ model User {
   updatedAt                     DateTime                    @updatedAt
   rut                           String?
   clinicaId                     String?
+  // Id del usuario espejo en DentalOS (Clinica) — sólo se llena para
+  // profesionales federados desde el Administrador (ver mirrorUser en
+  // clinicasController.ts).
+  federatedUserId               String?                     @unique
   // Excepciones de permisos/módulos para ESTE usuario puntual, por encima del
   // default de su rol (`Clinica.rolePermissions`) y del plan de la clínica
   // (`Clinica.modules`). Sólo se guardan las llaves explícitamente distintas
