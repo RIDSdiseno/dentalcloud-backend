@@ -1,6 +1,8 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { syncAppointmentToFederation } from '../lib/federationSync';
+import { sendMail } from '../lib/mailer';
+import { buildAppointmentConfirmationEmailHtml } from '../lib/emailTemplates/appointmentEmail';
 
 type AppointmentInput = {
   chairId?: string;
@@ -14,9 +16,33 @@ type AppointmentInput = {
 
 const APPOINTMENT_TYPES = ['cita', 'control'];
 
+async function sendAppointmentBookedEmail(appointment: {
+  clinicaId: string;
+  startAt: Date;
+  patient: { firstName: string; email: string | null };
+  professional: { name: string } | null;
+}) {
+  if (!appointment.patient.email) return;
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: appointment.clinicaId },
+    select: { name: true, logoUrl: true },
+  });
+  await sendMail({
+    to: appointment.patient.email,
+    subject: `Confirmación de tu cita – ${clinica?.name ?? 'fordentcloud'}`,
+    html: buildAppointmentConfirmationEmailHtml({
+      patientFirstName: appointment.patient.firstName,
+      professionalName: appointment.professional?.name ?? 'Por confirmar',
+      startAt: appointment.startAt,
+      clinicaNombre: clinica?.name ?? 'fordentcloud',
+      clinicaLogoUrl: clinica?.logoUrl,
+    }),
+  });
+}
+
 const include = {
   patient: {
-    select: { id: true, rut: true, firstName: true, lastName: true, phone: true },
+    select: { id: true, rut: true, firstName: true, lastName: true, phone: true, email: true },
   },
   professional: {
     select: { id: true, name: true },
@@ -131,6 +157,13 @@ export async function create(req: Request, res: Response) {
 
   syncAppointmentToFederation(appointment).catch((err) => {
     console.error('No se pudo sincronizar la cita recién creada con Dental-Demo-Back', err);
+  });
+
+  // Best-effort: avisa al paciente por correo el día/hora y con qué
+  // profesional quedó agendado. No bloquea ni falla la creación si el
+  // paciente no tiene correo registrado o si el envío falla.
+  sendAppointmentBookedEmail(appointment).catch((err) => {
+    console.error('No se pudo enviar el correo de confirmación de la cita', err);
   });
 
   return res.status(201).json({ appointment });
