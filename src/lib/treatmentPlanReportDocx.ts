@@ -72,6 +72,10 @@ export async function buildTreatmentPlanReportDocx({ clinica, patient, plan, ite
     photos.map(async (p) => ({ label: p.label, type: guessImageType(p.url), buffer: await downloadImage(p.url) }))
   );
 
+  const isEstetica = plan.diagramType === 'estetica';
+  const subtitle = isEstetica ? 'INFORME DE TRATAMIENTO ESTÉTICO' : 'INFORME DE TRATAMIENTO ODONTOLÓGICO';
+  const zonaColumnLabel = isEstetica ? 'Zona' : 'Pieza';
+
   const tags = [plan.sucursal?.name, plan.convenio?.name, plan.prevision?.name].filter((t): t is string => Boolean(t));
   const itemsWithNotes = items.filter((i) => i.notes?.trim());
 
@@ -80,7 +84,7 @@ export async function buildTreatmentPlanReportDocx({ clinica, patient, plan, ite
     rows: [
       new TableRow({
         tableHeader: true,
-        children: ['Prestación', 'Zona/pieza', 'Fecha', 'Realizado por', 'Costo'].map(
+        children: ['Prestación', zonaColumnLabel, 'Fecha', 'Realizado por', 'Costo'].map(
           (label) =>
             new TableCell({
               shading: { fill: 'EFF6FF' },
@@ -194,7 +198,7 @@ export async function buildTreatmentPlanReportDocx({ clinica, patient, plan, ite
         children: [
           new Paragraph({ children: [new TextRun({ text: clinica.name, bold: true, size: 32 })] }),
           new Paragraph({
-            children: [new TextRun({ text: 'INFORME DE TRATAMIENTO', bold: true, size: 20, color: '2563EB' })],
+            children: [new TextRun({ text: subtitle, bold: true, size: 20, color: '2563EB' })],
             spacing: { after: 200 },
           }),
           infoTable,

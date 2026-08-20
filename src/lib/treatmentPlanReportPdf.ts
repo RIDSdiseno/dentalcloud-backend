@@ -10,13 +10,10 @@ const COLORS = {
   primaryLight: '#4A90D9',   // Azul medio
   primaryLighter: '#E8F0FE', // Azul muy claro
   secondary: '#2C3E50',      // Gris oscuro
-  accent: '#E74C3C',         // Rojo para totales
-  success: '#27AE60',        // Verde para completado
   text: '#1A1A2E',          // Texto principal
   textLight: '#4A4A5A',     // Texto secundario
   textMuted: '#7F8C8D',     // Texto terciario
   border: '#D5D8DC',        // Bordes
-  background: '#F8F9FA',    // Fondo general
   cardBg: '#FFFFFF',        // Fondo tarjetas
   headerBg: '#0A5C8A',      // Fondo encabezado tabla
   zebraLight: '#F7F9FC',    // Fila zebra clara
@@ -154,27 +151,35 @@ function drawProfessionalTable(
   }
   
   doc.font(FONTS.body).fillColor(COLORS.text);
+  // Cada celda se dibujó con una x absoluta (columna por columna) — sin este
+  // reset, `doc.x` queda en la última columna dibujada y cualquier `.text()`
+  // posterior que no pase su propia x (solo `{width, align}`) arranca desde
+  // ahí en vez del margen, y se corre fuera de la página.
+  doc.x = startX;
   doc.moveDown(1.2);
 }
 
-function drawSectionTitle(doc: PDFKit.PDFDocument, title: string, icon?: string) {
+function drawSectionTitle(doc: PDFKit.PDFDocument, title: string) {
   const y = doc.y;
-  const padding = 6;
-  
+
   // Línea decorativa
   doc.rect(doc.page.margins.left, y + 6, 40, 2)
      .fill(COLORS.primary);
-  
+
   doc.rect(doc.page.margins.left + 44, y + 8, 20, 1)
      .fill(COLORS.primaryLight);
-  
+
   // Título
   doc.font(FONTS.heading)
      .fontSize(13)
      .fillColor(COLORS.secondary)
      .text(title, doc.page.margins.left + 50, y);
-  
+
   doc.fillColor(COLORS.text);
+  // Mismo motivo que en drawProfessionalTable: el título se dibuja con x
+  // desplazada (deja espacio para el ícono decorativo) — no debe quedar como
+  // punto de partida para el contenido que sigue.
+  doc.x = doc.page.margins.left;
   doc.moveDown(0.6);
 }
 
@@ -212,15 +217,19 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
     photos.map(async (p) => ({ label: p.label, buffer: await downloadImage(p.url) }))
   );
 
-  const doc = new PDFDocument({ 
-    size: 'A4', 
+  const isEstetica = plan.diagramType === 'estetica';
+  const subtitle = isEstetica ? 'INFORME DE TRATAMIENTO ESTÉTICO' : 'INFORME DE TRATAMIENTO ODONTOLÓGICO';
+  const zonaColumnLabel = isEstetica ? 'Zona' : 'Pieza';
+
+  const doc = new PDFDocument({
+    size: 'A4',
     margin: 40,
     bufferPages: true,
     info: {
       Title: `Informe Tratamiento #${plan.number}`,
       Author: clinica.name,
-      Subject: 'Informe de tratamiento odontológico',
-      Keywords: 'tratamiento, odontología, informe',
+      Subject: isEstetica ? 'Informe de tratamiento estético' : 'Informe de tratamiento odontológico',
+      Keywords: isEstetica ? 'tratamiento, estética, informe' : 'tratamiento, odontología, informe',
     }
   });
   
@@ -270,7 +279,7 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
   doc.font(FONTS.subheading)
      .fontSize(9)
      .fillColor(COLORS.primaryLight)
-     .text('INFORME DE TRATAMIENTO ODONTOLÓGICO', doc.page.margins.left, headerY + 26, {
+     .text(subtitle, doc.page.margins.left, headerY + 26, {
        width: contentWidth - logoSlot,
      });
 
@@ -303,7 +312,6 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
   const col1 = doc.page.margins.left + 16;
   const col2 = doc.page.margins.left + contentWidth * 0.38;
   const col3 = doc.page.margins.left + contentWidth * 0.70;
-  const rowGap = 24;
 
   // Columna 1: Paciente
   doc.font(FONTS.bodyBold)
@@ -373,13 +381,22 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
        .text(formatReportDate(plan.completedAt), col3, cardY + 78);
   }
 
+  // pdfkit deja `doc.x` clavado en la última posición absoluta usada (col3,
+  // de las columnas de la tarjeta) — sin este reset, los `.text()` de más
+  // abajo que solo pasan `{width, align}` (sin x/y explícitos) arrancan desde
+  // col3 en vez del margen izquierdo, y con `width: contentWidth` desde ahí
+  // se salen de la página (se veía cortado el texto de "Profesional...").
+  doc.x = doc.page.margins.left;
   doc.y = cardY + cardHeight + 18;
 
   // ============ ETIQUETAS (Sucursal, Convenio, Previsión) ============
+  // Sin emoji a propósito: las fuentes estándar de pdfkit (Helvetica) solo
+  // cubren WinAnsi/Latin-1 — cualquier carácter fuera de ese rango (emoji,
+  // ✓/○, etc.) se renderiza como basura ilegible en vez del glifo esperado.
   const tags = [
-    plan.sucursal?.name ? `📍 ${plan.sucursal.name}` : null,
-    plan.convenio?.name ? `🏛️ ${plan.convenio.name}` : null,
-    plan.prevision?.name ? `🩺 ${plan.prevision.name}` : null,
+    plan.sucursal?.name ? `Sucursal: ${plan.sucursal.name}` : null,
+    plan.convenio?.name ? `Convenio: ${plan.convenio.name}` : null,
+    plan.prevision?.name ? `Previsión: ${plan.prevision.name}` : null,
   ].filter((t): t is string => Boolean(t));
 
   if (tags.length > 0) {
@@ -412,13 +429,16 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
     doc,
     [
       { key: 'item', label: 'Prestación', width: 165 },
-      { key: 'zona', label: 'Zona/Pieza', width: 85 },
+      { key: 'zona', label: zonaColumnLabel, width: 85 },
       { key: 'fecha', label: 'Fecha', width: 75 },
       { key: 'profesional', label: 'Realizado por', width: 100 },
       { key: 'costo', label: 'Costo', width: 85, align: 'right' },
     ],
     items.map((item) => ({
-      item: item.completed ? `✓ ${item.description}` : `○ ${item.description}`,
+      // Sin glifo ✓/○ (ver nota más arriba sobre WinAnsi) — se indica en
+      // texto plano solo cuando falta, ya que este informe es de un
+      // presupuesto "de alta" y se espera que todo esté realizado.
+      item: item.completed ? item.description : `${item.description} (pendiente)`,
       zona: item.toothNumber || '—',
       fecha: item.treatedAt ? formatReportDate(item.treatedAt) : '—',
       profesional: item.treatedBy?.name || '—',
@@ -439,32 +459,49 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
     drawSectionTitle(doc, 'Notas Clínicas');
     
     itemsWithNotes.forEach((item, index) => {
+      const noteText = item.notes || '';
+      const noteWidth = contentWidth - 24;
+      // Altura REAL que pdfkit va a usar para el texto (antes se estimaba a
+      // ojo con `texto.length / 120 * 16`, que no coincide con el ajuste de
+      // línea real — la nota se superponía con el ítem siguiente en cuanto
+      // el texto no calzaba con esa aproximación).
+      const noteHeight = doc.heightOfString(noteText, { width: noteWidth, lineGap: 2 });
+      const blockHeight = 20 + noteHeight + 12;
+
+      // Si el bloque no entra en lo que queda de página, se pasa a la
+      // siguiente ANTES de dibujar nada — si no, el número/título quedan en
+      // una página y el contenido de la nota en la otra.
+      if (doc.y + blockHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+      }
+
       const y = doc.y;
       // Número de ítem
       doc.rect(doc.page.margins.left, y + 1, 18, 18)
          .fill(COLORS.primaryLighter);
-      
+
       doc.font(FONTS.bodyBold)
          .fontSize(8)
          .fillColor(COLORS.primary)
          .text((index + 1).toString(), doc.page.margins.left + 6, y + 4);
-      
+
       // Título de la nota
       doc.font(FONTS.bodyBold)
          .fontSize(9.5)
          .fillColor(COLORS.secondary)
          .text(item.description, doc.page.margins.left + 24, y + 2);
-      
+
       // Contenido de la nota
       doc.font(FONTS.body)
          .fontSize(9)
          .fillColor(COLORS.textLight)
-         .text(item.notes || '', doc.page.margins.left + 24, y + 20, {
-           width: contentWidth - 24,
+         .text(noteText, doc.page.margins.left + 24, y + 20, {
+           width: noteWidth,
            lineGap: 2,
          });
-      
-      doc.y = y + 20 + (item.notes?.length || 0) / 120 * 16 + 12;
+
+      doc.y = y + blockHeight;
+      doc.x = doc.page.margins.left;
     });
     
     doc.moveDown(0.6);
@@ -538,14 +575,15 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
           valign: 'center' 
         });
       } catch {
-        // Error al cargar imagen - mostrar placeholder
+        // Error al cargar imagen - mostrar placeholder (texto plano, sin
+        // emoji — ver nota sobre WinAnsi más arriba en este archivo).
         doc.rect(x + 2, y + 2, cellWidth - 4, cellHeight - 4)
            .fill('#F0F0F0');
         doc.font(FONTS.body)
            .fontSize(8)
            .fillColor(COLORS.textMuted)
-           .text('📷', x + cellWidth/2 - 10, y + cellHeight/2 - 10, {
-             width: 20,
+           .text('Sin imagen', x + 2, y + cellHeight / 2 - 5, {
+             width: cellWidth - 4,
              align: 'center',
            });
       }
@@ -568,10 +606,15 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
   }
 
   // ============ FOOTER ============
+  // Mismo motivo que los resets anteriores: si el presupuesto no tiene fotos
+  // (última sección salteada), `doc.x` puede llegar acá con el desplazamiento
+  // de la sección de notas anterior en vez del margen.
+  doc.x = doc.page.margins.left;
+
   // Separador
   doc.rect(doc.page.margins.left, doc.y, contentWidth, 1)
      .fill(COLORS.border);
-  
+
   doc.moveDown(0.8);
   
   // Información de la clínica

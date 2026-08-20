@@ -8,6 +8,10 @@ export type TreatmentPlanReportInput = {
     number: number;
     name: string | null;
     status: string;
+    // "dental" u "odontológico" vs "estetica" — el mismo presupuesto/informe
+    // se redacta distinto según cuál sea (título, columna de zona/pieza,
+    // metadata del documento). Ver `Clinica.tipo`/`TreatmentPlan.diagramType`.
+    diagramType: 'dental' | 'estetica';
     amount: number;
     notes: string | null;
     createdAt: Date;
