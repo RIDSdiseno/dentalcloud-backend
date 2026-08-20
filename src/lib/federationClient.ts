@@ -188,4 +188,36 @@ export async function mirrorPrevisionToDentalDemo(input: MirrorPrevisionInput) {
   return data;
 }
 
+export type MirrorUserInput = {
+  clinicId: string;
+  externalId: string;
+  name: string;
+  email: string;
+  // Sólo viaja en el intento original (mismo momento en que ya está en texto
+  // plano localmente, antes de hashearla) — un reintento posterior ya no la
+  // tiene y el otro lado genera una temporal (ver federationSync.ts).
+  password?: string | null;
+  role: string;
+  rut?: string | null;
+  active?: boolean;
+};
+
+export async function mirrorUserToDentalDemo(input: MirrorUserInput) {
+  const { data } = await dentalDemo.post<{ id: string }>('/api/platform/federated/users/mirror', input);
+  return data;
+}
+
+export type MirrorSucursalInput = {
+  clinicId: string;
+  externalId: string;
+  name: string;
+  country?: string | null;
+  active?: boolean;
+};
+
+export async function mirrorSucursalToDentalDemo(input: MirrorSucursalInput) {
+  const { data } = await dentalDemo.post<{ id: string }>('/api/platform/federated/locations/mirror', input);
+  return data;
+}
+
 export default dentalDemo;

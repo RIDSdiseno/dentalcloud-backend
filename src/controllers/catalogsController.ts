@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation } from '../lib/federationSync';
+import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation, syncSucursalToFederation } from '../lib/federationSync';
 import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
 
 export async function listSucursales(req: Request, res: Response) {
@@ -25,6 +25,9 @@ export async function createSucursal(req: Request, res: Response) {
   }
   const sucursal = await prisma.sucursal.create({
     data: { name: name.trim(), address: address?.trim() || null, clinicaId },
+  });
+  syncSucursalToFederation(sucursal).catch((err) => {
+    console.error('No se pudo sincronizar la sucursal recién creada con Dental-Demo-Back', err);
   });
   return res.status(201).json({ sucursal });
 }

@@ -1004,3 +1004,125 @@ export async function mirrorPrevision(req: Request, res: Response) {
   const created = await prisma.prevision.create({ data: { ...data, clinicaId, federatedPrevisionId: externalId } });
   return res.status(201).json({ id: created.id });
 }
+
+// Dental-Demo-Back no tiene los mismos roles que DentalCloud (allá son
+// CLINIC_OWNER/LOCATION_MANAGER/MARKETING_MANAGER/PROFESSIONAL/RECEPTIONIST/
+// ASSISTANT) — se traducen al rol más parecido en vez de exigir que
+// coincidan exactamente. LOCATION_MANAGER/MARKETING_MANAGER no tienen
+// equivalente real acá, así que caen a "operador" (el rol sin privilegios
+// especiales) en vez de heredar accidentalmente permisos de admin.
+function mapRemoteRoleToLocal(remoteRole: string | undefined): string {
+  switch (remoteRole) {
+    case 'CLINIC_OWNER':
+      return 'admin';
+    case 'PROFESSIONAL':
+      return 'odontologo';
+    case 'RECEPTIONIST':
+    case 'ASSISTANT':
+    case 'LOCATION_MANAGER':
+    case 'MARKETING_MANAGER':
+      return 'operador';
+    default:
+      return 'operador';
+  }
+}
+
+export async function mirrorUser(req: Request, res: Response) {
+  const { clinicaId, externalId, name, email, password, role, rut } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    name?: string;
+    email?: string;
+    password?: string | null;
+    role?: string;
+    rut?: string | null;
+  };
+
+  if (!clinicaId || !externalId || !name?.trim() || !email?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId, name y email son requeridos' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const localRole = mapRemoteRoleToLocal(role);
+  const cleanedRut = rut?.trim() && isValidRut(rut) ? cleanRut(rut) : null;
+
+  const existing = await prisma.user.findUnique({ where: { federatedUserId: externalId } });
+  if (existing) {
+    const updated = await prisma.user.update({
+      where: { id: existing.id },
+      data: { name: name.trim(), role: localRole, rut: cleanedRut },
+    });
+    return res.json({ id: updated.id });
+  }
+
+  // El email es único globalmente — si ya hay una cuenta local con ese email
+  // en esta misma clínica (creada antes de emparejar, o por otra vía), se
+  // vincula en vez de fallar. Si pertenece a OTRA clínica, no se toca (podría
+  // ser una persona distinta) y se devuelve error en su lugar.
+  const byEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (byEmail) {
+    if (byEmail.clinicaId !== clinicaId) {
+      return res.status(409).json({ error: `El email ${normalizedEmail} ya está en uso por un usuario de otra clínica` });
+    }
+    const linked = await prisma.user.update({
+      where: { id: byEmail.id },
+      data: { name: name.trim(), role: localRole, rut: cleanedRut, federatedUserId: externalId },
+    });
+    return res.json({ id: linked.id });
+  }
+
+  // Si no llega password en texto plano (reintento posterior a un primer
+  // intento fallido), se genera uno temporal — el profesional puede pedir
+  // "olvidé mi contraseña" o el admin se la puede compartir manualmente.
+  const passwordToUse = password?.trim() || randomBytes(12).toString('hex');
+  const passwordHash = await bcrypt.hash(passwordToUse, 10);
+
+  const created = await prisma.user.create({
+    data: {
+      name: name.trim(),
+      email: normalizedEmail,
+      passwordHash,
+      role: localRole,
+      rut: cleanedRut,
+      clinicaId,
+      federatedUserId: externalId,
+    },
+  });
+  return res.status(201).json({ id: created.id });
+}
+
+export async function mirrorSucursal(req: Request, res: Response) {
+  const { clinicaId, externalId, name, active } = req.body as {
+    clinicaId?: string;
+    externalId?: string;
+    name?: string;
+    active?: boolean;
+  };
+
+  if (!clinicaId || !externalId || !name?.trim()) {
+    return res.status(400).json({ error: 'clinicaId, externalId y name son requeridos' });
+  }
+
+  const data = {
+    name: name.trim(),
+    active: active ?? true,
+  };
+
+  const existing = await prisma.sucursal.findUnique({ where: { federatedSucursalId: externalId } });
+  if (existing) {
+    const updated = await prisma.sucursal.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  const byName = await prisma.sucursal.findFirst({ where: { clinicaId, name: data.name } });
+  if (byName) {
+    const linked = await prisma.sucursal.update({
+      where: { id: byName.id },
+      data: { ...data, federatedSucursalId: externalId },
+    });
+    return res.json({ id: linked.id });
+  }
+
+  const created = await prisma.sucursal.create({ data: { ...data, clinicaId, federatedSucursalId: externalId } });
+  return res.status(201).json({ id: created.id });
+}

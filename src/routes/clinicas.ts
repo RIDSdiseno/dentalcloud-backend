@@ -20,8 +20,10 @@ import {
   mirrorPatient,
   mirrorPrestacion,
   mirrorPrevision,
+  mirrorSucursal,
   mirrorTreatmentItem,
   mirrorTreatmentPlan,
+  mirrorUser,
   update,
   updateLogo,
 } from '../controllers/clinicasController';
@@ -46,6 +48,8 @@ router.post('/federated/treatment-plans/items/mirror', requireFederationOrSuperA
 router.post('/federated/convenios/mirror', requireFederationOrSuperAdmin, mirrorConvenio);
 router.post('/federated/prestaciones/mirror', requireFederationOrSuperAdmin, mirrorPrestacion);
 router.post('/federated/previsiones/mirror', requireFederationOrSuperAdmin, mirrorPrevision);
+router.post('/federated/users/mirror', requireFederationOrSuperAdmin, mirrorUser);
+router.post('/federated/sucursales/mirror', requireFederationOrSuperAdmin, mirrorSucursal);
 
 router.use(authenticate);
 router.use(requireSuperAdmin);

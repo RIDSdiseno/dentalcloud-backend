@@ -1,4 +1,4 @@
-import type { Appointment, Clinica, Convenio, Patient, Prestacion, Prevision, TreatmentItem, TreatmentPlan } from '@prisma/client';
+import type { Appointment, Clinica, Convenio, Patient, Prestacion, Prevision, Sucursal, TreatmentItem, TreatmentPlan, User } from '@prisma/client';
 import prisma from './prisma';
 import {
   isFederationConfigured,
@@ -8,8 +8,10 @@ import {
   mirrorPatientToDentalDemo,
   mirrorPrestacionToDentalDemo,
   mirrorPrevisionToDentalDemo,
+  mirrorSucursalToDentalDemo,
   mirrorTreatmentItemToDentalDemo,
   mirrorTreatmentPlanToDentalDemo,
+  mirrorUserToDentalDemo,
 } from './federationClient';
 
 type EntityType =
@@ -22,7 +24,9 @@ type EntityType =
   | 'TREATMENT_ITEM_REMOVAL'
   | 'CONVENIO'
   | 'PRESTACION'
-  | 'PREVISION';
+  | 'PREVISION'
+  | 'USER'
+  | 'SUCURSAL';
 
 async function recordSyncFailure(entityType: EntityType, localId: string, payload: unknown, error: unknown) {
   const lastError = error instanceof Error ? error.message : String(error);
@@ -111,6 +115,69 @@ export async function syncPatientToFederation(patient: Patient): Promise<void> {
     await clearSyncFailure('PATIENT', patient.id);
   } catch (error) {
     await recordSyncFailure('PATIENT', patient.id, payload, error);
+  }
+}
+
+// `plainPassword` sólo está disponible en el momento de la creación (antes
+// de hashearla) — en un reintento posterior ya no la tenemos y el otro lado
+// genera una temporal (mismo trato que syncClinicaToFederation con el admin).
+export async function syncUserToFederation(user: User, plainPassword?: string): Promise<void> {
+  if (!isFederationConfigured() || !user.clinicaId) return;
+
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: user.clinicaId },
+    select: { federatedClinicId: true, federationCatalogOnly: true },
+  });
+  if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca cuentas reales
+
+  const loggablePayload = {
+    clinicId: clinica.federatedClinicId,
+    externalId: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    rut: user.rut,
+  };
+  const payload = { ...loggablePayload, password: plainPassword };
+
+  try {
+    const mirror = await mirrorUserToDentalDemo(payload);
+    if (mirror.id !== user.federatedUserId) {
+      await prisma.user.update({ where: { id: user.id }, data: { federatedUserId: mirror.id } });
+    }
+    await clearSyncFailure('USER', user.id);
+  } catch (error) {
+    await recordSyncFailure('USER', user.id, loggablePayload, error);
+  }
+}
+
+export async function syncSucursalToFederation(sucursal: Sucursal): Promise<void> {
+  if (!isFederationConfigured()) return;
+
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: sucursal.clinicaId },
+    select: { federatedClinicId: true, federationCatalogOnly: true, pais: true },
+  });
+  if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca sucursales reales
+
+  const payload = {
+    clinicId: clinica.federatedClinicId,
+    externalId: sucursal.id,
+    name: sucursal.name,
+    country: clinica.pais,
+    active: sucursal.active,
+  };
+
+  try {
+    const mirror = await mirrorSucursalToDentalDemo(payload);
+    if (mirror.id !== sucursal.federatedSucursalId) {
+      await prisma.sucursal.update({ where: { id: sucursal.id }, data: { federatedSucursalId: mirror.id } });
+    }
+    await clearSyncFailure('SUCURSAL', sucursal.id);
+  } catch (error) {
+    await recordSyncFailure('SUCURSAL', sucursal.id, payload, error);
   }
 }
 
@@ -429,6 +496,18 @@ export async function retryFederationSync(entityType: string, localId: string): 
     const prevision = await prisma.prevision.findUnique({ where: { id: localId } });
     if (!prevision) return clearSyncFailure('PREVISION', localId);
     return syncPrevisionToFederation(prevision);
+  }
+
+  if (entityType === 'USER') {
+    const user = await prisma.user.findUnique({ where: { id: localId } });
+    if (!user) return clearSyncFailure('USER', localId);
+    return syncUserToFederation(user); // sin plainPassword: el otro lado genera una temporal
+  }
+
+  if (entityType === 'SUCURSAL') {
+    const sucursal = await prisma.sucursal.findUnique({ where: { id: localId } });
+    if (!sucursal) return clearSyncFailure('SUCURSAL', localId);
+    return syncSucursalToFederation(sucursal);
   }
 
   if (entityType === 'TREATMENT_ITEM_REMOVAL') {

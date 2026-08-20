@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import cloudinary from '../lib/cloudinary';
 import { cleanRut, isValidRut } from '../utils/rut';
 import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
 import { isDimageConfigured, fetchOdontologosByHolding, fetchRadiologosByHolding } from '../lib/dimageClient';
@@ -15,8 +16,36 @@ import {
   mergeModuleOverrides,
 } from '../lib/userAccessOverrides';
 import type { ClinicaModuleKey } from '../lib/clinicaModules';
+import { syncUserToFederation } from '../lib/federationSync';
 
 const DIMAGE_SYNCED_ROLES = ['odontologo', 'radiologo'];
+
+function isPngDataUrl(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('data:image/png;base64,') && value.length > 'data:image/png;base64,'.length;
+}
+
+// Firma dibujada por el propio profesional (canvas) al crear su cuenta —
+// mismo patrón que la firma de consentimientos: se manda como data URL y se
+// sube directo a Cloudinary. Es opcional: si falla la subida, no bloquea la
+// creación del profesional, solo queda sin firma (se puede agregar después).
+async function uploadUserSignature(
+  dataUrl: string,
+  clinicaId: string,
+  userId: string
+): Promise<{ url: string; publicId: string } | null> {
+  try {
+    const result = await cloudinary.uploader.upload(dataUrl, {
+      resource_type: 'image',
+      folder: `dentalcloud/${clinicaId}/firmas-profesionales`,
+      public_id: userId,
+      overwrite: true,
+    });
+    return { url: result.secure_url, publicId: result.public_id };
+  } catch (err) {
+    console.error('No se pudo subir la firma del profesional', err);
+    return null;
+  }
+}
 
 async function tryDimageSync(user: { rut: string | null; name: string; email: string; role: string; clinicaId: string | null }) {
   if (!user.rut || !DIMAGE_SYNCED_ROLES.includes(user.role) || !user.clinicaId) {
@@ -52,6 +81,7 @@ function toPublicUser(user: {
   rut: string | null;
   createdAt: Date;
   clinicaId: string | null;
+  signatureUrl?: string | null;
 }) {
   return {
     id: user.id,
@@ -61,25 +91,27 @@ function toPublicUser(user: {
     rut: user.rut,
     createdAt: user.createdAt,
     clinicaId: user.clinicaId,
+    signatureUrl: user.signatureUrl ?? null,
   };
 }
 
 export async function list(req: Request, res: Response) {
   const users = await prisma.user.findMany({
     where: { clinicaId: req.user!.clinicaId! },
-    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true },
+    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true, signatureUrl: true },
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
   return res.json({ users });
 }
 
 export async function create(req: Request, res: Response) {
-  const { name, email, password, role, rut } = req.body as {
+  const { name, email, password, role, rut, signatureDataUrl } = req.body as {
     name?: string;
     email?: string;
     password?: string;
     role?: string;
     rut?: string;
+    signatureDataUrl?: string;
   };
 
   if (!name?.trim() || !email?.trim() || !password) {
@@ -94,6 +126,9 @@ export async function create(req: Request, res: Response) {
   if (rut?.trim() && !isValidRut(rut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
+  if (signatureDataUrl && !isPngDataUrl(signatureDataUrl)) {
+    return res.status(400).json({ error: 'La firma debe ser una imagen PNG válida' });
+  }
 
   const normalizedEmail = email.trim().toLowerCase();
   const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
@@ -101,19 +136,33 @@ export async function create(req: Request, res: Response) {
     return res.status(409).json({ error: `Ya existe un usuario con el email ${normalizedEmail}` });
   }
 
+  const clinicaId = req.user!.clinicaId!;
+  // Se genera el id de antemano para poder subir la firma (si viene) usando
+  // ese mismo id como public_id en Cloudinary, y guardar ambas cosas juntas
+  // en un solo create — igual que el patrón ya usado en dataConsentsController.
+  const userId = crypto.randomUUID();
+  const signature = signatureDataUrl ? await uploadUserSignature(signatureDataUrl, clinicaId, userId) : null;
+
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
     data: {
+      id: userId,
       name: name.trim(),
       email: normalizedEmail,
       passwordHash,
       role,
       rut: rut?.trim() ? cleanRut(rut) : null,
-      clinicaId: req.user!.clinicaId!,
+      clinicaId,
+      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
   });
 
   const { dimageGeneratedPassword, dimageSyncError } = await tryDimageSync(user);
+
+  syncUserToFederation(user, password).catch((err) => {
+    console.error('No se pudo sincronizar el profesional recién creado con Dental-Demo-Back', err);
+  });
+
   return res.status(201).json({ user: toPublicUser(user), dimageGeneratedPassword, dimageSyncError });
 }
 

@@ -74,6 +74,14 @@ model User {
   // src/lib/userAccessOverrides.ts.
   permissionOverrides           Json?
   moduleOverrides               Json?
+  // Firma del profesional, dibujada al crear su cuenta (o después, desde su
+  // perfil) — mismo patrón que Consent.signatureUrl/signaturePublicId.
+  signatureUrl                  String?
+  signaturePublicId             String?
+  // Id del User espejo en Dental-Demo-Back, si este profesional fue creado
+  // (o emparejado) por federación. Null = profesional local, sin par en el
+  // otro sistema.
+  federatedUserId                String?                     @unique
   administrativeObservations    AdministrativeObservation[]
   appointments                  Appointment[]
   clinicalDocuments             ClinicalDocument[]
@@ -342,6 +350,10 @@ model Sucursal {
   createdAt      DateTime        @default(now())
   dimageClinicId String?
   clinicaId      String
+  // Id de la Location espejo en Dental-Demo-Back, si esta sucursal fue
+  // creada (o emparejada) por federación. Null = sucursal local, sin par en
+  // el otro sistema.
+  federatedSucursalId String?    @unique
   clinica        Clinica         @relation(fields: [clinicaId], references: [id])
   treatmentPlans TreatmentPlan[]
 
