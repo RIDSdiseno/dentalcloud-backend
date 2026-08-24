@@ -736,12 +736,13 @@ async function recalcTreatmentPlanTotals(treatmentPlanId: string) {
 }
 
 export async function mirrorTreatmentPlan(req: Request, res: Response) {
-  const { patientId, externalId, title, description, planType, status, convenioId, previsionId, professionalName } = req.body as {
+  const { patientId, externalId, title, description, planType, facialGender, status, convenioId, previsionId, professionalName } = req.body as {
     patientId?: string;
     externalId?: string;
     title?: string;
     description?: string | null;
     planType?: 'DENTAL' | 'ESTHETIC';
+    facialGender?: string | null;
     status?: string;
     convenioId?: string;
     previsionId?: string;
@@ -779,6 +780,10 @@ export async function mirrorTreatmentPlan(req: Request, res: Response) {
     // No hay federación de cuentas de staff — sólo se guarda el nombre como
     // dato informativo (no un professionalId real).
     ...(professionalName !== undefined ? { remoteProfessionalName: professionalName?.trim() || null } : {}),
+    // 'hombre'|'mujer' — determina qué foto usa el mapa facial. Solo tiene
+    // sentido para planes estéticos, pero se guarda igual si viaja (no hay
+    // razón para descartarlo si el plan es "ambas" y cambia de tipo después).
+    ...(facialGender !== undefined ? { facialGender: facialGender?.trim() || null } : {}),
   };
 
   const existing = await prisma.treatmentPlan.findUnique({ where: { federatedTreatmentPlanId: externalId } });

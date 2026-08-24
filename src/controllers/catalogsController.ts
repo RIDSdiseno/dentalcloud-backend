@@ -3,6 +3,28 @@ import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation, syncSucursalToFederation } from '../lib/federationSync';
 import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
+import { fetchRemoteSupplyLots, isFederationConfigured } from '../lib/federationClient';
+
+// Busca lotes de insumos reales en Dental-Demo-Back (inventario administrativo)
+// para que el profesional elija uno existente en vez de tipear el N° de lote
+// a mano. Sin federación configurada, o si Dental-Demo-Back no responde, se
+// devuelve una lista vacía en vez de romper el formulario de presupuesto.
+export async function searchProductLots(req: Request, res: Response) {
+  const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (search.length < 2) {
+    return res.json({ lots: [], federationAvailable: isFederationConfigured() });
+  }
+  if (!isFederationConfigured()) {
+    return res.json({ lots: [], federationAvailable: false });
+  }
+  try {
+    const lots = await fetchRemoteSupplyLots(req.user!.clinicaId!, search);
+    return res.json({ lots, federationAvailable: true });
+  } catch (err) {
+    console.error('Error buscando lotes en Dental-Demo-Back', err);
+    return res.json({ lots: [], federationAvailable: false });
+  }
+}
 
 export async function listSucursales(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';

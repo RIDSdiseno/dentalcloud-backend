@@ -11,6 +11,7 @@ import workSchedulesRoutes from './routes/workSchedules';
 import treatmentPlansRoutes from './routes/treatmentPlans';
 import treatmentItemsRoutes from './routes/treatmentItems';
 import catalogsRoutes from './routes/catalogs';
+import inventoryRoutes from './routes/inventory';
 import evolutionsRoutes from './routes/evolutions';
 import ledgerRoutes from './routes/ledger';
 import observationsRoutes from './routes/observations';
@@ -57,6 +58,7 @@ app.use('/api/work-schedules', workSchedulesRoutes);
 app.use('/api/treatment-plans', treatmentPlansRoutes);
 app.use('/api/treatment-items', treatmentItemsRoutes);
 app.use('/api/catalogs', catalogsRoutes);
+app.use('/api/inventory', inventoryRoutes);
 app.use('/api/evolutions', evolutionsRoutes);
 app.use('/api/ledger', ledgerRoutes);
 app.use('/api/observations', observationsRoutes);
@@ -71,7 +73,7 @@ app.use('/api/clinica/agenda-settings', agendaSettingsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 4001;
 app.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`);
   startFederationRetryLoop();

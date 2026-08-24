@@ -1,4 +1,4 @@
-import type { Appointment, Clinica, Convenio, Patient, Prestacion, Prevision, Sucursal, TreatmentItem, TreatmentPlan, User } from '@prisma/client';
+import type { Appointment, Clinica, Convenio, Patient, Prestacion, Prevision, Sucursal, TreatmentItem, TreatmentItemPhoto, TreatmentPlan, User } from '@prisma/client';
 import prisma from './prisma';
 import {
   isFederationConfigured,
@@ -10,6 +10,7 @@ import {
   mirrorPrevisionToDentalDemo,
   mirrorSucursalToDentalDemo,
   mirrorTreatmentItemToDentalDemo,
+  mirrorTreatmentItemPhotoToDentalDemo,
   mirrorTreatmentPlanToDentalDemo,
   mirrorUserToDentalDemo,
 } from './federationClient';
@@ -22,6 +23,8 @@ type EntityType =
   | 'TREATMENT_PLAN'
   | 'TREATMENT_ITEM'
   | 'TREATMENT_ITEM_REMOVAL'
+  | 'TREATMENT_ITEM_PHOTO'
+  | 'TREATMENT_ITEM_PHOTO_REMOVAL'
   | 'CONVENIO'
   | 'PRESTACION'
   | 'PREVISION'
@@ -254,6 +257,8 @@ export async function syncTreatmentPlanToFederation(plan: TreatmentPlan): Promis
     // Dental-Demo-Back no tiene la cuenta de este profesional (no hay
     // federación de staff) — se manda sólo el nombre, como dato informativo.
     professionalName: professional?.name ?? undefined,
+    planType: plan.diagramType === 'estetica' ? ('ESTHETIC' as const) : ('DENTAL' as const),
+    facialGender: plan.facialGender ?? undefined,
   };
 
   try {
@@ -332,6 +337,54 @@ export async function syncTreatmentItemToFederation(item: TreatmentItem): Promis
   }
 }
 
+// Fotos del procedimiento — solo lectura del lado de Dental-Demo (Cloudinary
+// vive acá; el otro lado sólo guarda la URL pública + etiqueta). No hay
+// federatedPhotoId que llevar de vuelta — la propia foto (photo.id) sirve de
+// externalId estable para upsert/borrado.
+export async function syncTreatmentItemPhotoToFederation(photo: TreatmentItemPhoto): Promise<void> {
+  if (!isFederationConfigured()) return;
+
+  const item = await prisma.treatmentItem.findUnique({
+    where: { id: photo.treatmentItemId },
+    select: { federatedTreatmentItemId: true },
+  });
+  if (!item?.federatedTreatmentItemId) {
+    // El ítem todavía no tiene espejo — se registra como pendiente y el
+    // reintento lo resuelve solo una vez el ítem ya esté federado.
+    await recordSyncFailure('TREATMENT_ITEM_PHOTO', photo.id, { reason: 'item not yet federated' }, new Error('Ítem sin espejo todavía'));
+    return;
+  }
+
+  const payload = {
+    treatmentItemId: item.federatedTreatmentItemId,
+    externalId: photo.id,
+    url: photo.url,
+    label: photo.label ?? undefined,
+  };
+
+  try {
+    await mirrorTreatmentItemPhotoToDentalDemo(payload);
+    await clearSyncFailure('TREATMENT_ITEM_PHOTO', photo.id);
+  } catch (error) {
+    await recordSyncFailure('TREATMENT_ITEM_PHOTO', photo.id, payload, error);
+  }
+}
+
+// Se llama con la foto ya leída, antes del `.delete()` local — después de
+// borrarla no queda nada de dónde derivar el payload (mismo criterio que
+// syncTreatmentItemRemovalToFederation).
+export async function syncTreatmentItemPhotoRemovalToFederation(photoId: string): Promise<void> {
+  if (!isFederationConfigured()) return;
+
+  const payload = { externalId: photoId, removed: true as const };
+  try {
+    await mirrorTreatmentItemPhotoToDentalDemo(payload);
+    await clearSyncFailure('TREATMENT_ITEM_PHOTO_REMOVAL', photoId);
+  } catch (error) {
+    await recordSyncFailure('TREATMENT_ITEM_PHOTO_REMOVAL', photoId, payload, error);
+  }
+}
+
 // El procedimiento se borra de verdad en DentalCloud (no hay estado
 // "cancelado" a nivel de ítem) — se avisa al espejo para que también lo
 // quite. Se llama con la fila ya leída, antes del `.delete()` local, porque
@@ -397,6 +450,7 @@ export async function syncPrestacionToFederation(prestacion: Prestacion): Promis
     basePrice: prestacion.basePrice,
     active: prestacion.active,
     odontogramMode: prestacion.category === 'dental' ? prestacion.odontogramMode : undefined,
+    requiresProductTracking: prestacion.requiresProductTracking,
   };
 
   try {

@@ -22,6 +22,7 @@ import {
   createEvolutionTemplate,
   updateEvolutionTemplate,
   removeEvolutionTemplate,
+  searchProductLots,
 } from '../controllers/catalogsController';
 
 const router = Router();
@@ -47,6 +48,8 @@ router.get('/prestaciones', listPrestaciones);
 router.post('/prestaciones', requireAdmin, createPrestacion);
 router.patch('/prestaciones/:id', requireAdmin, updatePrestacion);
 router.delete('/prestaciones/:id', requireAdmin, removePrestacion);
+
+router.get('/product-lots', searchProductLots);
 
 router.get('/evolution-templates', listEvolutionTemplates);
 router.post('/evolution-templates', requireAdmin, createEvolutionTemplate);

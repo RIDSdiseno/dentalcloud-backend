@@ -7,7 +7,12 @@ import {
   deleteImageFromCloudinary,
   uploadImageToCloudinary,
 } from '../lib/cloudinaryUpload';
-import { syncTreatmentItemRemovalToFederation, syncTreatmentItemToFederation } from '../lib/federationSync';
+import {
+  syncTreatmentItemPhotoRemovalToFederation,
+  syncTreatmentItemPhotoToFederation,
+  syncTreatmentItemRemovalToFederation,
+  syncTreatmentItemToFederation,
+} from '../lib/federationSync';
 
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as {
@@ -116,7 +121,7 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   try {
     const uploaded = await uploadImageToCloudinary(file.buffer, `dentalcloud/${item.clinicaId}/treatment-items/${item.id}`);
 
-    await prisma.treatmentItemPhoto.create({
+    const photo = await prisma.treatmentItemPhoto.create({
       data: {
         treatmentItemId: item.id,
         url: uploaded.url,
@@ -124,6 +129,9 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
         label: label || null,
         clinicaId: item.clinicaId,
       },
+    });
+    syncTreatmentItemPhotoToFederation(photo).catch((err) => {
+      console.error('No se pudo sincronizar la foto del procedimiento con Dental-Demo-Back', err);
     });
 
     const plan = await recalculatePlan(item.treatmentPlanId, req.user!.sub);
@@ -147,6 +155,9 @@ export async function removePhoto(req: Request<{ photoId: string }>, res: Respon
   }
 
   await deleteImageFromCloudinary(photo.publicId);
+  syncTreatmentItemPhotoRemovalToFederation(photo.id).catch((err) => {
+    console.error('No se pudo sincronizar el borrado de la foto con Dental-Demo-Back', err);
+  });
 
   const item = await prisma.treatmentItem.findUniqueOrThrow({ where: { id: photo.treatmentItemId } });
   await prisma.treatmentItemPhoto.delete({ where: { id: photo.id } });

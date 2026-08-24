@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
+import { syncTreatmentItemToFederation } from '../lib/federationSync';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -136,7 +137,7 @@ export async function create(req: Request, res: Response) {
   // al ítem para no romper las vistas de seguimiento que todavía leen desde
   // ahí (alertas de vencimiento, stickers, etc. en TreatmentPlanTab.tsx).
   if (treatmentItem) {
-    await prisma.treatmentItem.update({
+    const updatedItem = await prisma.treatmentItem.update({
       where: { id: treatmentItem.id },
       data: {
         completed: true,
@@ -149,6 +150,12 @@ export async function create(req: Request, res: Response) {
       },
     });
     await recalculatePlan(treatmentItem.treatmentPlanId, professionalId);
+    // Sin esto, el producto/lote real (recién completado acá) y el estado
+    // "completado" nunca llegan a Dental-Demo-Back — el espejo se queda
+    // congelado con los datos placeholder de la creación del ítem.
+    syncTreatmentItemToFederation(updatedItem).catch((err) => {
+      console.error('No se pudo sincronizar el ítem evolucionado con Dental-Demo-Back', err);
+    });
   }
   return res.status(201).json({ evolution });
 }
