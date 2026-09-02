@@ -44,6 +44,16 @@ async function clearSyncFailure(entityType: EntityType, localId: string) {
   await prisma.federationSyncFailure.deleteMany({ where: { entityType, localId } });
 }
 
+export type FederationSyncKey = 'patients' | 'appointments' | 'treatmentPlans' | 'users' | 'sucursales' | 'catalog';
+
+// Una clave ausente en `settings` se trata como habilitada, para no romper
+// clínicas emparejadas antes de que existiera este control granular.
+function isSyncKeyEnabled(settings: unknown, key: FederationSyncKey): boolean {
+  if (!settings || typeof settings !== 'object') return true;
+  const value = (settings as Record<string, unknown>)[key];
+  return value !== false;
+}
+
 export async function syncClinicaToFederation(
   clinica: Clinica,
   admin: { name: string; email: string; password?: string }
@@ -54,7 +64,16 @@ export async function syncClinicaToFederation(
   // momento en que ya está en texto plano localmente, antes de hashearlo) —
   // nunca se persiste. Si falla y hay que reintentar más tarde, el
   // reintento ya no lo tiene y el otro lado genera uno temporal.
-  const loggablePayload = { externalId: clinica.id, name: clinica.name, pais: clinica.pais, adminName: admin.name, adminEmail: admin.email };
+  const clinicType: 'DENTAL' | 'ESTHETIC' | 'BOTH' =
+    clinica.tipo === 'estetica' ? 'ESTHETIC' : clinica.tipo === 'ambas' ? 'BOTH' : 'DENTAL';
+  const loggablePayload = {
+    externalId: clinica.id,
+    name: clinica.name,
+    pais: clinica.pais,
+    clinicType,
+    adminName: admin.name,
+    adminEmail: admin.email,
+  };
   const payload = { ...loggablePayload, adminPassword: admin.password };
 
   try {
@@ -71,7 +90,7 @@ export async function syncClinicaToFederation(
 // clínica (equivalente a "eliminarla" de forma reversible). No hace nada si
 // la clínica no está emparejada.
 export async function syncClinicaActiveStateToFederation(clinica: Clinica): Promise<void> {
-  if (!isFederationConfigured() || !clinica.federatedClinicId) return;
+  if (!isFederationConfigured() || !clinica.federatedClinicId || clinica.federationPaused) return;
 
   const payload = { externalId: clinica.id, name: clinica.name, active: clinica.active };
 
@@ -88,10 +107,12 @@ export async function syncPatientToFederation(patient: Patient): Promise<void> {
 
   const clinica = await prisma.clinica.findUnique({
     where: { id: patient.clinicaId },
-    select: { federatedClinicId: true, federationCatalogOnly: true },
+    select: { federatedClinicId: true, federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true },
   });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
   if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca pacientes reales
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'patients')) return;
 
   const payload = {
     clinicId: clinica.federatedClinicId,
@@ -129,10 +150,12 @@ export async function syncUserToFederation(user: User, plainPassword?: string): 
 
   const clinica = await prisma.clinica.findUnique({
     where: { id: user.clinicaId },
-    select: { federatedClinicId: true, federationCatalogOnly: true },
+    select: { federatedClinicId: true, federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true },
   });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
   if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca cuentas reales
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'users')) return;
 
   const loggablePayload = {
     clinicId: clinica.federatedClinicId,
@@ -160,10 +183,12 @@ export async function syncSucursalToFederation(sucursal: Sucursal): Promise<void
 
   const clinica = await prisma.clinica.findUnique({
     where: { id: sucursal.clinicaId },
-    select: { federatedClinicId: true, federationCatalogOnly: true, pais: true },
+    select: { federatedClinicId: true, federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true, pais: true },
   });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
   if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca sucursales reales
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'sucursales')) return;
 
   const payload = {
     clinicId: clinica.federatedClinicId,
@@ -190,12 +215,14 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
   const [clinica, patient] = await Promise.all([
     prisma.clinica.findUnique({
       where: { id: appointment.clinicaId },
-      select: { federatedClinicId: true, federationCatalogOnly: true },
+      select: { federatedClinicId: true, federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true },
     }),
     prisma.patient.findUnique({ where: { id: appointment.patientId }, select: { federatedPatientId: true } }),
   ]);
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
   if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca citas reales
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'appointments')) return;
 
   if (!patient?.federatedPatientId) {
     // El paciente todavía no tiene espejo (probablemente su propio sync está
@@ -232,8 +259,10 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
 export async function syncTreatmentPlanToFederation(plan: TreatmentPlan): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  const clinica = await prisma.clinica.findUnique({ where: { id: plan.clinicaId }, select: { federationCatalogOnly: true } });
+  const clinica = await prisma.clinica.findUnique({ where: { id: plan.clinicaId }, select: { federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true } });
   if (clinica?.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca presupuestos reales
+  if (clinica?.federationPaused) return; // sincronización pausada manualmente desde Super Admin
+  if (!isSyncKeyEnabled(clinica?.federationSyncSettings, 'treatmentPlans')) return;
 
   const patient = await prisma.patient.findUnique({ where: { id: plan.patientId }, select: { federatedPatientId: true } });
   if (!patient?.federatedPatientId) return; // paciente sin espejo: nada que sincronizar
@@ -294,9 +323,11 @@ export async function syncTreatmentItemToFederation(item: TreatmentItem): Promis
 
   const plan = await prisma.treatmentPlan.findUnique({
     where: { id: item.treatmentPlanId },
-    select: { federatedTreatmentPlanId: true, clinica: { select: { federationCatalogOnly: true } } },
+    select: { federatedTreatmentPlanId: true, clinica: { select: { federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true } } },
   });
   if (plan?.clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca ítems reales
+  if (plan?.clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
+  if (!isSyncKeyEnabled(plan?.clinica.federationSyncSettings, 'treatmentPlans')) return;
   if (!plan?.federatedTreatmentPlanId) {
     // El presupuesto todavía no tiene espejo — se registra como pendiente y
     // el reintento lo resuelve solo una vez el presupuesto ya esté federado.
@@ -394,9 +425,11 @@ export async function syncTreatmentItemRemovalToFederation(item: TreatmentItem):
 
   const plan = await prisma.treatmentPlan.findUnique({
     where: { id: item.treatmentPlanId },
-    select: { federatedTreatmentPlanId: true, clinica: { select: { federationCatalogOnly: true } } },
+    select: { federatedTreatmentPlanId: true, clinica: { select: { federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true } } },
   });
   if (plan?.clinica.federationCatalogOnly) return;
+  if (plan?.clinica.federationPaused) return;
+  if (!isSyncKeyEnabled(plan?.clinica.federationSyncSettings, 'treatmentPlans')) return;
   if (!plan?.federatedTreatmentPlanId) return;
 
   const payload = { treatmentPlanId: plan.federatedTreatmentPlanId, externalId: item.id, removed: true };
@@ -414,8 +447,10 @@ export async function syncTreatmentItemRemovalToFederation(item: TreatmentItem):
 export async function syncConvenioToFederation(convenio: Convenio): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  const clinica = await prisma.clinica.findUnique({ where: { id: convenio.clinicaId }, select: { federatedClinicId: true } });
+  const clinica = await prisma.clinica.findUnique({ where: { id: convenio.clinicaId }, select: { federatedClinicId: true, federationPaused: true, federationSyncSettings: true } });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'catalog')) return;
 
   const payload = {
     clinicId: clinica.federatedClinicId,
@@ -439,8 +474,10 @@ export async function syncConvenioToFederation(convenio: Convenio): Promise<void
 export async function syncPrestacionToFederation(prestacion: Prestacion): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  const clinica = await prisma.clinica.findUnique({ where: { id: prestacion.clinicaId }, select: { federatedClinicId: true } });
+  const clinica = await prisma.clinica.findUnique({ where: { id: prestacion.clinicaId }, select: { federatedClinicId: true, federationPaused: true, federationSyncSettings: true } });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'catalog')) return;
 
   const payload = {
     clinicId: clinica.federatedClinicId,
@@ -467,8 +504,10 @@ export async function syncPrestacionToFederation(prestacion: Prestacion): Promis
 export async function syncPrevisionToFederation(prevision: Prevision): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  const clinica = await prisma.clinica.findUnique({ where: { id: prevision.clinicaId }, select: { federatedClinicId: true } });
+  const clinica = await prisma.clinica.findUnique({ where: { id: prevision.clinicaId }, select: { federatedClinicId: true, federationPaused: true, federationSyncSettings: true } });
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
+  if (clinica.federationPaused) return; // sincronización pausada manualmente desde Super Admin
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'catalog')) return;
 
   const payload = {
     clinicId: clinica.federatedClinicId,

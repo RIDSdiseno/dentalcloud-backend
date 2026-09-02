@@ -76,6 +76,10 @@ export type MirrorClinicInput = {
   externalId: string;
   name: string;
   pais?: string | null;
+  // Tipo de clínica (dental/estetica/ambas) traducido a lo que espera
+  // Dental-Demo ("DENTAL"/"ESTHETIC"/"BOTH") — dirección inversa del mismo
+  // dato que Dental-Demo nos manda cuando la clínica nace del otro lado.
+  clinicType?: 'DENTAL' | 'ESTHETIC' | 'BOTH';
   adminName?: string | null;
   adminEmail?: string | null;
   adminPassword?: string | null;

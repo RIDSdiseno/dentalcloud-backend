@@ -30,6 +30,15 @@ model Clinica {
   // reales sin que alguien lo pida explícitamente. Si es true, todo el sync
   // de paciente/cita/presupuesto/ítem se omite aunque haya federatedClinicId.
   federationCatalogOnly      Boolean                     @default(false)
+  // Pausa manual de la sincronización (desde el panel de Super Admin) sin
+  // perder el emparejamiento (federatedClinicId) — a diferencia de
+  // desconectar, se puede reanudar en cualquier momento sin re-emparejar.
+  federationPaused           Boolean                     @default(false)
+  // Switches individuales por tipo de dato (panel de Super Admin) — claves:
+  // patients, appointments, treatmentPlans, users, sucursales, catalog. Una
+  // clave ausente se trata como `true` (habilitada) para no romper clínicas
+  // ya emparejadas antes de que existiera este control granular.
+  federationSyncSettings     Json                        @default("{}")
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   chairs                     Chair[]
@@ -127,6 +136,19 @@ model Patient {
   email                      String?
   birthDate                  DateTime?
   address                    String?
+  gender                     String?
+  nationality                String?
+  maritalStatus              String?
+  occupation                 String?
+  emergencyContactName       String?
+  emergencyContactPhone      String?
+  emergencyContactRelationship String?
+  healthInsurance            String?
+  healthInsuranceDetail      String?
+  bloodType                  String?
+  tags                       String[]                    @default([])
+  photoUrl                   String?
+  photoPublicId              String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
@@ -140,6 +162,8 @@ model Patient {
   heightCm                   Int?
   medicalConditions          String?
   weightKg                   Float?
+  chronicDiseases            String?
+  dentalHistory              String?
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   clinicalDocuments          ClinicalDocument[]
