@@ -187,12 +187,16 @@ export async function syncSucursalToFederation(sucursal: Sucursal): Promise<void
 export async function syncAppointmentToFederation(appointment: Appointment): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  const [clinica, patient] = await Promise.all([
+  const [clinica, patient, professional, chair] = await Promise.all([
     prisma.clinica.findUnique({
       where: { id: appointment.clinicaId },
       select: { federatedClinicId: true, federationCatalogOnly: true },
     }),
     prisma.patient.findUnique({ where: { id: appointment.patientId }, select: { federatedPatientId: true } }),
+    appointment.professionalId
+      ? prisma.user.findUnique({ where: { id: appointment.professionalId }, select: { name: true } })
+      : Promise.resolve(null),
+    prisma.chair.findUnique({ where: { id: appointment.chairId }, select: { name: true, number: true } }),
   ]);
   if (!clinica?.federatedClinicId) return; // clínica sin par: nada que sincronizar
   if (clinica.federationCatalogOnly) return; // emparejamiento sólo de catálogo: nunca citas reales
@@ -216,6 +220,8 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
     // del lado receptor (mirrorAppointment en platform.controller.js).
     status: appointment.status,
     notes: appointment.notes,
+    professionalName: professional?.name ?? undefined,
+    box: chair ? chair.name || `Sillón ${chair.number}` : undefined,
   };
 
   try {
@@ -259,6 +265,7 @@ export async function syncTreatmentPlanToFederation(plan: TreatmentPlan): Promis
     professionalName: professional?.name ?? undefined,
     planType: plan.diagramType === 'estetica' ? ('ESTHETIC' as const) : ('DENTAL' as const),
     facialGender: plan.facialGender ?? undefined,
+    facialAnnotations: plan.facialAnnotations ?? undefined,
   };
 
   try {

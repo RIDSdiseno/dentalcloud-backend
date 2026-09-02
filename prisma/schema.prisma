@@ -83,7 +83,8 @@ model User {
   // otro sistema.
   federatedUserId                String?                     @unique
   administrativeObservations    AdministrativeObservation[]
-  appointments                  Appointment[]
+  appointments                  Appointment[]               @relation("AppointmentProfessional")
+  appointmentsReceived          Appointment[]               @relation("AppointmentReceivedBy")
   clinicalDocuments             ClinicalDocument[]
   consentsSent                  Consent[]                   @relation("ConsentsSentBy")
   evolutions                    Evolution[]
@@ -456,13 +457,27 @@ model Appointment {
   professionalId         String?
   type                   String   @default("cita")
   clinicaId              String
+  // Hitos de los Circuitos del Paciente: se llenan al presionar los botones
+  // "Marcar llegada" y "Pasar a atención". Habilitan métricas de puntualidad,
+  // tiempo de espera y tiempo en atención sin pedirle un campo nuevo al doctor.
+  arrivedAt              DateTime?
+  attentionStartedAt     DateTime?
+  attentionEndedAt       DateTime?
+  // Datos propios del circuito de Urgencia — solo se llenan cuando
+  // type === "urgencia". No requieren su propia tabla: una urgencia usa el
+  // mismo circuito clínico (llego → en_atencion → finalizada) que cualquier
+  // cita, solo entra sin agenda previa y con estos datos adicionales.
+  motivoUrgencia         String?
+  triageLevel            String?
+  receivedByUserId       String?
   // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
   // sincronizada) por federación.
   federatedAppointmentId String?  @unique
   chair                  Chair    @relation(fields: [chairId], references: [id])
   clinica                Clinica  @relation(fields: [clinicaId], references: [id])
   patient                Patient  @relation(fields: [patientId], references: [id])
-  professional           User?    @relation(fields: [professionalId], references: [id])
+  professional           User?    @relation("AppointmentProfessional", fields: [professionalId], references: [id])
+  receivedBy             User?    @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
 
   @@index([chairId, startAt])
   @@index([professionalId, startAt])

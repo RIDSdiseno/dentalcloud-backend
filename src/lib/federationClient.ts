@@ -107,6 +107,13 @@ export type MirrorAppointmentInput = {
   endAt: string;
   status: string;
   notes?: string | null;
+  // Dental-Demo-Back no federa cuentas de profesional (no hay User real del
+  // otro lado) — se manda solo el nombre, como dato informativo, igual que
+  // ya se hace para TreatmentPlan.
+  professionalName?: string | null;
+  // Sillón/box asignado en DentalCloud (no hay federación de recursos
+  // físicos), viaja como texto ("Sillón 2", o el nombre propio del sillón).
+  box?: string | null;
 };
 
 export async function mirrorClinicToDentalDemo(input: MirrorClinicInput) {
@@ -142,6 +149,10 @@ export type MirrorTreatmentPlanInput =
       // esto Dental-Demo no sabe qué imagen (hombre/mujer) usar para dibujar
       // las zonas tratadas en su propio mapa facial de solo lectura.
       facialGender?: string | null;
+      // Trazos a mano alzada del mapa facial (lápiz/línea/círculo) — se
+      // replican tal cual (mismo shape que FacialAnnotations en
+      // facialZoneConfig.ts) para que Dental-Demo los dibuje de solo lectura.
+      facialAnnotations?: unknown;
     }
   | { externalId: string; removed: true };
 

@@ -939,7 +939,7 @@ export async function mirrorConvenio(req: Request, res: Response) {
 }
 
 export async function mirrorPrestacion(req: Request, res: Response) {
-  const { clinicaId, externalId, name, code, basePrice, active, odontogramMode } = req.body as {
+  const { clinicaId, externalId, name, code, basePrice, active, odontogramMode, requiresProductTracking } = req.body as {
     clinicaId?: string;
     externalId?: string;
     name?: string;
@@ -947,6 +947,7 @@ export async function mirrorPrestacion(req: Request, res: Response) {
     basePrice?: number;
     active?: boolean;
     odontogramMode?: string;
+    requiresProductTracking?: boolean;
   };
 
   if (!clinicaId || !externalId || !name?.trim()) {
@@ -961,6 +962,7 @@ export async function mirrorPrestacion(req: Request, res: Response) {
     // Dental-Demo-Back no distingue categoría (todas sus prestaciones son
     // dentales) — siempre manda un modo válido para esta columna.
     ...(odontogramMode ? { odontogramMode } : {}),
+    requiresProductTracking: Boolean(requiresProductTracking),
   };
 
   const existing = await prisma.prestacion.findUnique({ where: { federatedPrestacionId: externalId } });
