@@ -4,7 +4,9 @@ import { authenticate } from '../middleware/authenticate';
 import { requireSuperAdmin } from '../middleware/requireSuperAdmin';
 import { requireFederationOrSuperAdmin } from '../middleware/requireFederationOrSuperAdmin';
 import {
+  connectFederation,
   create,
+  disconnectFederation,
   getFederatedOverview,
   list,
   listAllAppointments,
@@ -62,5 +64,7 @@ router.get('/federated/overview', getFederatedOverview);
 router.post('/', uploadMiddleware.single('logo'), create);
 router.patch('/:id', update);
 router.patch('/:id/logo', uploadMiddleware.single('logo'), updateLogo);
+router.post('/:id/federation/connect', connectFederation);
+router.post('/:id/federation/disconnect', disconnectFederation);
 
 export default router;
