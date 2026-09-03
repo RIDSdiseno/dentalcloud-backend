@@ -33,7 +33,19 @@ export const DEFAULT_CONSENT_TYPES: Array<{ code: string; name: string; legalTex
     name: 'Autorización de representante legal (paciente menor de edad)',
     legalText: placeholderText('AUTORIZACIÓN DE REPRESENTANTE LEGAL PARA ATENCIÓN DE PACIENTE MENOR DE EDAD', true),
   },
+  {
+    code: 'grabacion_voz',
+    name: 'Autorización de grabación de voz',
+    legalText:
+      placeholderText('GRABACIÓN DE VOZ DEL MOTIVO DE CONSULTA') +
+      '\n\nEsta grabación, junto con su firma, se almacena en servidores de un proveedor externo (Cloudinary), fuera de Chile.',
+  },
 ];
+
+// Code estable del consentimiento que habilita grabar el motivo de consulta —
+// ver patientsController.uploadMotivoConsultaAudio, que rechaza la subida si
+// el paciente no tiene un Consent con este code en estado 'firmado'.
+export const VOICE_RECORDING_CONSENT_CODE = 'grabacion_voz';
 
 function placeholderText(title: string, isAuthorization = false) {
   const heading = isAuthorization ? title : `CONSENTIMIENTO PARA ${title}`;

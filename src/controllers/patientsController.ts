@@ -6,6 +6,7 @@ import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { syncPatientToFederation } from '../lib/federationSync';
+import { VOICE_RECORDING_CONSENT_CODE } from '../lib/consentTypes';
 
 type PatientInput = {
   rut?: string;
@@ -34,6 +35,7 @@ type PatientInput = {
   healthInsuranceDetail?: string;
   bloodType?: string;
   tags?: string[];
+  motivoConsulta?: string;
 };
 
 function sanitizeAllergies(allergies?: string[]): string[] | undefined {
@@ -81,6 +83,7 @@ function toPatientData(body: PatientInput) {
     healthInsuranceDetail: body.healthInsuranceDetail?.trim() || null,
     bloodType: body.bloodType?.trim() || null,
     tags: sanitizeTags(body.tags) ?? [],
+    motivoConsulta: body.motivoConsulta?.trim() || null,
   };
 }
 
@@ -111,6 +114,7 @@ function toPatientPatch(body: PatientInput) {
   if (body.healthInsuranceDetail !== undefined) patch.healthInsuranceDetail = body.healthInsuranceDetail.trim() || null;
   if (body.bloodType !== undefined) patch.bloodType = body.bloodType.trim() || null;
   if (body.tags !== undefined) patch.tags = sanitizeTags(body.tags);
+  if (body.motivoConsulta !== undefined) patch.motivoConsulta = body.motivoConsulta.trim() || null;
   return patch;
 }
 
@@ -245,6 +249,60 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   const updated = await prisma.patient.update({
     where: { id: req.params.id },
     data: { photoUrl: photo.secure_url, photoPublicId: photo.public_id },
+  });
+
+  return res.json({ patient: updated });
+}
+
+export async function uploadMotivoConsultaAudio(req: Request<{ id: string }>, res: Response) {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de audio' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  // Candado duro: sin un consentimiento de grabación de voz ya firmado, el
+  // audio no se sube — no basta con que el frontend oculte el botón, porque
+  // esto es lo que evita que alguien grabe sin autorización aunque se salte
+  // la pantalla.
+  const signedConsent = await prisma.consent.findFirst({
+    where: {
+      patientId: patient.id,
+      status: 'firmado',
+      consentType: { code: VOICE_RECORDING_CONSENT_CODE },
+    },
+  });
+  if (!signedConsent) {
+    return res.status(403).json({
+      error: 'El paciente debe firmar el consentimiento de grabación de voz antes de poder grabar.',
+    });
+  }
+
+  const audio = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'video', folder: 'dentalcloud/patients/motivo-consulta-audio' },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  if (patient.motivoConsultaAudioPublicId) {
+    await cloudinary.uploader.destroy(patient.motivoConsultaAudioPublicId, { resource_type: 'video' }).catch(() => {
+      // Best-effort: si la grabación anterior ya no existe en Cloudinary o
+      // falla el borrado, no bloquea la actualización de la nueva.
+    });
+  }
+
+  const updated = await prisma.patient.update({
+    where: { id: req.params.id },
+    data: { motivoConsultaAudioUrl: audio.secure_url, motivoConsultaAudioPublicId: audio.public_id },
   });
 
   return res.json({ patient: updated });

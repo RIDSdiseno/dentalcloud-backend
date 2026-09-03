@@ -150,6 +150,13 @@ model Patient {
   tags                       String[]                    @default([])
   photoUrl                   String?
   photoPublicId              String?
+  motivoConsulta             String?
+  // Grabación de respaldo del motivo de consulta, en la voz del paciente. Solo
+  // se puede subir si el paciente ya firmó el consentimiento de tipo
+  // 'grabacion_voz' (ver ConsentType/Consent) — se valida en el controlador,
+  // no aquí, para no bloquear la creación del paciente en sí.
+  motivoConsultaAudioUrl      String?
+  motivoConsultaAudioPublicId String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
