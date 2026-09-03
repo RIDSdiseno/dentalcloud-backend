@@ -46,6 +46,7 @@ model Clinica {
   consentTypes               ConsentType[]
   consents                   Consent[]
   convenios                  Convenio[]
+  documentFormats            DocumentFormat[]
   evolutionTemplates         EvolutionTemplate[]
   evolutions                 Evolution[]
   evolutionPhotos            EvolutionPhoto[]
@@ -157,6 +158,23 @@ model Patient {
   // no aquí, para no bloquear la creación del paciente en sí.
   motivoConsultaAudioUrl      String?
   motivoConsultaAudioPublicId String?
+  // Conclusiones de anamnesis (resumen automático se arma en el frontend a
+  // partir de los campos clínicos ya existentes, no se guarda como texto).
+  expectativasPaciente        String?
+  optimoTratamiento           String?
+  // Examen estético.
+  examSkinType                String?
+  examFitzpatrick             String?
+  examWrinkles                String?
+  examFlaccidity              String?
+  examVolume                  String?
+  examAsymmetries             Boolean?
+  examAsymmetryNotes          String?
+  examDiagnosis                    String?
+  examPhotoFrontalUrl              String?
+  examPhotoPerfilDerechoUrl        String?
+  examPhoto45DerechaUrl            String?
+  examPhoto45IzquierdaUrl          String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
@@ -703,4 +721,21 @@ model FederationSyncFailure {
 
   @@unique([entityType, localId])
   @@map("federation_sync_failures")
+}
+
+// Plantillas de documentos configurables por clínica (Configuración >
+// Formatos): presupuesto, exámenes, plan de tratamiento, receta. `body` es
+// texto simple por ahora (no HTML/PDF real todavía).
+model DocumentFormat {
+  id        String   @id @default(uuid())
+  clinicaId String
+  name      String
+  type      String
+  body      String   @default("") @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
+
+  @@index([clinicaId])
+  @@map("document_formats")
 }

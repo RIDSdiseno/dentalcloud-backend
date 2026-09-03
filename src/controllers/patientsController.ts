@@ -36,6 +36,25 @@ type PatientInput = {
   bloodType?: string;
   tags?: string[];
   motivoConsulta?: string;
+  expectativasPaciente?: string;
+  optimoTratamiento?: string;
+  examSkinType?: string;
+  examFitzpatrick?: string;
+  examWrinkles?: string;
+  examFlaccidity?: string;
+  examVolume?: string;
+  examAsymmetries?: boolean | null;
+  examAsymmetryNotes?: string;
+  examDiagnosis?: string;
+};
+
+const EXAM_PHOTO_SLOTS = ['frontal', 'perfilDerecho', '45derecha', '45izquierda'] as const;
+type ExamPhotoSlot = (typeof EXAM_PHOTO_SLOTS)[number];
+const EXAM_PHOTO_FIELD: Record<ExamPhotoSlot, { url: string }> = {
+  frontal: { url: 'examPhotoFrontalUrl' },
+  perfilDerecho: { url: 'examPhotoPerfilDerechoUrl' },
+  '45derecha': { url: 'examPhoto45DerechaUrl' },
+  '45izquierda': { url: 'examPhoto45IzquierdaUrl' },
 };
 
 function sanitizeAllergies(allergies?: string[]): string[] | undefined {
@@ -84,6 +103,16 @@ function toPatientData(body: PatientInput) {
     bloodType: body.bloodType?.trim() || null,
     tags: sanitizeTags(body.tags) ?? [],
     motivoConsulta: body.motivoConsulta?.trim() || null,
+    expectativasPaciente: body.expectativasPaciente?.trim() || null,
+    optimoTratamiento: body.optimoTratamiento?.trim() || null,
+    examSkinType: body.examSkinType?.trim() || null,
+    examFitzpatrick: body.examFitzpatrick?.trim() || null,
+    examWrinkles: body.examWrinkles?.trim() || null,
+    examFlaccidity: body.examFlaccidity?.trim() || null,
+    examVolume: body.examVolume?.trim() || null,
+    examAsymmetries: body.examAsymmetries ?? null,
+    examAsymmetryNotes: body.examAsymmetryNotes?.trim() || null,
+    examDiagnosis: body.examDiagnosis?.trim() || null,
   };
 }
 
@@ -115,6 +144,16 @@ function toPatientPatch(body: PatientInput) {
   if (body.bloodType !== undefined) patch.bloodType = body.bloodType.trim() || null;
   if (body.tags !== undefined) patch.tags = sanitizeTags(body.tags);
   if (body.motivoConsulta !== undefined) patch.motivoConsulta = body.motivoConsulta.trim() || null;
+  if (body.expectativasPaciente !== undefined) patch.expectativasPaciente = body.expectativasPaciente.trim() || null;
+  if (body.optimoTratamiento !== undefined) patch.optimoTratamiento = body.optimoTratamiento.trim() || null;
+  if (body.examSkinType !== undefined) patch.examSkinType = body.examSkinType.trim() || null;
+  if (body.examFitzpatrick !== undefined) patch.examFitzpatrick = body.examFitzpatrick.trim() || null;
+  if (body.examWrinkles !== undefined) patch.examWrinkles = body.examWrinkles.trim() || null;
+  if (body.examFlaccidity !== undefined) patch.examFlaccidity = body.examFlaccidity.trim() || null;
+  if (body.examVolume !== undefined) patch.examVolume = body.examVolume.trim() || null;
+  if (body.examAsymmetries !== undefined) patch.examAsymmetries = body.examAsymmetries;
+  if (body.examAsymmetryNotes !== undefined) patch.examAsymmetryNotes = body.examAsymmetryNotes.trim() || null;
+  if (body.examDiagnosis !== undefined) patch.examDiagnosis = body.examDiagnosis.trim() || null;
   return patch;
 }
 
@@ -249,6 +288,41 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   const updated = await prisma.patient.update({
     where: { id: req.params.id },
     data: { photoUrl: photo.secure_url, photoPublicId: photo.public_id },
+  });
+
+  return res.json({ patient: updated });
+}
+
+export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>, res: Response) {
+  const slot = req.params.slot as ExamPhotoSlot;
+  if (!EXAM_PHOTO_SLOTS.includes(slot)) {
+    return res.status(400).json({ error: 'Ángulo de foto no válido' });
+  }
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de foto' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const photo = await new Promise<{ secure_url: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'image', folder: `dentalcloud/patients/exam-photos/${slot}` },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  const field = EXAM_PHOTO_FIELD[slot].url;
+  const updated = await prisma.patient.update({
+    where: { id: req.params.id },
+    data: { [field]: photo.secure_url },
   });
 
   return res.json({ patient: updated });
