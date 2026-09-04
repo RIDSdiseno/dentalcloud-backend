@@ -45,6 +45,7 @@ model Clinica {
   clinicalDocuments          ClinicalDocument[]
   consentTypes               ConsentType[]
   consents                   Consent[]
+  consultationPayments       ConsultationPayment[]
   convenios                  Convenio[]
   documentFormats            DocumentFormat[]
   evolutionTemplates         EvolutionTemplate[]
@@ -97,6 +98,7 @@ model User {
   appointmentsReceived          Appointment[]               @relation("AppointmentReceivedBy")
   clinicalDocuments             ClinicalDocument[]
   consentsSent                  Consent[]                   @relation("ConsentsSentBy")
+  consultationPaymentsRegistered ConsultationPayment[]
   evolutions                    Evolution[]
   evolutionDeletions            EvolutionDeletion[]
   ledgerMovements               LedgerMovement[]
@@ -738,4 +740,28 @@ model DocumentFormat {
 
   @@index([clinicaId])
   @@map("document_formats")
+}
+
+// Registro de pagos de consulta (previo a la atención) — apartado aparte, no
+// ligado a la ficha de un paciente. Solo sirve para que el personal vea
+// quién pagó y decida a mano si atenderlo; no bloquea nada del sistema.
+// Si el RUT coincide con uno acá al crear un paciente nuevo, se usa para
+// autocompletar nombre y correo (ver patientsController).
+model ConsultationPayment {
+  id            String   @id @default(uuid())
+  clinicaId     String
+  rut           String
+  firstName     String
+  lastName      String
+  email         String?
+  amount        Int
+  paymentMethod String?
+  registeredById String
+  createdAt     DateTime @default(now())
+  clinica       Clinica  @relation(fields: [clinicaId], references: [id])
+  registeredBy  User     @relation(fields: [registeredById], references: [id])
+
+  @@index([clinicaId])
+  @@index([clinicaId, rut])
+  @@map("consultation_payments")
 }
