@@ -34,6 +34,38 @@ export async function updateAgendaSettings(req: Request, res: Response) {
   return res.json({ slotDurationMinutes: clinica.slotDurationMinutes });
 }
 
+export async function getPaymentGateSettings(req: Request, res: Response) {
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: req.user!.clinicaId! },
+    select: { paymentGateEnabled: true, paymentGateMinPercent: true },
+  });
+  return res.json({
+    paymentGateEnabled: clinica?.paymentGateEnabled ?? false,
+    paymentGateMinPercent: clinica?.paymentGateMinPercent ?? 0,
+  });
+}
+
+export async function updatePaymentGateSettings(req: Request, res: Response) {
+  const { paymentGateEnabled, paymentGateMinPercent } = req.body as {
+    paymentGateEnabled?: boolean;
+    paymentGateMinPercent?: number;
+  };
+  if (paymentGateMinPercent !== undefined && (paymentGateMinPercent < 0 || paymentGateMinPercent > 100)) {
+    return res.status(400).json({ error: 'paymentGateMinPercent debe estar entre 0 y 100' });
+  }
+
+  const clinica = await prisma.clinica.update({
+    where: { id: req.user!.clinicaId! },
+    data: {
+      ...(paymentGateEnabled !== undefined ? { paymentGateEnabled } : {}),
+      ...(paymentGateMinPercent !== undefined ? { paymentGateMinPercent: Math.round(paymentGateMinPercent) } : {}),
+    },
+    select: { paymentGateEnabled: true, paymentGateMinPercent: true },
+  });
+
+  return res.json(clinica);
+}
+
 export async function updateRolePermissions(req: Request, res: Response) {
   const patch = req.body as Partial<Record<string, Partial<Record<string, boolean>>>>;
 

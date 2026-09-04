@@ -28,13 +28,35 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   };
   const item = await prisma.treatmentItem.findUnique({
     where: { id: req.params.id },
-    include: { treatmentPlan: { select: { status: true } } },
+    include: { treatmentPlan: { select: { status: true, patientId: true, amount: true, clinicaId: true } } },
   });
   if (!item) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
   }
   if (isPlanAlta(item.treatmentPlan)) {
     return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
+  }
+
+  // Candado de pago (Configuracion > Pagos, personalizable por clinica): no
+  // se puede marcar un procedimiento como completado si el abono del
+  // paciente para este presupuesto no alcanza el minimo configurado.
+  if (body.completed === true) {
+    const clinica = await prisma.clinica.findUnique({
+      where: { id: item.treatmentPlan.clinicaId },
+      select: { paymentGateEnabled: true, paymentGateMinPercent: true },
+    });
+    if (clinica?.paymentGateEnabled && item.treatmentPlan.amount > 0) {
+      const abonado = await prisma.ledgerMovement.aggregate({
+        where: { treatmentPlanId: item.treatmentPlanId, type: 'abono' },
+        _sum: { haber: true },
+      });
+      const abonadoPercent = ((abonado._sum.haber ?? 0) / item.treatmentPlan.amount) * 100;
+      if (abonadoPercent < clinica.paymentGateMinPercent) {
+        return res.status(403).json({
+          error: `Este paciente debe tener al menos un ${clinica.paymentGateMinPercent}% abonado de este presupuesto para poder marcar procedimientos como completados (lleva ${Math.round(abonadoPercent)}%).`,
+        });
+      }
+    }
   }
 
   const updatedItem = await prisma.treatmentItem.update({
