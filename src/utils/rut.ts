@@ -29,3 +29,10 @@ export function formatRut(rut: string): string {
   const withDots = body.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   return `${withDots}-${dv}`;
 }
+
+// Para llamadas a la API de Dimage: devuelve el RUT en formato "dígitos-DV"
+// sin puntos, que es como Dimage lo almacena internamente (ej: "205318-K").
+export function dimageRut(rut: string): string {
+  const clean = cleanRut(rut);
+  return `${clean.slice(0, -1)}-${clean.slice(-1)}`;
+}

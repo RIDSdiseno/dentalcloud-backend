@@ -1,5 +1,5 @@
 import type { Patient } from '@prisma/client';
-import { formatRut } from '../utils/rut';
+import { dimageRut } from '../utils/rut';
 import { isDimageConfigured, findPatientByRut, upsertPatient } from './dimageClient';
 
 // Crea (o vincula, si ya existía por RUT) el paciente en RIDS RX si todavía no
@@ -8,7 +8,7 @@ import { isDimageConfigured, findPatientByRut, upsertPatient } from './dimageCli
 export async function syncPatientToDimageIfNeeded(patient: Patient): Promise<void> {
   if (!isDimageConfigured()) return;
 
-  const rut = formatRut(patient.rut);
+  const rut = dimageRut(patient.rut);
   const existing = await findPatientByRut(rut);
   if (existing) return;
 

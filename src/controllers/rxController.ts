@@ -2,7 +2,7 @@ import fs from 'fs';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import prisma from '../lib/prisma';
-import { formatRut } from '../utils/rut';
+import { dimageRut } from '../utils/rut';
 import {
   isDimageConfigured,
   findPatientByRut,
@@ -71,7 +71,7 @@ export async function patientStatus(req: Request, res: Response) {
   if (!patient) return;
 
   try {
-    const dimagePatient = await findPatientByRut(formatRut(patient.rut));
+    const dimagePatient = await findPatientByRut(dimageRut(patient.rut));
     return res.json({ synced: Boolean(dimagePatient), patient: dimagePatient });
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo consultar el estado del paciente en RIDS RX') });
@@ -88,7 +88,7 @@ export async function syncPatient(req: Request, res: Response) {
 
   try {
     const dimagePatient = await upsertPatient({
-      rut: formatRut(patient.rut),
+      rut: dimageRut(patient.rut),
       name: `${patient.firstName} ${patient.lastName}`,
       email: patient.email,
       celphone: patient.phone,
@@ -111,7 +111,7 @@ export async function listOrders(req: Request, res: Response) {
   if (!patient) return;
 
   try {
-    const result = await fetchOrdersByPatient(formatRut(patient.rut));
+    const result = await fetchOrdersByPatient(dimageRut(patient.rut));
     return res.json(result);
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudieron cargar las órdenes Rx') });
@@ -157,7 +157,7 @@ export async function createRxOrder(req: Request, res: Response) {
     });
   }
 
-  const odontologoRut = formatRut(professional.rut);
+  const odontologoRut = dimageRut(professional.rut);
 
   try {
     const existingOdontologo = await findOdontologoByRut(odontologoRut);
@@ -168,7 +168,7 @@ export async function createRxOrder(req: Request, res: Response) {
     await syncPatientToDimageIfNeeded(patient);
 
     const order = await createOrder({
-      paciente: formatRut(patient.rut),
+      paciente: dimageRut(patient.rut),
       odontologo: odontologoRut,
       clinica: sucursal.dimageClinicId,
       diagnostico: body.diagnostico,
@@ -266,7 +266,7 @@ export async function updateRxOrder(req: Request<{ id: string }>, res: Response)
     if (!professional?.rut) {
       return res.status(400).json({ error: 'El profesional seleccionado no tiene un RUT configurado' });
     }
-    odontologoRut = formatRut(professional.rut);
+    odontologoRut = dimageRut(professional.rut);
   }
 
   try {
