@@ -39,12 +39,6 @@ model Clinica {
   // clave ausente se trata como `true` (habilitada) para no romper clínicas
   // ya emparejadas antes de que existiera este control granular.
   federationSyncSettings     Json                        @default("{}")
-  // Candado de pago (Configuracion > Pagos, personalizable por clinica): si
-  // esta activo, no se puede marcar un procedimiento como completado hasta
-  // que el paciente tenga abonado al menos paymentGateMinPercent de ese
-  // presupuesto (ver treatmentItemsController.update).
-  paymentGateEnabled         Boolean                     @default(false)
-  paymentGateMinPercent      Int                         @default(0)
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   chairs                     Chair[]

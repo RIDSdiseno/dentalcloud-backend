@@ -24,7 +24,6 @@ import clinicasRoutes from './routes/clinicas';
 import clinicaSettingsRoutes from './routes/clinicaSettings';
 import agendaSettingsRoutes from './routes/agendaSettings';
 import documentFormatsRoutes from './routes/documentFormats';
-import paymentGateSettingsRoutes from './routes/paymentGateSettings';
 import { startFederationRetryLoop } from './lib/federationRetry';
 
 const app = express();
@@ -73,7 +72,6 @@ app.use('/api/clinicas', clinicasRoutes);
 app.use('/api/clinica/role-permissions', clinicaSettingsRoutes);
 app.use('/api/clinica/agenda-settings', agendaSettingsRoutes);
 app.use('/api/document-formats', documentFormatsRoutes);
-app.use('/api/clinica/payment-gate-settings', paymentGateSettingsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
