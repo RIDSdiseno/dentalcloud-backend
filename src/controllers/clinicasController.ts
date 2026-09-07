@@ -14,7 +14,7 @@ import {
   isFederationConfigured,
   mirrorClinicToDentalDemo,
 } from '../lib/federationClient';
-import { syncClinicaActiveStateToFederation, syncClinicaToFederation, type FederationSyncKey } from '../lib/federationSync';
+import { syncClinicaActiveStateToFederation, syncClinicaToFederation, syncSucursalToFederation, type FederationSyncKey } from '../lib/federationSync';
 import { computeTreatmentStatus } from '../utils/treatmentStatus';
 
 const FEDERATION_SYNC_KEYS: FederationSyncKey[] = [
@@ -132,7 +132,7 @@ const VALID_PAISES = [
 ];
 
 export async function create(req: Request, res: Response) {
-  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword } = req.body as {
+  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword, sucursalName, syncSucursalWithFederation } = req.body as {
     name?: string;
     rut?: string;
     tipo?: string;
@@ -140,8 +140,13 @@ export async function create(req: Request, res: Response) {
     adminName?: string;
     adminEmail?: string;
     adminPassword?: string;
+    sucursalName?: string;
+    syncSucursalWithFederation?: boolean | string;
   };
   const file = req.file;
+  const wantsSucursal = Boolean(sucursalName?.trim());
+  const shouldSyncSucursal =
+    wantsSucursal && (syncSucursalWithFederation === true || syncSucursalWithFederation === 'true');
 
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
@@ -192,7 +197,7 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(adminPassword, 10);
 
-  const clinica = await prisma.$transaction(async (tx) => {
+  const { clinica, sucursal } = await prisma.$transaction(async (tx) => {
     const clinica = await tx.clinica.create({
       data: {
         name: name.trim(),
@@ -214,18 +219,37 @@ export async function create(req: Request, res: Response) {
       },
     });
 
-    return clinica;
+    const sucursal = wantsSucursal
+      ? await tx.sucursal.create({ data: { name: sucursalName!.trim(), clinicaId: clinica.id } })
+      : null;
+
+    return { clinica, sucursal };
   });
 
-  // Best-effort: crea el espejo de esta clínica en Dental-Demo-Back para que
-  // ambas plataformas compartan sus pacientes y agenda desde ahora. No
-  // bloquea ni falla la creación si la otra plataforma no responde.
-  syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
-    console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
-  });
+  if (shouldSyncSucursal && sucursal) {
+    // Para que la sucursal tenga con qué engancharse del otro lado, primero
+    // hay que esperar a que la clínica misma termine de federarse (recién
+    // ahí queda con federatedClinicId) antes de sincronizar la sucursal —
+    // por eso acá SÍ se espera esta llamada, a diferencia del caso de abajo.
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword })
+      .then(async () => {
+        const fresh = await prisma.sucursal.findUnique({ where: { id: sucursal.id } });
+        if (fresh) await syncSucursalToFederation(fresh);
+      })
+      .catch((err) => {
+        console.error('No se pudo sincronizar la clínica/sucursal recién creada con Dental-Demo-Back', err);
+      });
+  } else {
+    // Comportamiento sin cambios respecto a antes de este cambio: la clínica
+    // se sincroniza sola, best-effort, sin bloquear la respuesta. Si se creó
+    // una sucursal pero el switch venía apagado, queda solo en DentalCloud.
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
+      console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
+    });
+  }
 
   const created = (await withStats()).find((c) => c.id === clinica.id);
-  return res.status(201).json({ clinica: created });
+  return res.status(201).json({ clinica: created, sucursal });
 }
 
 async function getLocalPatients() {
