@@ -39,6 +39,10 @@ export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
     orderBy: { name: 'asc' },
     include: {
+      sucursales: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, address: true, active: true, federatedSucursalId: true },
+      },
       _count: {
         select: {
           patients: true,
@@ -91,6 +95,13 @@ export async function withStats() {
     federationCatalogOnly: c.federationCatalogOnly,
     federationPaused: c.federationPaused,
     federationSyncSettings: parseFederationSyncSettings(c.federationSyncSettings),
+    sucursales: c.sucursales.map((s) => ({
+      id: s.id,
+      name: s.name,
+      address: s.address,
+      active: s.active,
+      connectedToDentalDemo: Boolean(s.federatedSucursalId),
+    })),
     createdAt: c.createdAt,
     patientsCount: c._count.patients,
     usersCount: c._count.users,
@@ -131,8 +142,27 @@ const VALID_PAISES = [
   'Otro',
 ];
 
+type PendingSucursal = { name: string; sync: boolean };
+
+function parsePendingSucursales(raw: unknown): PendingSucursal[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((item) => ({
+      name: typeof item?.name === 'string' ? item.name.trim() : '',
+      sync: item?.sync === true,
+    }))
+    .filter((item) => item.name.length > 0);
+}
+
 export async function create(req: Request, res: Response) {
-  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword, sucursalName, syncSucursalWithFederation } = req.body as {
+  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword, sucursales: sucursalesRaw } = req.body as {
     name?: string;
     rut?: string;
     tipo?: string;
@@ -140,13 +170,10 @@ export async function create(req: Request, res: Response) {
     adminName?: string;
     adminEmail?: string;
     adminPassword?: string;
-    sucursalName?: string;
-    syncSucursalWithFederation?: boolean | string;
+    sucursales?: string;
   };
   const file = req.file;
-  const wantsSucursal = Boolean(sucursalName?.trim());
-  const shouldSyncSucursal =
-    wantsSucursal && (syncSucursalWithFederation === true || syncSucursalWithFederation === 'true');
+  const pendingSucursales = parsePendingSucursales(sucursalesRaw);
 
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
@@ -197,7 +224,7 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(adminPassword, 10);
 
-  const { clinica, sucursal } = await prisma.$transaction(async (tx) => {
+  const { clinica, sucursales } = await prisma.$transaction(async (tx) => {
     const clinica = await tx.clinica.create({
       data: {
         name: name.trim(),
@@ -219,37 +246,44 @@ export async function create(req: Request, res: Response) {
       },
     });
 
-    const sucursal = wantsSucursal
-      ? await tx.sucursal.create({ data: { name: sucursalName!.trim(), clinicaId: clinica.id } })
-      : null;
+    const sucursales = [];
+    for (const pending of pendingSucursales) {
+      sucursales.push({
+        record: await tx.sucursal.create({ data: { name: pending.name, clinicaId: clinica.id } }),
+        sync: pending.sync,
+      });
+    }
 
-    return { clinica, sucursal };
+    return { clinica, sucursales };
   });
 
-  if (shouldSyncSucursal && sucursal) {
-    // Para que la sucursal tenga con qué engancharse del otro lado, primero
-    // hay que esperar a que la clínica misma termine de federarse (recién
-    // ahí queda con federatedClinicId) antes de sincronizar la sucursal —
+  const sucursalesToSync = sucursales.filter((s) => s.sync);
+  if (sucursalesToSync.length > 0) {
+    // Para que las sucursales tengan con qué engancharse del otro lado,
+    // primero hay que esperar a que la clínica misma termine de federarse
+    // (recién ahí queda con federatedClinicId) antes de sincronizarlas —
     // por eso acá SÍ se espera esta llamada, a diferencia del caso de abajo.
     syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword })
       .then(async () => {
-        const fresh = await prisma.sucursal.findUnique({ where: { id: sucursal.id } });
-        if (fresh) await syncSucursalToFederation(fresh);
+        for (const { record } of sucursalesToSync) {
+          const fresh = await prisma.sucursal.findUnique({ where: { id: record.id } });
+          if (fresh) await syncSucursalToFederation(fresh);
+        }
       })
       .catch((err) => {
-        console.error('No se pudo sincronizar la clínica/sucursal recién creada con Dental-Demo-Back', err);
+        console.error('No se pudo sincronizar la clínica/sucursales recién creadas con Dental-Demo-Back', err);
       });
   } else {
     // Comportamiento sin cambios respecto a antes de este cambio: la clínica
-    // se sincroniza sola, best-effort, sin bloquear la respuesta. Si se creó
-    // una sucursal pero el switch venía apagado, queda solo en DentalCloud.
+    // se sincroniza sola, best-effort, sin bloquear la respuesta. Las
+    // sucursales creadas sin el switch activado quedan solo en DentalCloud.
     syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
       console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
     });
   }
 
   const created = (await withStats()).find((c) => c.id === clinica.id);
-  return res.status(201).json({ clinica: created, sucursal });
+  return res.status(201).json({ clinica: created });
 }
 
 async function getLocalPatients() {
