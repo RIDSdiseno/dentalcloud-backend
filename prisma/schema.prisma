@@ -64,6 +64,7 @@ model Clinica {
   treatmentPlans             TreatmentPlan[]
   users                      User[]
   workSchedules              WorkSchedule[]
+  openSlots                  OpenSlot[]
 
   @@map("clinicas")
 }
@@ -111,6 +112,8 @@ model User {
   treatmentPlansStartedBy       TreatmentPlan[]             @relation("TreatmentPlanStartedBy")
   clinica                       Clinica?                    @relation(fields: [clinicaId], references: [id])
   workSchedules                 WorkSchedule[]
+  openSlots                     OpenSlot[]                  @relation("OpenSlotProfessional")
+  openSlotsCreated              OpenSlot[]                  @relation("OpenSlotCreatedBy")
 
   @@index([clinicaId])
   @@map("users")
@@ -126,6 +129,7 @@ model Chair {
   appointments  Appointment[]
   clinica       Clinica        @relation(fields: [clinicaId], references: [id])
   workSchedules WorkSchedule[]
+  openSlots     OpenSlot[]
 
   @@unique([clinicaId, number])
   @@map("chairs")
@@ -529,6 +533,9 @@ model Appointment {
   patient                Patient  @relation(fields: [patientId], references: [id])
   professional           User?    @relation("AppointmentProfessional", fields: [professionalId], references: [id])
   receivedBy             User?    @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
+  // Presente solo si esta cita nació de tomar una hora publicada ("Agregar
+  // horas disponibles") — al cancelar la cita, se usa para reabrir esa hora.
+  openSlot               OpenSlot?
 
   @@index([chairId, startAt])
   @@index([professionalId, startAt])
@@ -706,6 +713,35 @@ model WorkSchedule {
   @@index([professionalId, weekday])
   @@index([clinicaId])
   @@map("work_schedules")
+}
+
+// Hora puntual que un profesional (o el administrador, a nombre de un
+// profesional) publica desde su Agenda diaria como disponible — "Agregar
+// horas disponibles". Mientras esté 'abierta', el portal de pacientes la
+// ofrece para agendar; al tomarse (por el staff desde "Nueva cita" o por el
+// paciente desde el portal) nace una Appointment real y esta queda 'tomada'.
+// Si esa cita se cancela después, esta hora vuelve a quedar 'abierta'.
+model OpenSlot {
+  id              String    @id @default(uuid())
+  clinicaId       String
+  chairId         String
+  professionalId  String
+  startAt         DateTime
+  endAt           DateTime
+  status          String    @default("abierta")
+  createdByUserId String
+  appointmentId   String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  clinica         Clinica   @relation(fields: [clinicaId], references: [id])
+  chair           Chair     @relation(fields: [chairId], references: [id])
+  professional    User      @relation("OpenSlotProfessional", fields: [professionalId], references: [id])
+  createdBy       User      @relation("OpenSlotCreatedBy", fields: [createdByUserId], references: [id])
+  appointment     Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([clinicaId, professionalId, startAt])
+  @@index([chairId, startAt])
+  @@map("open_slots")
 }
 
 // Cola de reintento para escrituras de federación (hacia Dental-Demo-Back)

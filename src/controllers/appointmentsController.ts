@@ -12,6 +12,10 @@ type AppointmentInput = {
   endAt?: string;
   notes?: string;
   type?: string;
+  // Si viene, la cita nace de tomar una hora publicada ("Agregar horas
+  // disponibles") — chairId/professionalId/startAt/endAt se ignoran y se
+  // usan los de la hora publicada, nunca los que mande el cliente.
+  openSlotId?: string;
 };
 
 type UrgencyInput = {
@@ -94,6 +98,7 @@ export async function list(req: Request, res: Response) {
 
   const appointments = await prisma.appointment.findMany({
     where: {
+      clinicaId: req.user!.clinicaId!,
       ...(rangeStart ? { startAt: { gte: rangeStart, lte: rangeEnd } } : {}),
       ...(patientId ? { patientId } : { status: { not: 'cancelada' } }),
       ...(chairId ? { chairId } : {}),
@@ -105,8 +110,21 @@ export async function list(req: Request, res: Response) {
   return res.json({ appointments });
 }
 
+class HttpError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export async function create(req: Request, res: Response) {
   const body = req.body as AppointmentInput;
+
+  if (body.openSlotId) {
+    return createFromOpenSlot(req, res, body.openSlotId, body.patientId, body.notes, body.type);
+  }
 
   if (!body.chairId || !body.patientId || !body.startAt || !body.endAt) {
     return res.status(400).json({ error: 'chairId, patientId, startAt y endAt son requeridos' });
@@ -180,6 +198,81 @@ export async function create(req: Request, res: Response) {
   });
 
   return res.status(201).json({ appointment });
+}
+
+// Toma una hora publicada ("Agregar horas disponibles") y la convierte en una
+// cita real — usado tanto por "Seleccionar cita ya postulada" (staff) como,
+// en el portal de pacientes, por el propio paciente. El sillón/profesional/
+// horario SIEMPRE salen de la hora publicada, nunca de lo que mande el
+// cliente, para que nadie pueda "tomar" una hora pero inyectar un horario
+// distinto al que en verdad se publicó.
+async function createFromOpenSlot(
+  req: Request,
+  res: Response,
+  openSlotId: string,
+  patientId: string | undefined,
+  notes: string | undefined,
+  type: string | undefined
+) {
+  if (!patientId) {
+    return res.status(400).json({ error: 'Selecciona o crea un paciente para tomar esta hora' });
+  }
+  if (type && !APPOINTMENT_TYPES.includes(type)) {
+    return res.status(400).json({ error: `El tipo debe ser uno de: ${APPOINTMENT_TYPES.join(', ')}` });
+  }
+
+  const clinicaId = req.user!.clinicaId!;
+
+  try {
+    const appointment = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${openSlotId}))`;
+
+      const [openSlot, patient] = await Promise.all([
+        tx.openSlot.findUnique({ where: { id: openSlotId } }),
+        tx.patient.findUnique({ where: { id: patientId } }),
+      ]);
+      if (!openSlot || openSlot.clinicaId !== clinicaId) {
+        throw new HttpError(404, 'Hora publicada no encontrada');
+      }
+      if (openSlot.status !== 'abierta') {
+        throw new HttpError(409, 'Esta hora ya no está disponible, elige otra');
+      }
+      if (!patient || patient.clinicaId !== clinicaId) {
+        throw new HttpError(400, 'El paciente seleccionado no existe');
+      }
+
+      const created = await tx.appointment.create({
+        data: {
+          chairId: openSlot.chairId,
+          patientId,
+          professionalId: openSlot.professionalId,
+          startAt: openSlot.startAt,
+          endAt: openSlot.endAt,
+          notes: notes?.trim() || null,
+          type: type || 'cita',
+          clinicaId,
+        },
+        include,
+      });
+
+      await tx.openSlot.update({ where: { id: openSlot.id }, data: { status: 'tomada', appointmentId: created.id } });
+
+      return created;
+    });
+
+    syncAppointmentToFederation(appointment).catch((err) => {
+      console.error('No se pudo sincronizar la cita recién creada con Dental-Demo-Back', err);
+    });
+    sendAppointmentBookedEmail(appointment).catch((err) => {
+      console.error('No se pudo enviar el correo de confirmación de la cita', err);
+    });
+
+    return res.status(201).json({ appointment });
+  } catch (err) {
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    console.error('Error tomando hora publicada', err);
+    return res.status(500).json({ error: 'No se pudo agendar la cita' });
+  }
 }
 
 // Circuito de Urgencia: entra directo, sin agenda previa — el propio endpoint
@@ -269,7 +362,7 @@ export async function createUrgencia(req: Request, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
-  if (!appointment) {
+  if (!appointment || appointment.clinicaId !== req.user!.clinicaId) {
     return res.status(404).json({ error: 'Cita no encontrada' });
   }
 
@@ -281,6 +374,14 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     data: { status: 'cancelada' },
   });
+
+  // Si esta cita nació de tomar una hora publicada, la hora vuelve a quedar
+  // disponible para que otro paciente (o el mismo) la tome.
+  prisma.openSlot
+    .updateMany({ where: { appointmentId: cancelled.id }, data: { status: 'abierta', appointmentId: null } })
+    .catch((err) => {
+      console.error('No se pudo reabrir la hora publicada tras cancelar la cita', err);
+    });
 
   syncAppointmentToFederation(cancelled).catch((err) => {
     console.error('No se pudo sincronizar la cancelación de la cita con Dental-Demo-Back', err);
