@@ -132,8 +132,17 @@ export async function create(req: Request, res: Response) {
       amount,
       notes: body.notes?.trim() || null,
       diagramType,
-      facialAnnotations: body.facialAnnotations === undefined ? undefined : (body.facialAnnotations as object),
-      facialGender: body.facialGender === 'hombre' || body.facialGender === 'mujer' ? body.facialGender : null,
+      // El mapa facial solo tiene sentido para un plan estético — aunque el
+      // body traiga estos campos (por error o por una petición directa a la
+      // API), un plan dental nunca los guarda.
+      facialAnnotations:
+        diagramType === 'estetica' && body.facialAnnotations !== undefined
+          ? (body.facialAnnotations as object)
+          : undefined,
+      facialGender:
+        diagramType === 'estetica' && (body.facialGender === 'hombre' || body.facialGender === 'mujer')
+          ? body.facialGender
+          : null,
       createdByUserId: req.user!.sub,
       clinicaId,
       items: {

@@ -12,14 +12,37 @@ import {
   fetchRemoteClinics,
   fetchRemotePatients,
   isFederationConfigured,
+  mirrorClinicToDentalDemo,
 } from '../lib/federationClient';
-import { syncClinicaActiveStateToFederation, syncClinicaToFederation } from '../lib/federationSync';
+import { syncClinicaActiveStateToFederation, syncClinicaToFederation, syncSucursalToFederation, type FederationSyncKey } from '../lib/federationSync';
 import { computeTreatmentStatus } from '../utils/treatmentStatus';
+
+const FEDERATION_SYNC_KEYS: FederationSyncKey[] = [
+  'patients',
+  'appointments',
+  'treatmentPlans',
+  'users',
+  'sucursales',
+  'catalog',
+];
+
+function parseFederationSyncSettings(raw: unknown): Record<FederationSyncKey, boolean> {
+  const parsed = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+  const result = {} as Record<FederationSyncKey, boolean>;
+  for (const key of FEDERATION_SYNC_KEYS) {
+    result[key] = parsed[key] !== false;
+  }
+  return result;
+}
 
 export async function withStats() {
   const clinicas = await prisma.clinica.findMany({
     orderBy: { name: 'asc' },
     include: {
+      sucursales: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, address: true, active: true, federatedSucursalId: true },
+      },
       _count: {
         select: {
           patients: true,
@@ -68,6 +91,17 @@ export async function withStats() {
     logoUrl: c.logoUrl,
     rxEnabled: c.rxEnabled,
     modules: parseClinicaModules(c.modules),
+    federatedClinicId: c.federatedClinicId,
+    federationCatalogOnly: c.federationCatalogOnly,
+    federationPaused: c.federationPaused,
+    federationSyncSettings: parseFederationSyncSettings(c.federationSyncSettings),
+    sucursales: c.sucursales.map((s) => ({
+      id: s.id,
+      name: s.name,
+      address: s.address,
+      active: s.active,
+      connectedToDentalDemo: Boolean(s.federatedSucursalId),
+    })),
     createdAt: c.createdAt,
     patientsCount: c._count.patients,
     usersCount: c._count.users,
@@ -108,8 +142,27 @@ const VALID_PAISES = [
   'Otro',
 ];
 
+type PendingSucursal = { name: string; sync: boolean };
+
+function parsePendingSucursales(raw: unknown): PendingSucursal[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((item) => ({
+      name: typeof item?.name === 'string' ? item.name.trim() : '',
+      sync: item?.sync === true,
+    }))
+    .filter((item) => item.name.length > 0);
+}
+
 export async function create(req: Request, res: Response) {
-  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword } = req.body as {
+  const { name, rut, tipo, pais, adminName, adminEmail, adminPassword, sucursales: sucursalesRaw } = req.body as {
     name?: string;
     rut?: string;
     tipo?: string;
@@ -117,8 +170,10 @@ export async function create(req: Request, res: Response) {
     adminName?: string;
     adminEmail?: string;
     adminPassword?: string;
+    sucursales?: string;
   };
   const file = req.file;
+  const pendingSucursales = parsePendingSucursales(sucursalesRaw);
 
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
@@ -169,7 +224,7 @@ export async function create(req: Request, res: Response) {
 
   const passwordHash = await bcrypt.hash(adminPassword, 10);
 
-  const clinica = await prisma.$transaction(async (tx) => {
+  const { clinica, sucursales } = await prisma.$transaction(async (tx) => {
     const clinica = await tx.clinica.create({
       data: {
         name: name.trim(),
@@ -191,15 +246,41 @@ export async function create(req: Request, res: Response) {
       },
     });
 
-    return clinica;
+    const sucursales = [];
+    for (const pending of pendingSucursales) {
+      sucursales.push({
+        record: await tx.sucursal.create({ data: { name: pending.name, clinicaId: clinica.id } }),
+        sync: pending.sync,
+      });
+    }
+
+    return { clinica, sucursales };
   });
 
-  // Best-effort: crea el espejo de esta clínica en Dental-Demo-Back para que
-  // ambas plataformas compartan sus pacientes y agenda desde ahora. No
-  // bloquea ni falla la creación si la otra plataforma no responde.
-  syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
-    console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
-  });
+  const sucursalesToSync = sucursales.filter((s) => s.sync);
+  if (sucursalesToSync.length > 0) {
+    // Para que las sucursales tengan con qué engancharse del otro lado,
+    // primero hay que esperar a que la clínica misma termine de federarse
+    // (recién ahí queda con federatedClinicId) antes de sincronizarlas —
+    // por eso acá SÍ se espera esta llamada, a diferencia del caso de abajo.
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword })
+      .then(async () => {
+        for (const { record } of sucursalesToSync) {
+          const fresh = await prisma.sucursal.findUnique({ where: { id: record.id } });
+          if (fresh) await syncSucursalToFederation(fresh);
+        }
+      })
+      .catch((err) => {
+        console.error('No se pudo sincronizar la clínica/sucursales recién creadas con Dental-Demo-Back', err);
+      });
+  } else {
+    // Comportamiento sin cambios respecto a antes de este cambio: la clínica
+    // se sincroniza sola, best-effort, sin bloquear la respuesta. Las
+    // sucursales creadas sin el switch activado quedan solo en DentalCloud.
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
+      console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
+    });
+  }
 
   const created = (await withStats()).find((c) => c.id === clinica.id);
   return res.status(201).json({ clinica: created });
@@ -424,15 +505,19 @@ export async function listAllObservations(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { name, rut, active, tipo, pais, rxEnabled, modules } = req.body as {
-    name?: string;
-    rut?: string;
-    active?: boolean;
-    tipo?: string;
-    pais?: string;
-    rxEnabled?: boolean;
-    modules?: Partial<Record<ClinicaModuleKey, boolean>>;
-  };
+  const { name, rut, active, tipo, pais, rxEnabled, modules, federationCatalogOnly, federationPaused, federationSyncSettings } =
+    req.body as {
+      name?: string;
+      rut?: string;
+      active?: boolean;
+      tipo?: string;
+      pais?: string;
+      rxEnabled?: boolean;
+      modules?: Partial<Record<ClinicaModuleKey, boolean>>;
+      federationCatalogOnly?: boolean;
+      federationPaused?: boolean;
+      federationSyncSettings?: Partial<Record<FederationSyncKey, boolean>>;
+    };
 
   if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
@@ -449,6 +534,13 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(404).json({ error: 'Clínica no encontrada' });
   }
 
+  if (
+    (federationCatalogOnly !== undefined || federationPaused !== undefined || federationSyncSettings !== undefined) &&
+    !clinica.federatedClinicId
+  ) {
+    return res.status(400).json({ error: 'Esta clínica no está conectada por federación' });
+  }
+
   let cleanedRut: string | null | undefined;
   if (rut !== undefined) {
     cleanedRut = rut.trim() ? cleanRut(rut) : null;
@@ -463,6 +555,9 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   }
 
   const mergedModules = modules ? { ...parseClinicaModules(clinica.modules), ...modules } : undefined;
+  const mergedFederationSyncSettings = federationSyncSettings
+    ? { ...parseFederationSyncSettings(clinica.federationSyncSettings), ...federationSyncSettings }
+    : undefined;
 
   const updatedClinica = await prisma.clinica.update({
     where: { id: req.params.id },
@@ -474,6 +569,9 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...(pais !== undefined ? { pais } : {}),
       ...(rxEnabled !== undefined ? { rxEnabled } : {}),
       ...(mergedModules !== undefined ? { modules: mergedModules } : {}),
+      ...(federationCatalogOnly !== undefined ? { federationCatalogOnly } : {}),
+      ...(federationPaused !== undefined ? { federationPaused } : {}),
+      ...(mergedFederationSyncSettings !== undefined ? { federationSyncSettings: mergedFederationSyncSettings } : {}),
     },
   });
 
@@ -485,6 +583,62 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       console.error('No se pudo sincronizar el estado activo de la clínica con Dental-Demo-Back', err);
     });
   }
+
+  const updated = (await withStats()).find((c) => c.id === req.params.id);
+  return res.json({ clinica: updated });
+}
+
+// Empareja manualmente una clínica ya existente con su par en Dental-Demo,
+// sin crear ninguna cuenta de usuario (a diferencia de syncClinicaToFederation,
+// que se usa al crear una clínica nueva y sí manda datos de admin) — solo el
+// registro puro de la clínica. Arranca en modo "solo catálogo" por seguridad:
+// si la clínica ya operaba con datos reales propios, no se mezclan de golpe.
+export async function connectFederation(req: Request<{ id: string }>, res: Response) {
+  if (!isFederationConfigured()) {
+    return res.status(400).json({ error: 'La federación no está configurada en este servidor' });
+  }
+
+  const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
+  if (!clinica) {
+    return res.status(404).json({ error: 'Clínica no encontrada' });
+  }
+  if (clinica.federatedClinicId) {
+    return res.status(409).json({ error: 'Esta clínica ya está conectada' });
+  }
+
+  try {
+    const mirror = await mirrorClinicToDentalDemo({ externalId: clinica.id, name: clinica.name, pais: clinica.pais });
+    await prisma.clinica.update({
+      where: { id: clinica.id },
+      data: { federatedClinicId: mirror.id, federationCatalogOnly: true, federationPaused: false },
+    });
+  } catch {
+    return res.status(502).json({ error: 'No se pudo conectar con Dental-Demo. Intenta nuevamente.' });
+  }
+
+  const updated = (await withStats()).find((c) => c.id === req.params.id);
+  return res.json({ clinica: updated });
+}
+
+// Desconecta la clínica de su par en Dental-Demo. Solo afecta este lado —
+// no borra ni desactiva nada allá. Al reconectar (connectFederation), Dental-Demo
+// busca por el mismo externalId (el id de esta clínica, que no cambia) y
+// re-vincula el registro que ya existía en vez de crear uno duplicado — solo
+// se pierden las banderas locales (federationCatalogOnly/federationPaused),
+// que vuelven a su valor por defecto.
+export async function disconnectFederation(req: Request<{ id: string }>, res: Response) {
+  const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
+  if (!clinica) {
+    return res.status(404).json({ error: 'Clínica no encontrada' });
+  }
+  if (!clinica.federatedClinicId) {
+    return res.status(409).json({ error: 'Esta clínica no está conectada' });
+  }
+
+  await prisma.clinica.update({
+    where: { id: clinica.id },
+    data: { federatedClinicId: null, federationCatalogOnly: false, federationPaused: false, federationSyncSettings: {} },
+  });
 
   const updated = (await withStats()).find((c) => c.id === req.params.id);
   return res.json({ clinica: updated });
@@ -532,8 +686,19 @@ export async function updateLogo(req: Request<{ id: string }>, res: Response) {
 // Dental-Demo-Back (X-API-KEY, ver requireFederationOrSuperAdmin). Todos son
 // upsert por id externo, así que son seguros de reintentar sin duplicar.
 
+// Dental-Demo maneja "DENTAL"/"ESTHETIC"/"BOTH" (su selector de tipo de
+// clínica); nosotros usamos 'dental'/'estetica'/'ambas'. Si no llega el
+// campo (llamadas antiguas, o clínicas creadas antes de que Dental-Demo
+// tuviera este selector), se asume 'dental' — no 'estetica' como antes,
+// porque ya no es cierto que toda clínica federada sea de estética.
+const REMOTE_CLINIC_TYPE_MAP: Record<string, 'dental' | 'estetica' | 'ambas'> = {
+  DENTAL: 'dental',
+  ESTHETIC: 'estetica',
+  BOTH: 'ambas',
+};
+
 export async function mirrorClinica(req: Request, res: Response) {
-  const { externalId, name, pais, adminName, adminEmail, adminPassword, active } = req.body as {
+  const { externalId, name, pais, adminName, adminEmail, adminPassword, active, clinicType } = req.body as {
     externalId?: string;
     name?: string;
     pais?: string;
@@ -541,10 +706,12 @@ export async function mirrorClinica(req: Request, res: Response) {
     adminEmail?: string | null;
     adminPassword?: string | null;
     active?: boolean;
+    clinicType?: string;
   };
   if (!externalId || !name?.trim()) {
     return res.status(400).json({ error: 'externalId y name son requeridos' });
   }
+  const tipo = (clinicType && REMOTE_CLINIC_TYPE_MAP[clinicType]) || 'dental';
 
   const existing = await prisma.clinica.findUnique({
     where: { federatedClinicId: externalId },
@@ -565,12 +732,7 @@ export async function mirrorClinica(req: Request, res: Response) {
         name: name.trim(),
         pais: pais || 'Chile',
         federatedClinicId: externalId,
-        // DentalOS sólo federa clínicas que nacieron con el módulo de
-        // estética habilitado (ver hasEstheticModule en su createClinic) —
-        // así que toda clínica que llega por mirror es de tipo estética, no
-        // dental (el default del esquema), o el formulario de presupuestos
-        // arranca en modo odontograma en vez del mapa facial.
-        tipo: 'estetica',
+        tipo,
         ...(active !== undefined ? { active } : {}),
       },
     });
@@ -939,7 +1101,7 @@ export async function mirrorConvenio(req: Request, res: Response) {
 }
 
 export async function mirrorPrestacion(req: Request, res: Response) {
-  const { clinicaId, externalId, name, code, basePrice, active, odontogramMode } = req.body as {
+  const { clinicaId, externalId, name, code, basePrice, active, odontogramMode, requiresProductTracking } = req.body as {
     clinicaId?: string;
     externalId?: string;
     name?: string;
@@ -947,6 +1109,7 @@ export async function mirrorPrestacion(req: Request, res: Response) {
     basePrice?: number;
     active?: boolean;
     odontogramMode?: string;
+    requiresProductTracking?: boolean;
   };
 
   if (!clinicaId || !externalId || !name?.trim()) {
@@ -961,6 +1124,7 @@ export async function mirrorPrestacion(req: Request, res: Response) {
     // Dental-Demo-Back no distingue categoría (todas sus prestaciones son
     // dentales) — siempre manda un modo válido para esta columna.
     ...(odontogramMode ? { odontogramMode } : {}),
+    requiresProductTracking: Boolean(requiresProductTracking),
   };
 
   const existing = await prisma.prestacion.findUnique({ where: { federatedPrestacionId: externalId } });

@@ -30,13 +30,24 @@ model Clinica {
   // reales sin que alguien lo pida explícitamente. Si es true, todo el sync
   // de paciente/cita/presupuesto/ítem se omite aunque haya federatedClinicId.
   federationCatalogOnly      Boolean                     @default(false)
+  // Pausa manual de la sincronización (desde el panel de Super Admin) sin
+  // perder el emparejamiento (federatedClinicId) — a diferencia de
+  // desconectar, se puede reanudar en cualquier momento sin re-emparejar.
+  federationPaused           Boolean                     @default(false)
+  // Switches individuales por tipo de dato (panel de Super Admin) — claves:
+  // patients, appointments, treatmentPlans, users, sucursales, catalog. Una
+  // clave ausente se trata como `true` (habilitada) para no romper clínicas
+  // ya emparejadas antes de que existiera este control granular.
+  federationSyncSettings     Json                        @default("{}")
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
   consentTypes               ConsentType[]
   consents                   Consent[]
+  consultationPayments       ConsultationPayment[]
   convenios                  Convenio[]
+  documentFormats            DocumentFormat[]
   evolutionTemplates         EvolutionTemplate[]
   evolutions                 Evolution[]
   evolutionPhotos            EvolutionPhoto[]
@@ -83,9 +94,11 @@ model User {
   // otro sistema.
   federatedUserId                String?                     @unique
   administrativeObservations    AdministrativeObservation[]
-  appointments                  Appointment[]
+  appointments                  Appointment[]               @relation("AppointmentProfessional")
+  appointmentsReceived          Appointment[]               @relation("AppointmentReceivedBy")
   clinicalDocuments             ClinicalDocument[]
   consentsSent                  Consent[]                   @relation("ConsentsSentBy")
+  consultationPaymentsRegistered ConsultationPayment[]
   evolutions                    Evolution[]
   evolutionDeletions            EvolutionDeletion[]
   ledgerMovements               LedgerMovement[]
@@ -127,6 +140,43 @@ model Patient {
   email                      String?
   birthDate                  DateTime?
   address                    String?
+  gender                     String?
+  nationality                String?
+  maritalStatus              String?
+  occupation                 String?
+  emergencyContactName       String?
+  emergencyContactPhone      String?
+  emergencyContactRelationship String?
+  healthInsurance            String?
+  healthInsuranceDetail      String?
+  bloodType                  String?
+  tags                       String[]                    @default([])
+  photoUrl                   String?
+  photoPublicId              String?
+  motivoConsulta             String?
+  // Grabación de respaldo del motivo de consulta, en la voz del paciente. Solo
+  // se puede subir si el paciente ya firmó el consentimiento de tipo
+  // 'grabacion_voz' (ver ConsentType/Consent) — se valida en el controlador,
+  // no aquí, para no bloquear la creación del paciente en sí.
+  motivoConsultaAudioUrl      String?
+  motivoConsultaAudioPublicId String?
+  // Conclusiones de anamnesis (resumen automático se arma en el frontend a
+  // partir de los campos clínicos ya existentes, no se guarda como texto).
+  expectativasPaciente        String?
+  optimoTratamiento           String?
+  // Examen estético.
+  examSkinType                String?
+  examFitzpatrick             String?
+  examWrinkles                String?
+  examFlaccidity              String?
+  examVolume                  String?
+  examAsymmetries             Boolean?
+  examAsymmetryNotes          String?
+  examDiagnosis                    String?
+  examPhotoFrontalUrl              String?
+  examPhotoPerfilDerechoUrl        String?
+  examPhoto45DerechaUrl            String?
+  examPhoto45IzquierdaUrl          String?
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   clinicaId                  String
@@ -140,6 +190,8 @@ model Patient {
   heightCm                   Int?
   medicalConditions          String?
   weightKg                   Float?
+  chronicDiseases            String?
+  dentalHistory              String?
   administrativeObservations AdministrativeObservation[]
   appointments               Appointment[]
   clinicalDocuments          ClinicalDocument[]
@@ -456,13 +508,27 @@ model Appointment {
   professionalId         String?
   type                   String   @default("cita")
   clinicaId              String
+  // Hitos de los Circuitos del Paciente: se llenan al presionar los botones
+  // "Marcar llegada" y "Pasar a atención". Habilitan métricas de puntualidad,
+  // tiempo de espera y tiempo en atención sin pedirle un campo nuevo al doctor.
+  arrivedAt              DateTime?
+  attentionStartedAt     DateTime?
+  attentionEndedAt       DateTime?
+  // Datos propios del circuito de Urgencia — solo se llenan cuando
+  // type === "urgencia". No requieren su propia tabla: una urgencia usa el
+  // mismo circuito clínico (llego → en_atencion → finalizada) que cualquier
+  // cita, solo entra sin agenda previa y con estos datos adicionales.
+  motivoUrgencia         String?
+  triageLevel            String?
+  receivedByUserId       String?
   // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
   // sincronizada) por federación.
   federatedAppointmentId String?  @unique
   chair                  Chair    @relation(fields: [chairId], references: [id])
   clinica                Clinica  @relation(fields: [clinicaId], references: [id])
   patient                Patient  @relation(fields: [patientId], references: [id])
-  professional           User?    @relation(fields: [professionalId], references: [id])
+  professional           User?    @relation("AppointmentProfessional", fields: [professionalId], references: [id])
+  receivedBy             User?    @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
 
   @@index([chairId, startAt])
   @@index([professionalId, startAt])
@@ -657,4 +723,45 @@ model FederationSyncFailure {
 
   @@unique([entityType, localId])
   @@map("federation_sync_failures")
+}
+
+// Plantillas de documentos configurables por clínica (Configuración >
+// Formatos): presupuesto, exámenes, plan de tratamiento, receta. `body` es
+// texto simple por ahora (no HTML/PDF real todavía).
+model DocumentFormat {
+  id        String   @id @default(uuid())
+  clinicaId String
+  name      String
+  type      String
+  body      String   @default("") @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
+
+  @@index([clinicaId])
+  @@map("document_formats")
+}
+
+// Registro de pagos de consulta (previo a la atención) — apartado aparte, no
+// ligado a la ficha de un paciente. Solo sirve para que el personal vea
+// quién pagó y decida a mano si atenderlo; no bloquea nada del sistema.
+// Si el RUT coincide con uno acá al crear un paciente nuevo, se usa para
+// autocompletar nombre y correo (ver patientsController).
+model ConsultationPayment {
+  id            String   @id @default(uuid())
+  clinicaId     String
+  rut           String
+  firstName     String
+  lastName      String
+  email         String?
+  amount        Int
+  paymentMethod String?
+  registeredById String
+  createdAt     DateTime @default(now())
+  clinica       Clinica  @relation(fields: [clinicaId], references: [id])
+  registeredBy  User     @relation(fields: [registeredById], references: [id])
+
+  @@index([clinicaId])
+  @@index([clinicaId, rut])
+  @@map("consultation_payments")
 }
