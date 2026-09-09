@@ -19,6 +19,7 @@ import {
   mirrorAppointment,
   mirrorClinica,
   mirrorConvenio,
+  mirrorLedgerMovement,
   mirrorPatient,
   mirrorPrestacion,
   mirrorPrevision,
@@ -48,6 +49,7 @@ router.post('/federated/users/mirror', requireFederationOrSuperAdmin, mirrorUser
 router.post('/federated/appointments/mirror', requireFederationOrSuperAdmin, mirrorAppointment);
 router.post('/federated/treatment-plans/mirror', requireFederationOrSuperAdmin, mirrorTreatmentPlan);
 router.post('/federated/treatment-plans/items/mirror', requireFederationOrSuperAdmin, mirrorTreatmentItem);
+router.post('/federated/ledger-movements/mirror', requireFederationOrSuperAdmin, mirrorLedgerMovement);
 router.post('/federated/convenios/mirror', requireFederationOrSuperAdmin, mirrorConvenio);
 router.post('/federated/prestaciones/mirror', requireFederationOrSuperAdmin, mirrorPrestacion);
 router.post('/federated/previsiones/mirror', requireFederationOrSuperAdmin, mirrorPrevision);

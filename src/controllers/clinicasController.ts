@@ -1062,6 +1062,90 @@ export async function mirrorTreatmentItem(req: Request, res: Response) {
   return res.status(existing ? 200 : 201).json({ id: itemId });
 }
 
+// Recibe abonos registrados en Dental-Demo-Back contra un presupuesto
+// federado (Pagos de Consulta / Finanzas → Presupuesto conectado) y los
+// refleja como un movimiento de la Cartola (LedgerMovement) de este lado —
+// así el Portal de Pacientes, que sólo lee la Cartola de DentalCloud, también
+// ve los abonos que el paciente hace a través de Dental-Demo. `patientId` y
+// `treatmentPlanId` ya vienen resueltos al id local de este lado (el emisor
+// los tradujo vía sus propios federatedPatientId/federatedTreatmentPlanId),
+// igual que en mirrorTreatmentItem.
+export async function mirrorLedgerMovement(req: Request, res: Response) {
+  const { patientId, treatmentPlanId, externalId, amount, description, paymentMethod, incomeDate, removed } = req.body as {
+    patientId?: string;
+    treatmentPlanId?: string | null;
+    externalId?: string;
+    amount?: number;
+    description?: string | null;
+    paymentMethod?: string | null;
+    incomeDate?: string;
+    removed?: boolean;
+  };
+
+  if (!externalId) {
+    return res.status(400).json({ error: 'externalId es requerido' });
+  }
+
+  const existing = await prisma.ledgerMovement.findUnique({ where: { federatedIncomeId: externalId } });
+
+  if (removed) {
+    if (existing) {
+      await prisma.ledgerMovement.delete({ where: { id: existing.id } });
+    }
+    return res.json({ id: existing?.id ?? null });
+  }
+
+  if (!patientId) {
+    return res.status(400).json({ error: 'patientId es requerido' });
+  }
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: 'amount debe ser un monto positivo' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: patientId }, select: { clinicaId: true } });
+  if (!patient) {
+    return res.status(400).json({ error: 'El paciente indicado no existe' });
+  }
+
+  const plan = treatmentPlanId
+    ? await prisma.treatmentPlan.findFirst({ where: { id: treatmentPlanId, patientId }, select: { id: true, professionalId: true } })
+    : null;
+
+  // No hay federación de cuentas de staff, así que este movimiento no puede
+  // atribuirse a un usuario que realmente lo registró — se usa el
+  // profesional del presupuesto si lo hay, y si no cualquier admin de la
+  // clínica (mismo criterio de "responsable disponible" que
+  // syncClinicaToFederation usa para el admin al reintentar).
+  const registeredById =
+    plan?.professionalId ??
+    (await prisma.user.findFirst({ where: { clinicaId: patient.clinicaId, role: 'admin' }, orderBy: { name: 'asc' }, select: { id: true } }))?.id;
+  if (!registeredById) {
+    return res.status(400).json({ error: 'La clínica no tiene ningún usuario al que atribuir este movimiento' });
+  }
+
+  const data = {
+    patientId,
+    clinicaId: patient.clinicaId,
+    treatmentPlanId: plan?.id ?? null,
+    type: 'abono',
+    debe: 0,
+    haber: Math.round(amount),
+    description: description?.trim() || null,
+    paymentMethod: paymentMethod?.trim() || null,
+    registeredById,
+    ...(incomeDate ? { createdAt: new Date(incomeDate) } : {}),
+  };
+
+  if (existing) {
+    const updated = await prisma.ledgerMovement.update({ where: { id: existing.id }, data });
+    return res.json({ id: updated.id });
+  }
+
+  const created = await prisma.ledgerMovement.create({ data: { ...data, federatedIncomeId: externalId } });
+  return res.status(201).json({ id: created.id });
+}
+
 export async function mirrorConvenio(req: Request, res: Response) {
   const { clinicaId, externalId, name, discountPercent, active } = req.body as {
     clinicaId?: string;

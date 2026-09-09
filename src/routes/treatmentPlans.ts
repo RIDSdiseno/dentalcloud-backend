@@ -5,6 +5,7 @@ import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
 
 import {
   list,
+  listByClinic,
   create,
   update,
   remove,
@@ -27,6 +28,7 @@ const router = Router();
 router.use(authenticate);
 router.use(requireModuleEnabled('tratamientos'));
 router.use(requireRolePermission('tratamientos'));
+router.get('/clinic', listByClinic);
 router.get('/', list);
 router.post('/', requireRolePermission('crearPresupuestos'), create);
 router.patch('/:id', update);

@@ -673,24 +673,30 @@ model EvolutionTemplate {
 }
 
 model LedgerMovement {
-  id              String         @id @default(uuid())
-  number          Int            @unique @default(autoincrement())
-  patientId       String
-  treatmentPlanId String?
-  type            String
-  debe            Int            @default(0)
-  haber           Int            @default(0)
-  description     String?
-  paymentMethod   String?
-  documentNumber  String?
-  notes           String?
-  registeredById  String
-  createdAt       DateTime       @default(now())
-  clinicaId       String
-  clinica         Clinica        @relation(fields: [clinicaId], references: [id])
-  patient         Patient        @relation(fields: [patientId], references: [id])
-  registeredBy    User           @relation(fields: [registeredById], references: [id])
-  treatmentPlan   TreatmentPlan? @relation(fields: [treatmentPlanId], references: [id])
+  id                String         @id @default(uuid())
+  number            Int            @unique @default(autoincrement())
+  patientId         String
+  treatmentPlanId   String?
+  type              String
+  debe              Int            @default(0)
+  haber             Int            @default(0)
+  description       String?
+  paymentMethod     String?
+  documentNumber    String?
+  notes             String?
+  registeredById    String
+  createdAt         DateTime       @default(now())
+  clinicaId         String
+  // Id del ClinicIncome de Dental-Demo-Back que originó este movimiento,
+  // cuando viene de un abono registrado allá (Pagos de Consulta/Presupuesto
+  // conectado) — permite upsert idempotente desde mirrorLedgerMovement sin
+  // duplicar en reintentos. Null para movimientos creados a mano en la
+  // Cartola de DentalCloud.
+  federatedIncomeId String?        @unique
+  clinica           Clinica        @relation(fields: [clinicaId], references: [id])
+  patient           Patient        @relation(fields: [patientId], references: [id])
+  registeredBy      User           @relation(fields: [registeredById], references: [id])
+  treatmentPlan     TreatmentPlan? @relation(fields: [treatmentPlanId], references: [id])
 
   @@index([patientId, createdAt])
   @@index([clinicaId])

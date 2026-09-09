@@ -63,6 +63,32 @@ export async function list(req: Request, res: Response) {
   return res.json({ plans });
 }
 
+// Listado para el módulo "Presupuesto" de Administración: todos los
+// presupuestos de la clínica, de cualquier paciente, en un solo lugar — a
+// diferencia de `list()` (arriba), que exige un patientId y solo muestra los
+// de ESE paciente. Vista liviana (sin ítems/fotos), solo lo necesario para
+// la tabla; el detalle completo se sigue viendo desde la ficha del paciente.
+export async function listByClinic(req: Request, res: Response) {
+  const plans = await prisma.treatmentPlan.findMany({
+    where: { clinicaId: req.user!.clinicaId! },
+    select: {
+      id: true,
+      number: true,
+      patientId: true,
+      name: true,
+      status: true,
+      amount: true,
+      paymentMethod: true,
+      createdAt: true,
+      patient: { select: { id: true, firstName: true, lastName: true, rut: true } },
+      professional: { select: { id: true, name: true } },
+      createdBy: { select: { id: true, name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return res.json({ plans });
+}
+
 export async function create(req: Request, res: Response) {
   const body = req.body as PlanInput;
   if (!body.patientId) {
