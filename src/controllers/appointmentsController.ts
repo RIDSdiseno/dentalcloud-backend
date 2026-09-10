@@ -1,8 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { syncAppointmentToFederation } from '../lib/federationSync';
-import { sendMail } from '../lib/mailer';
-import { buildAppointmentConfirmationEmailHtml } from '../lib/emailTemplates/appointmentEmail';
+import { sendAppointmentConfirmation } from '../lib/emailService';
 
 type AppointmentInput = {
   chairId?: string;
@@ -41,16 +40,17 @@ async function sendAppointmentBookedEmail(appointment: {
     where: { id: appointment.clinicaId },
     select: { name: true, logoUrl: true },
   });
-  await sendMail({
-    to: appointment.patient.email,
-    subject: `Confirmación de tu cita – ${clinica?.name ?? 'fordentcloud'}`,
-    html: buildAppointmentConfirmationEmailHtml({
-      patientFirstName: appointment.patient.firstName,
-      professionalName: appointment.professional?.name ?? 'Por confirmar',
-      startAt: appointment.startAt,
-      clinicaNombre: clinica?.name ?? 'fordentcloud',
-      clinicaLogoUrl: clinica?.logoUrl,
-    }),
+  // La resolución de remitente (SMTP propio de la clínica vs. Graph global)
+  // vive en EmailService — este sitio de llamada no sabe ni le importa cuál
+  // de los dos se terminó usando.
+  await sendAppointmentConfirmation({
+    clinicaId: appointment.clinicaId,
+    patientEmail: appointment.patient.email,
+    patientFirstName: appointment.patient.firstName,
+    professionalName: appointment.professional?.name ?? 'Por confirmar',
+    startAt: appointment.startAt,
+    clinicaNombre: clinica?.name ?? 'fordentcloud',
+    clinicaLogoUrl: clinica?.logoUrl,
   });
 }
 

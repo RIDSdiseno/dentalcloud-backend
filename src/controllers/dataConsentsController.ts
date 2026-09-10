@@ -3,7 +3,7 @@ import axios from 'axios';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { sendMail } from '../lib/mailer';
+import { send as sendEmail } from '../lib/emailService';
 import { DEFAULT_CONSENT_TYPES } from '../lib/consentTypes';
 import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildConsentPdf } from '../lib/consentPdf';
@@ -73,6 +73,7 @@ async function uploadConsentSignature(
 // caído, logo inalcanzable, etc.) se registra el error pero no se revierte ni
 // se falla la respuesta HTTP: el consentimiento ya quedó registrado igual.
 async function sendSignedConsentPdf(params: {
+  clinicaId: string;
   clinica: { name: string; logoUrl: string | null };
   patient: { firstName: string; lastName: string; rut: string; email: string | null };
   consentType: { name: string };
@@ -87,10 +88,11 @@ async function sendSignedConsentPdf(params: {
       consentType: params.consentType,
       consent: params.consent,
     });
-    await sendMail({
+    await sendEmail({
       to: params.patient.email,
       subject: `Consentimiento firmado: ${params.consentType.name} – ${params.clinica.name}`,
       html: `<p>Adjuntamos el documento de consentimiento &ldquo;${params.consentType.name}&rdquo; que acabas de firmar en ${params.clinica.name}.</p>`,
+      clinicaId: params.clinicaId,
       attachments: [
         {
           filename: `consentimiento-${params.consentType.name.replace(/\s+/g, '-').toLowerCase()}.pdf`,
@@ -202,7 +204,7 @@ export async function send(req: Request, res: Response) {
   const signUrl = `${getAppBaseUrl()}/consentimiento/${token}`;
 
   try {
-    await sendMail({
+    await sendEmail({
       to: patient.email,
       subject: `Consentimiento: ${consentType.name} – fordentcloud`,
       html: buildConsentEmailHtml({
@@ -213,6 +215,7 @@ export async function send(req: Request, res: Response) {
         clinicaNombre: clinica?.name ?? 'fordentcloud',
         clinicaLogoUrl: clinica?.logoUrl,
       }),
+      clinicaId: patient.clinicaId,
     });
   } catch (err) {
     console.error('Error enviando correo de consentimiento', err);
@@ -364,6 +367,7 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
 
   if (updated.status === 'firmado') {
     await sendSignedConsentPdf({
+      clinicaId: consent.clinicaId,
       clinica: consent.clinica,
       patient: consent.patient,
       consentType: consent.consentType,
@@ -476,7 +480,7 @@ export async function respondInPerson(
   if (finalConsent.status === 'firmado') {
     const clinica = await prisma.clinica.findUnique({ where: { id: patient.clinicaId } });
     if (clinica) {
-      await sendSignedConsentPdf({ clinica, patient, consentType, consent: finalConsent });
+      await sendSignedConsentPdf({ clinicaId: patient.clinicaId, clinica, patient, consentType, consent: finalConsent });
     }
   }
 

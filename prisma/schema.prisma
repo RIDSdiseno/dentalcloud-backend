@@ -48,6 +48,7 @@ model Clinica {
   consultationPayments       ConsultationPayment[]
   convenios                  Convenio[]
   documentFormats            DocumentFormat[]
+  emailConfig                ClinicaEmailConfig?
   evolutionTemplates         EvolutionTemplate[]
   evolutions                 Evolution[]
   evolutionPhotos            EvolutionPhoto[]
@@ -70,35 +71,35 @@ model Clinica {
 }
 
 model User {
-  id                            String                      @id @default(uuid())
-  email                         String                      @unique
-  passwordHash                  String
-  name                          String
-  role                          String                      @default("odontologo")
-  createdAt                     DateTime                    @default(now())
-  updatedAt                     DateTime                    @updatedAt
-  rut                           String?
-  clinicaId                     String?
+  id                             String                      @id @default(uuid())
+  email                          String                      @unique
+  passwordHash                   String
+  name                           String
+  role                           String                      @default("odontologo")
+  createdAt                      DateTime                    @default(now())
+  updatedAt                      DateTime                    @updatedAt
+  rut                            String?
+  clinicaId                      String?
   // Excepciones de permisos/módulos para ESTE usuario puntual, por encima del
   // default de su rol (`Clinica.rolePermissions`) y del plan de la clínica
   // (`Clinica.modules`). Sólo se guardan las llaves explícitamente distintas
   // del default — null/ausente = hereda el default normal. Ver
   // src/lib/userAccessOverrides.ts.
-  permissionOverrides           Json?
-  moduleOverrides               Json?
+  permissionOverrides            Json?
+  moduleOverrides                Json?
   // Firma del profesional, dibujada al crear su cuenta (o después, desde su
   // perfil) — mismo patrón que Consent.signatureUrl/signaturePublicId.
-  signatureUrl                  String?
-  signaturePublicId             String?
+  signatureUrl                   String?
+  signaturePublicId              String?
   // Id del User espejo en Dental-Demo-Back, si este profesional fue creado
   // (o emparejado) por federación. Null = profesional local, sin par en el
   // otro sistema.
   federatedUserId                String?                     @unique
-  administrativeObservations    AdministrativeObservation[]
-  appointments                  Appointment[]               @relation("AppointmentProfessional")
-  appointmentsReceived          Appointment[]               @relation("AppointmentReceivedBy")
-  clinicalDocuments             ClinicalDocument[]
-  consentsSent                  Consent[]                   @relation("ConsentsSentBy")
+  administrativeObservations     AdministrativeObservation[]
+  appointments                   Appointment[]               @relation("AppointmentProfessional")
+  appointmentsReceived           Appointment[]               @relation("AppointmentReceivedBy")
+  clinicalDocuments              ClinicalDocument[]
+  consentsSent                   Consent[]                   @relation("ConsentsSentBy")
   consultationPaymentsRegistered ConsultationPayment[]
   evolutions                    Evolution[]
   evolutionDeletions            EvolutionDeletion[]
@@ -136,75 +137,75 @@ model Chair {
 }
 
 model Patient {
-  id                         String                      @id @default(uuid())
-  rut                        String
-  firstName                  String
-  lastName                   String
-  phone                      String?
-  email                      String?
-  birthDate                  DateTime?
-  address                    String?
-  gender                     String?
-  nationality                String?
-  maritalStatus              String?
-  occupation                 String?
-  emergencyContactName       String?
-  emergencyContactPhone      String?
+  id                           String                      @id @default(uuid())
+  rut                          String
+  firstName                    String
+  lastName                     String
+  phone                        String?
+  email                        String?
+  birthDate                    DateTime?
+  address                      String?
+  gender                       String?
+  nationality                  String?
+  maritalStatus                String?
+  occupation                   String?
+  emergencyContactName         String?
+  emergencyContactPhone        String?
   emergencyContactRelationship String?
-  healthInsurance            String?
-  healthInsuranceDetail      String?
-  bloodType                  String?
-  tags                       String[]                    @default([])
-  photoUrl                   String?
-  photoPublicId              String?
-  motivoConsulta             String?
+  healthInsurance              String?
+  healthInsuranceDetail        String?
+  bloodType                    String?
+  tags                         String[]                    @default([])
+  photoUrl                     String?
+  photoPublicId                String?
+  motivoConsulta               String?
   // Grabación de respaldo del motivo de consulta, en la voz del paciente. Solo
   // se puede subir si el paciente ya firmó el consentimiento de tipo
   // 'grabacion_voz' (ver ConsentType/Consent) — se valida en el controlador,
   // no aquí, para no bloquear la creación del paciente en sí.
-  motivoConsultaAudioUrl      String?
-  motivoConsultaAudioPublicId String?
+  motivoConsultaAudioUrl       String?
+  motivoConsultaAudioPublicId  String?
   // Conclusiones de anamnesis (resumen automático se arma en el frontend a
   // partir de los campos clínicos ya existentes, no se guarda como texto).
-  expectativasPaciente        String?
-  optimoTratamiento           String?
+  expectativasPaciente         String?
+  optimoTratamiento            String?
   // Examen estético.
-  examSkinType                String?
-  examFitzpatrick             String?
-  examWrinkles                String?
-  examFlaccidity              String?
-  examVolume                  String?
-  examAsymmetries             Boolean?
-  examAsymmetryNotes          String?
-  examDiagnosis                    String?
-  examPhotoFrontalUrl              String?
-  examPhotoPerfilDerechoUrl        String?
-  examPhoto45DerechaUrl            String?
-  examPhoto45IzquierdaUrl          String?
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
-  clinicaId                  String
+  examSkinType                 String?
+  examFitzpatrick              String?
+  examWrinkles                 String?
+  examFlaccidity               String?
+  examVolume                   String?
+  examAsymmetries              Boolean?
+  examAsymmetryNotes           String?
+  examDiagnosis                String?
+  examPhotoFrontalUrl          String?
+  examPhotoPerfilDerechoUrl    String?
+  examPhoto45DerechaUrl        String?
+  examPhoto45IzquierdaUrl      String?
+  createdAt                    DateTime                    @default(now())
+  updatedAt                    DateTime                    @updatedAt
+  clinicaId                    String
   // Id del Patient espejo en Dental-Demo-Back, si la clínica de este paciente
   // está emparejada por federación. Null = paciente sin espejo (aún, o porque
   // su clínica no está emparejada).
-  federatedPatientId         String?                     @unique
-  allergies                  String[]                    @default([])
-  allergyNotes               String?
-  currentMedications         String?
-  heightCm                   Int?
-  medicalConditions          String?
-  weightKg                   Float?
-  chronicDiseases            String?
-  dentalHistory              String?
-  administrativeObservations AdministrativeObservation[]
-  appointments               Appointment[]
-  clinicalDocuments          ClinicalDocument[]
-  consents                   Consent[]
-  evolutions                 Evolution[]
-  evolutionDeletions         EvolutionDeletion[]
-  ledgerMovements            LedgerMovement[]
-  clinica                    Clinica                     @relation(fields: [clinicaId], references: [id])
-  treatmentPlans             TreatmentPlan[]
+  federatedPatientId           String?                     @unique
+  allergies                    String[]                    @default([])
+  allergyNotes                 String?
+  currentMedications           String?
+  heightCm                     Int?
+  medicalConditions            String?
+  weightKg                     Float?
+  chronicDiseases              String?
+  dentalHistory                String?
+  administrativeObservations   AdministrativeObservation[]
+  appointments                 Appointment[]
+  clinicalDocuments            ClinicalDocument[]
+  consents                     Consent[]
+  evolutions                   Evolution[]
+  evolutionDeletions           EvolutionDeletion[]
+  ledgerMovements              LedgerMovement[]
+  clinica                      Clinica                     @relation(fields: [clinicaId], references: [id])
+  treatmentPlans               TreatmentPlan[]
 
   @@unique([clinicaId, rut])
   @@map("patients")
@@ -399,19 +400,19 @@ model TreatmentItemPhoto {
 }
 
 model Sucursal {
-  id             String          @id @default(uuid())
-  name           String
-  address        String?
-  active         Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  dimageClinicId String?
-  clinicaId      String
+  id                  String          @id @default(uuid())
+  name                String
+  address             String?
+  active              Boolean         @default(true)
+  createdAt           DateTime        @default(now())
+  dimageClinicId      String?
+  clinicaId           String
   // Id de la Location espejo en Dental-Demo-Back, si esta sucursal fue
   // creada (o emparejada) por federación. Null = sucursal local, sin par en
   // el otro sistema.
-  federatedSucursalId String?    @unique
-  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
-  treatmentPlans TreatmentPlan[]
+  federatedSucursalId String?         @unique
+  clinica             Clinica         @relation(fields: [clinicaId], references: [id])
+  treatmentPlans      TreatmentPlan[]
 
   @@unique([clinicaId, name])
   @@map("sucursales")
@@ -500,17 +501,17 @@ model Prestacion {
 }
 
 model Appointment {
-  id                     String   @id @default(uuid())
+  id                     String    @id @default(uuid())
   chairId                String
   patientId              String
   startAt                DateTime
   endAt                  DateTime
   notes                  String?
-  status                 String   @default("agendada")
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  status                 String    @default("agendada")
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
   professionalId         String?
-  type                   String   @default("cita")
+  type                   String    @default("cita")
   clinicaId              String
   // Hitos de los Circuitos del Paciente: se llenan al presionar los botones
   // "Marcar llegada" y "Pasar a atención". Habilitan métricas de puntualidad,
@@ -790,20 +791,44 @@ model DocumentFormat {
 // Si el RUT coincide con uno acá al crear un paciente nuevo, se usa para
 // autocompletar nombre y correo (ver patientsController).
 model ConsultationPayment {
-  id            String   @id @default(uuid())
-  clinicaId     String
-  rut           String
-  firstName     String
-  lastName      String
-  email         String?
-  amount        Int
-  paymentMethod String?
+  id             String   @id @default(uuid())
+  clinicaId      String
+  rut            String
+  firstName      String
+  lastName       String
+  email          String?
+  amount         Int
+  paymentMethod  String?
   registeredById String
-  createdAt     DateTime @default(now())
-  clinica       Clinica  @relation(fields: [clinicaId], references: [id])
-  registeredBy  User     @relation(fields: [registeredById], references: [id])
+  createdAt      DateTime @default(now())
+  clinica        Clinica  @relation(fields: [clinicaId], references: [id])
+  registeredBy   User     @relation(fields: [registeredById], references: [id])
 
   @@index([clinicaId])
   @@index([clinicaId, rut])
   @@map("consultation_payments")
+}
+
+// Correo saliente propio de la clínica (holding) — si existe y está
+// `enabled`, el correo de confirmación de citas se envía por SMTP con estas
+// credenciales en vez del remitente global compartido (soporte@rids.cl vía
+// Microsoft Graph). `smtpPasswordEncrypted` nunca se expone al frontend tal
+// cual — ver src/lib/emailCrypto.ts y emailSettingsController.ts.
+model ClinicaEmailConfig {
+  id                    String   @id @default(uuid())
+  clinicaId             String   @unique
+  provider              String   @default("smtp")
+  smtpHost              String?
+  smtpPort              Int?
+  smtpSecure            Boolean  @default(true)
+  smtpUsername          String?
+  smtpPasswordEncrypted String?
+  fromEmail             String?
+  fromName              String?
+  enabled               Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  clinica               Clinica  @relation(fields: [clinicaId], references: [id])
+
+  @@map("clinica_email_configs")
 }

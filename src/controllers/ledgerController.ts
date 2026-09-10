@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { buildCartolaPdf } from '../lib/cartolaPdf';
-import { sendMail } from '../lib/mailer';
+import { send as sendEmail } from '../lib/emailService';
 import { buildDebtReminderEmailHtml } from '../lib/emailTemplates/debtReminderEmail';
 
 const MOVEMENT_TYPES = ['abono', 'interes', 'ajuste'];
@@ -214,10 +214,11 @@ export async function sendCartolaEmail(req: Request, res: Response) {
       : `Tu cartola — ${clinica?.name ?? ''}`;
 
   try {
-    await sendMail({
+    await sendEmail({
       to: patient.email,
       subject,
       html,
+      clinicaId: patient.clinicaId,
       attachments: [
         {
           filename: `cartola-${patient.rut}.pdf`,
