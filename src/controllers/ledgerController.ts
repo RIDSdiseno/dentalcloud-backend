@@ -16,7 +16,13 @@ async function computeSummaryData(patientId: string) {
   const [plans, movements] = await Promise.all([
     prisma.treatmentPlan.findMany({
       where: { patientId },
-      include: { professional: { select: { id: true, name: true } } },
+      include: {
+        professional: { select: { id: true, name: true } },
+        // Solo informativo: qué pieza/procedimiento incluye cada presupuesto,
+        // para que se vea junto al monto en la Cartola sin tener que ir a la
+        // pestaña Tratamientos. No cambia cómo se calcula ningún monto.
+        items: { select: { toothNumber: true, description: true, completed: true }, orderBy: { createdAt: 'asc' } },
+      },
       orderBy: { createdAt: 'asc' },
     }),
     prisma.ledgerMovement.findMany({
@@ -47,6 +53,11 @@ async function computeSummaryData(patientId: string) {
       total,
       abonado,
       saldo,
+      items: plan.items.map((item) => ({
+        toothNumber: item.toothNumber,
+        description: item.description,
+        completed: item.completed,
+      })),
     };
   });
 

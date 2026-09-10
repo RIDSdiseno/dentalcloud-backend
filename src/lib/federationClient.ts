@@ -280,6 +280,7 @@ export type RemoteInventorySupply = {
   category: string | null;
   supplier: string | null;
   consultingRoom: string | null;
+  clinicalArea: 'DENTAL' | 'ESTHETIC' | 'BOTH';
   description: string | null;
   purchaseDate: string | null;
   quantity: number | null;
@@ -349,6 +350,7 @@ export type InventorySupplyFilters = {
   category?: string;
   supplier?: string;
   status?: string;
+  clinicalArea?: string;
   dateFrom?: string;
   dateTo?: string;
   sucursalId?: string;
@@ -371,6 +373,7 @@ export type InventorySupplyInput = {
   currentStock?: number;
   minimumStock?: number;
   consultingRoom?: string | null;
+  clinicalArea?: 'DENTAL' | 'ESTHETIC' | 'BOTH';
 };
 
 export type InventoryLotFilters = {

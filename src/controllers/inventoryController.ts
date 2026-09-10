@@ -57,6 +57,10 @@ function pickSupplyInput(body: Record<string, unknown>): InventorySupplyInput {
     currentStock: typeof body.currentStock === 'number' ? body.currentStock : undefined,
     minimumStock: typeof body.minimumStock === 'number' ? body.minimumStock : undefined,
     consultingRoom: body.consultingRoom === null ? null : typeof body.consultingRoom === 'string' ? body.consultingRoom : undefined,
+    clinicalArea:
+      body.clinicalArea === 'DENTAL' || body.clinicalArea === 'ESTHETIC' || body.clinicalArea === 'BOTH'
+        ? body.clinicalArea
+        : undefined,
   };
 }
 
