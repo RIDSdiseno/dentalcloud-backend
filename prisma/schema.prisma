@@ -49,6 +49,9 @@ model Clinica {
   convenios                  Convenio[]
   documentFormats            DocumentFormat[]
   emailConfig                ClinicaEmailConfig?
+  insumoSupplies             InsumoSupply[]
+  insumoLots                 InsumoLot[]
+  insumoLotMovements         InsumoLotMovement[]
   evolutionTemplates         EvolutionTemplate[]
   evolutions                 Evolution[]
   evolutionPhotos            EvolutionPhoto[]
@@ -101,20 +104,25 @@ model User {
   clinicalDocuments              ClinicalDocument[]
   consentsSent                   Consent[]                   @relation("ConsentsSentBy")
   consultationPaymentsRegistered ConsultationPayment[]
-  evolutions                    Evolution[]
-  evolutionDeletions            EvolutionDeletion[]
-  ledgerMovements               LedgerMovement[]
-  treatmentItemsTreatedBy       TreatmentItem[]
-  treatmentPlanEdits            TreatmentPlanEdit[]
-  treatmentPlansCompletedBy     TreatmentPlan[]             @relation("TreatmentPlanCompletedBy")
-  treatmentPlansCreatedBy       TreatmentPlan[]             @relation("TreatmentPlanCreatedBy")
-  treatmentPlansCreatedByLegacy TreatmentPlan[]             @relation("TreatmentPlanCreatedByLegacy")
-  treatmentPlans                TreatmentPlan[]             @relation("TreatmentPlanProfessional")
-  treatmentPlansStartedBy       TreatmentPlan[]             @relation("TreatmentPlanStartedBy")
-  clinica                       Clinica?                    @relation(fields: [clinicaId], references: [id])
-  workSchedules                 WorkSchedule[]
-  openSlots                     OpenSlot[]                  @relation("OpenSlotProfessional")
-  openSlotsCreated              OpenSlot[]                  @relation("OpenSlotCreatedBy")
+  evolutions                     Evolution[]
+  evolutionDeletions             EvolutionDeletion[]
+  ledgerMovements                LedgerMovement[]
+  treatmentItemsTreatedBy        TreatmentItem[]
+  treatmentPlanEdits             TreatmentPlanEdit[]
+  treatmentPlansCompletedBy      TreatmentPlan[]             @relation("TreatmentPlanCompletedBy")
+  treatmentPlansCreatedBy        TreatmentPlan[]             @relation("TreatmentPlanCreatedBy")
+  treatmentPlansCreatedByLegacy  TreatmentPlan[]             @relation("TreatmentPlanCreatedByLegacy")
+  treatmentPlans                 TreatmentPlan[]             @relation("TreatmentPlanProfessional")
+  treatmentPlansStartedBy        TreatmentPlan[]             @relation("TreatmentPlanStartedBy")
+  clinica                        Clinica?                    @relation(fields: [clinicaId], references: [id])
+  workSchedules                  WorkSchedule[]
+  openSlots                      OpenSlot[]                  @relation("OpenSlotProfessional")
+  openSlotsCreated               OpenSlot[]                  @relation("OpenSlotCreatedBy")
+  insumoSuppliesCreatedBy        InsumoSupply[]              @relation("InsumoSupplyCreatedBy")
+  insumoSuppliesUpdatedBy        InsumoSupply[]              @relation("InsumoSupplyUpdatedBy")
+  insumoLotsCreatedBy            InsumoLot[]                 @relation("InsumoLotCreatedBy")
+  insumoLotsUpdatedBy            InsumoLot[]                 @relation("InsumoLotUpdatedBy")
+  insumoLotMovementsCreatedBy    InsumoLotMovement[]         @relation("InsumoLotMovementCreatedBy")
 
   @@index([clinicaId])
   @@map("users")
@@ -400,19 +408,22 @@ model TreatmentItemPhoto {
 }
 
 model Sucursal {
-  id                  String          @id @default(uuid())
+  id                  String              @id @default(uuid())
   name                String
   address             String?
-  active              Boolean         @default(true)
-  createdAt           DateTime        @default(now())
+  active              Boolean             @default(true)
+  createdAt           DateTime            @default(now())
   dimageClinicId      String?
   clinicaId           String
   // Id de la Location espejo en Dental-Demo-Back, si esta sucursal fue
   // creada (o emparejada) por federación. Null = sucursal local, sin par en
   // el otro sistema.
-  federatedSucursalId String?         @unique
-  clinica             Clinica         @relation(fields: [clinicaId], references: [id])
+  federatedSucursalId String?             @unique
+  clinica             Clinica             @relation(fields: [clinicaId], references: [id])
   treatmentPlans      TreatmentPlan[]
+  insumoSupplies      InsumoSupply[]
+  insumoLots          InsumoLot[]
+  insumoLotMovements  InsumoLotMovement[]
 
   @@unique([clinicaId, name])
   @@map("sucursales")
@@ -528,12 +539,12 @@ model Appointment {
   receivedByUserId       String?
   // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
   // sincronizada) por federación.
-  federatedAppointmentId String?  @unique
-  chair                  Chair    @relation(fields: [chairId], references: [id])
-  clinica                Clinica  @relation(fields: [clinicaId], references: [id])
-  patient                Patient  @relation(fields: [patientId], references: [id])
-  professional           User?    @relation("AppointmentProfessional", fields: [professionalId], references: [id])
-  receivedBy             User?    @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
+  federatedAppointmentId String?   @unique
+  chair                  Chair     @relation(fields: [chairId], references: [id])
+  clinica                Clinica   @relation(fields: [clinicaId], references: [id])
+  patient                Patient   @relation(fields: [patientId], references: [id])
+  professional           User?     @relation("AppointmentProfessional", fields: [professionalId], references: [id])
+  receivedBy             User?     @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
   // Presente solo si esta cita nació de tomar una hora publicada ("Agregar
   // horas disponibles") — al cancelar la cita, se usa para reabrir esa hora.
   openSlot               OpenSlot?
@@ -729,21 +740,21 @@ model WorkSchedule {
 // paciente desde el portal) nace una Appointment real y esta queda 'tomada'.
 // Si esa cita se cancela después, esta hora vuelve a quedar 'abierta'.
 model OpenSlot {
-  id              String    @id @default(uuid())
+  id              String       @id @default(uuid())
   clinicaId       String
   chairId         String
   professionalId  String
   startAt         DateTime
   endAt           DateTime
-  status          String    @default("abierta")
+  status          String       @default("abierta")
   createdByUserId String
-  appointmentId   String?   @unique
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  clinica         Clinica   @relation(fields: [clinicaId], references: [id])
-  chair           Chair     @relation(fields: [chairId], references: [id])
-  professional    User      @relation("OpenSlotProfessional", fields: [professionalId], references: [id])
-  createdBy       User      @relation("OpenSlotCreatedBy", fields: [createdByUserId], references: [id])
+  appointmentId   String?      @unique
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  clinica         Clinica      @relation(fields: [clinicaId], references: [id])
+  chair           Chair        @relation(fields: [chairId], references: [id])
+  professional    User         @relation("OpenSlotProfessional", fields: [professionalId], references: [id])
+  createdBy       User         @relation("OpenSlotCreatedBy", fields: [createdByUserId], references: [id])
   appointment     Appointment? @relation(fields: [appointmentId], references: [id])
 
   @@index([clinicaId, professionalId, startAt])
@@ -831,4 +842,139 @@ model ClinicaEmailConfig {
   clinica               Clinica  @relation(fields: [clinicaId], references: [id])
 
   @@map("clinica_email_configs")
+}
+
+// Inventario nativo de la clínica — usado como fallback cuando la clínica NO
+// está federada con Dental-Demo-Back (ver isClinicaFederatedForInventory en
+// inventoryController.ts). Las clínicas SÍ federadas siguen usando el relay
+// en vivo hacia Dental-Demo-Back (federationClient.ts), sin tocar estas
+// tablas — no hay sincronización entre ambos caminos hoy.
+model InsumoSupply {
+  id              String  @id @default(uuid())
+  clinicaId       String
+  sucursalId      String?
+  createdByUserId String
+  updatedByUserId String?
+
+  name           String
+  category       String?
+  supplier       String?
+  consultingRoom String?
+  description    String?
+  // Para qué tipo de tratamiento se usa este insumo — mismo criterio que el
+  // clinicalArea que el compañero agregó del lado de Dental-Demo-Back.
+  // ESTHETIC/BOTH solo se permite si Clinica.tipo es "estetica" o "ambas"
+  // (ver assertClinicalAreaAllowed en insumoSupply.service.ts) — acá no hay
+  // un flag de módulo separado como en Dental-Demo-Back, se usa el mismo tipo
+  // de clínica que ya gatea el resto de las funciones de estética.
+  clinicalArea   InsumoClinicalArea @default(DENTAL)
+
+  purchaseDate DateTime?
+  quantity     Float?
+  unit         String?
+  unitCost     Int?
+  totalCost    Int?
+  // Siempre recalculado desde la suma de lotes activos (ver
+  // insumoLot.service.ts syncSupplyStockFromLots) — nunca confiar en un
+  // valor manual una vez el insumo tiene lotes.
+  currentStock Float?
+  minimumStock Float?
+
+  status     InsumoSupplyStatus @default(ACTIVE)
+  archivedAt DateTime?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  clinica   Clinica             @relation(fields: [clinicaId], references: [id])
+  sucursal  Sucursal?           @relation(fields: [sucursalId], references: [id], onDelete: SetNull)
+  createdBy User                @relation("InsumoSupplyCreatedBy", fields: [createdByUserId], references: [id])
+  updatedBy User?               @relation("InsumoSupplyUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  lots      InsumoLot[]
+  movements InsumoLotMovement[]
+
+  @@index([clinicaId])
+  @@index([clinicaId, sucursalId])
+  @@index([clinicaId, status])
+  @@map("insumo_supplies")
+}
+
+enum InsumoSupplyStatus {
+  ACTIVE
+  LOW_STOCK
+  OUT_OF_STOCK
+  ARCHIVED
+}
+
+enum InsumoClinicalArea {
+  DENTAL
+  ESTHETIC
+  BOTH
+}
+
+model InsumoLot {
+  id              String  @id @default(uuid())
+  clinicaId       String
+  supplyId        String
+  sucursalId      String?
+  createdByUserId String
+  updatedByUserId String?
+
+  lotNumber          String
+  manufacturer       String?
+  presentation       String?
+  concentration      String?
+  healthRegistration String?
+  receivedAt         DateTime?
+  expiresAt          DateTime?
+  initialQuantity    Float
+  // Balance vivo, mutado solo por movimientos (ver
+  // insumoLot.service.ts createInsumoLotMovement).
+  currentQuantity    Float
+  isActive           Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  clinica   Clinica             @relation(fields: [clinicaId], references: [id])
+  supply    InsumoSupply        @relation(fields: [supplyId], references: [id], onDelete: Cascade)
+  sucursal  Sucursal?           @relation(fields: [sucursalId], references: [id], onDelete: SetNull)
+  createdBy User                @relation("InsumoLotCreatedBy", fields: [createdByUserId], references: [id])
+  updatedBy User?               @relation("InsumoLotUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  movements InsumoLotMovement[]
+
+  @@unique([supplyId, lotNumber])
+  @@index([clinicaId])
+  @@index([clinicaId, expiresAt])
+  @@map("insumo_lots")
+}
+
+model InsumoLotMovement {
+  id              String  @id @default(uuid())
+  clinicaId       String
+  supplyId        String
+  lotId           String
+  sucursalId      String?
+  createdByUserId String
+
+  movementType      InsumoMovementType
+  quantity          Float
+  previousQuantity  Float
+  resultingQuantity Float
+  reason            String?
+  createdAt         DateTime           @default(now())
+
+  clinica   Clinica      @relation(fields: [clinicaId], references: [id])
+  supply    InsumoSupply @relation(fields: [supplyId], references: [id], onDelete: Cascade)
+  lot       InsumoLot    @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("InsumoLotMovementCreatedBy", fields: [createdByUserId], references: [id])
+  sucursal  Sucursal?    @relation(fields: [sucursalId], references: [id])
+
+  @@index([clinicaId])
+  @@index([lotId, createdAt])
+  @@map("insumo_lot_movements")
+}
+
+enum InsumoMovementType {
+  IN
+  OUT
+  ADJUSTMENT
 }
