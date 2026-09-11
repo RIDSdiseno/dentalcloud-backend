@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { cleanRut, isValidRut } from '../utils/rut';
 import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
 import { isDimageConfigured, fetchOdontologosByHolding, fetchRadiologosByHolding } from '../lib/dimageClient';
@@ -169,7 +170,7 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request<{ id: string }>, res: Response) {
   const { rut } = req.body as { rut?: string | null };
   const user = await prisma.user.findUnique({ where: { id: req.params.id } });
-  if (!user) {
+  if (!user || !belongsToRequesterClinica(user, req)) {
     return res.status(404).json({ error: 'Usuario no encontrado' });
   }
 

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -74,7 +75,7 @@ export async function create(req: Request, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const schedule = await prisma.workSchedule.findUnique({ where: { id: req.params.id } });
-  if (!schedule) {
+  if (!schedule || !belongsToRequesterClinica(schedule, req)) {
     return res.status(404).json({ error: 'Bloque de horario no encontrado' });
   }
   await prisma.workSchedule.delete({ where: { id: req.params.id } });

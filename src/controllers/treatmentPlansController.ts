@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import {
   TREATMENT_PLAN_INCLUDE as include,
   recalculatePlan,
@@ -223,7 +224,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     paymentMethod?: string | null;
   };
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (isPlanAlta(plan)) {
@@ -254,7 +255,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (isPlanAlta(plan)) {
@@ -279,7 +280,7 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
   }
 
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (isPlanAlta(plan)) {
@@ -323,7 +324,7 @@ export async function addEdit(req: Request<{ id: string }>, res: Response) {
   }
 
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (isPlanAlta(plan)) {
@@ -344,7 +345,7 @@ export async function addEdit(req: Request<{ id: string }>, res: Response) {
 
 export async function uploadPlanPhoto(req: Request<{ id: string }>, res: Response) {
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (isPlanAlta(plan)) {
@@ -390,7 +391,7 @@ export async function removePlanPhoto(req: Request<{ photoId: string }>, res: Re
     where: { id: req.params.photoId },
     include: { treatmentPlan: { select: { status: true } } },
   });
-  if (!photo) {
+  if (!photo || !belongsToRequesterClinica(photo, req)) {
     return res.status(404).json({ error: 'Foto no encontrada' });
   }
   if (isPlanAlta(photo.treatmentPlan)) {
@@ -413,7 +414,7 @@ export async function getReport(req: Request<{ id: string }>, res: Response) {
   const format = req.query.format === 'docx' ? 'docx' : 'pdf';
 
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id }, include });
-  if (!plan) {
+  if (!plan || !belongsToRequesterClinica(plan, req)) {
     return res.status(404).json({ error: 'Presupuesto no encontrado' });
   }
   if (!isPlanAlta(plan)) {

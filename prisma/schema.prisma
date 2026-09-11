@@ -108,6 +108,7 @@ model User {
   evolutionDeletions             EvolutionDeletion[]
   ledgerMovements                LedgerMovement[]
   treatmentItemsTreatedBy        TreatmentItem[]
+  patientsDataCorroborated       Patient[]
   treatmentPlanEdits             TreatmentPlanEdit[]
   treatmentPlansCompletedBy      TreatmentPlan[]             @relation("TreatmentPlanCompletedBy")
   treatmentPlansCreatedBy        TreatmentPlan[]             @relation("TreatmentPlanCreatedBy")
@@ -173,6 +174,15 @@ model Patient {
   // no aquí, para no bloquear la creación del paciente en sí.
   motivoConsultaAudioUrl       String?
   motivoConsultaAudioPublicId  String?
+  // Corroboración del médico (reunión 2/9 con Urbina): recepción puede cargar
+  // los datos administrativos, pero el médico tiene que repasarlos con el
+  // paciente presente antes de avanzar — esto queda en null hasta que el
+  // profesional presiona "Confirmar datos del paciente" (ver
+  // patientsController.ts corroborateData / EstheticWorkflowStepper). Se
+  // vuelve a poner en null automáticamente si cambian los datos que ya se
+  // habían corroborado, para no dejar una confirmación vieja como válida.
+  datosCorroboradosAt          DateTime?
+  datosCorroboradosPorId       String?
   // Conclusiones de anamnesis (resumen automático se arma en el frontend a
   // partir de los campos clínicos ya existentes, no se guarda como texto).
   expectativasPaciente         String?
@@ -214,6 +224,7 @@ model Patient {
   ledgerMovements              LedgerMovement[]
   clinica                      Clinica                     @relation(fields: [clinicaId], references: [id])
   treatmentPlans               TreatmentPlan[]
+  datosCorroboradosPor         User?                       @relation(fields: [datosCorroboradosPorId], references: [id])
 
   @@unique([clinicaId, rut])
   @@map("patients")

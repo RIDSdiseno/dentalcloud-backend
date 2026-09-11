@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 export const DOCUMENT_CATEGORIES = [
   'receta',
@@ -94,10 +95,10 @@ export async function upload(req: Request, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const document = await prisma.clinicalDocument.findUnique({ where: { id: req.params.id } });
-  if (!document) {
+  if (!document || !belongsToRequesterClinica(document, req)) {
     return res.status(404).json({ error: 'Documento no encontrado' });
   }
-  const isOwnerOrAdmin = req.user!.role === 'admin' || document.uploadedById === req.user!.sub;
+  const isOwnerOrAdmin = req.user!.role === 'admin' || req.user!.role === 'super_admin' || document.uploadedById === req.user!.sub;
   if (!isOwnerOrAdmin) {
     return res.status(403).json({ error: 'Solo quien subió el documento o un administrador puede eliminarlo' });
   }

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 const include = {
   professional: { select: { id: true, name: true } },
@@ -56,10 +57,10 @@ export async function create(req: Request, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const observation = await prisma.administrativeObservation.findUnique({ where: { id: req.params.id } });
-  if (!observation) {
+  if (!observation || !belongsToRequesterClinica(observation, req)) {
     return res.status(404).json({ error: 'Observación no encontrada' });
   }
-  const isOwnerOrAdmin = req.user!.role === 'admin' || observation.professionalId === req.user!.sub;
+  const isOwnerOrAdmin = req.user!.role === 'admin' || req.user!.role === 'super_admin' || observation.professionalId === req.user!.sub;
   if (!isOwnerOrAdmin) {
     return res.status(403).json({ error: 'Solo el autor o un administrador pueden eliminar esta observación' });
   }

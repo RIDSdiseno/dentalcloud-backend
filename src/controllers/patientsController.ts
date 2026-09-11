@@ -7,6 +7,43 @@ import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyCo
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { syncPatientToFederation } from '../lib/federationSync';
 import { VOICE_RECORDING_CONSENT_CODE } from '../lib/consentTypes';
+import { PERMISSION_LABELS, type GeneralPatientPermissionKey } from '../lib/rolePermissions';
+import { resolveRequestPermissions } from '../middleware/requireRolePermission';
+
+// Auditoría de seguridad (11/09): getOne/update/uploadPhoto/uploadExamPhoto/
+// uploadMotivoConsultaAudio/corroborateData buscaban el paciente SOLO por id,
+// sin confirmar que fuera de la clínica de quien pedía — cualquier cuenta de
+// staff podía leer o modificar la ficha de un paciente de OTRA clínica con
+// solo conocer su UUID. `super_admin` sigue con acceso total (plataforma);
+// todos los demás roles quedan acotados a su propia clínica, igual que ya
+// hace `list()`.
+function patientBelongsToRequester(patient: { clinicaId: string }, req: Request): boolean {
+  return req.user?.role === 'super_admin' || patient.clinicaId === req.user?.clinicaId;
+}
+
+// A qué "permiso general" pertenece cada campo editable de la ficha — nombre,
+// RUT y apellido quedan siempre fuera (recepción siempre tiene que poder
+// registrar un paciente nuevo). El resto de la ficha (examen estético,
+// juicio clínico) tiene su propio módulo/gate y no pasa por acá.
+const PATIENT_FIELD_GROUPS: Record<GeneralPatientPermissionKey, (keyof PatientInput)[]> = {
+  datosPersonales: [
+    'gender',
+    'maritalStatus',
+    'nationality',
+    'occupation',
+    'birthDate',
+    'heightCm',
+    'weightKg',
+    'healthInsurance',
+    'healthInsuranceDetail',
+    'bloodType',
+    'tags',
+  ],
+  datosContacto: ['phone', 'email', 'address'],
+  antecedentesMedicos: ['allergies', 'allergyNotes', 'medicalConditions', 'currentMedications', 'chronicDiseases', 'dentalHistory'],
+  motivoConsulta: ['motivoConsulta'],
+  contactoEmergencia: ['emergencyContactName', 'emergencyContactPhone', 'emergencyContactRelationship'],
+};
 
 type PatientInput = {
   rut?: string;
@@ -184,7 +221,7 @@ export async function list(req: Request, res: Response) {
 
 export async function getOne(req: Request<{ id: string }>, res: Response) {
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
-  if (!patient) {
+  if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
   const summary = await fetchPrivacyConsentSummary(patient.id);
@@ -233,7 +270,7 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as PatientInput;
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
-  if (!patient) {
+  if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
@@ -241,16 +278,73 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
 
+  // "Permisos generales": a diferencia del resto de este endpoint (que solo
+  // exige el módulo "pacientes" completo, vía requireRolePermission en la
+  // ruta), estos grupos de campos se chequean acá adentro para poder
+  // bloquear SOLO, por ejemplo, "Motivo de consulta" sin bloquear el resto de
+  // la ficha (así recepción sigue pudiendo cargar nombre/RUT/contacto).
+  const permissions = await resolveRequestPermissions(req);
+  if (permissions !== 'full-access' && permissions !== 'no-clinic') {
+    for (const [key, fields] of Object.entries(PATIENT_FIELD_GROUPS) as [GeneralPatientPermissionKey, (keyof PatientInput)[]][]) {
+      const touchesGroup = fields.some((field) => body[field] !== undefined);
+      if (touchesGroup && !permissions[key]) {
+        return res.status(403).json({ error: `Tu perfil no tiene acceso a "${PERMISSION_LABELS[key]}"` });
+      }
+    }
+  }
+
+  // Si el paciente ya tenía sus datos corroborados por un médico y ahora se
+  // cambia justo el tipo de dato que se corrobora (identidad/contacto), esa
+  // confirmación queda obsoleta — se limpia para que el sistema vuelva a
+  // pedirla, en vez de dejar una corroboración vieja como si siguiera
+  // vigente sobre datos que ya cambiaron.
+  const IDENTITY_INVALIDATION_FIELDS: (keyof PatientInput)[] = [
+    'rut',
+    'firstName',
+    'lastName',
+    ...PATIENT_FIELD_GROUPS.datosPersonales,
+    ...PATIENT_FIELD_GROUPS.datosContacto,
+    ...PATIENT_FIELD_GROUPS.contactoEmergencia,
+  ];
+  const invalidatesCorroboration =
+    patient.datosCorroboradosAt !== null && IDENTITY_INVALIDATION_FIELDS.some((field) => body[field] !== undefined);
+
   const updated = await prisma.patient.update({
     where: { id: req.params.id },
     data: {
       ...(body.rut ? { rut: cleanRut(body.rut) } : {}),
       ...toPatientPatch(body),
+      ...(invalidatesCorroboration ? { datosCorroboradosAt: null, datosCorroboradosPorId: null } : {}),
     },
   });
 
   syncPatientToFederation(updated).catch((err) => {
     console.error('No se pudo sincronizar la edición del paciente con Dental-Demo-Back', err);
+  });
+
+  return res.json({ patient: updated });
+}
+
+// Etapa 01 (reunión 2/9 con Urbina): recepción puede cargar los datos
+// administrativos, pero el médico tiene que repasarlos con el paciente
+// presente antes de avanzar — "Juanita, ¿por qué viene a la consulta?",
+// confirmando que no hay errores de tipeo. Reusa el mismo permiso
+// "motivoConsulta" (mismo "solo el profesional" del resto de la etapa 01/02),
+// en vez de crear uno nuevo para una acción tan puntual.
+export async function corroborateData(req: Request<{ id: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const permissions = await resolveRequestPermissions(req);
+  if (permissions !== 'full-access' && permissions !== 'no-clinic' && !permissions.motivoConsulta) {
+    return res.status(403).json({ error: 'Tu perfil no tiene acceso a confirmar los datos del paciente' });
+  }
+
+  const updated = await prisma.patient.update({
+    where: { id: req.params.id },
+    data: { datosCorroboradosAt: new Date(), datosCorroboradosPorId: req.user!.sub },
   });
 
   return res.json({ patient: updated });
@@ -263,7 +357,7 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
-  if (!patient) {
+  if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
@@ -304,7 +398,7 @@ export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
-  if (!patient) {
+  if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
@@ -335,8 +429,16 @@ export async function uploadMotivoConsultaAudio(req: Request<{ id: string }>, re
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
-  if (!patient) {
+  if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  // Mismo permiso "Motivo de consulta" que gatea el campo de texto (ver
+  // update() más arriba) — sin esto, un perfil sin acceso al texto podría
+  // igual grabar el audio y dejarlo como respaldo.
+  const permissions = await resolveRequestPermissions(req);
+  if (permissions !== 'full-access' && permissions !== 'no-clinic' && !permissions.motivoConsulta) {
+    return res.status(403).json({ error: `Tu perfil no tiene acceso a "${PERMISSION_LABELS.motivoConsulta}"` });
   }
 
   // Candado duro: sin un consentimiento de grabación de voz ya firmado, el

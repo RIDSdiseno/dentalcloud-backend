@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFederation, syncSucursalToFederation } from '../lib/federationSync';
 import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
 import { fetchRemoteSupplyLots, isFederationConfigured } from '../lib/federationClient';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 // Busca lotes de insumos reales en Dental-Demo-Back (inventario administrativo)
 // para que el profesional elija uno existente en vez de tipear el N° de lote
@@ -56,7 +57,7 @@ export async function createSucursal(req: Request, res: Response) {
 
 export async function updateSucursal(req: Request<{ id: string }>, res: Response) {
   const sucursal = await prisma.sucursal.findUnique({ where: { id: req.params.id } });
-  if (!sucursal) {
+  if (!sucursal || !belongsToRequesterClinica(sucursal, req)) {
     return res.status(404).json({ error: 'Sucursal no encontrada' });
   }
   const { name, address, active, dimageClinicId } = req.body as {
@@ -79,7 +80,7 @@ export async function updateSucursal(req: Request<{ id: string }>, res: Response
 
 export async function removeSucursal(req: Request<{ id: string }>, res: Response) {
   const sucursal = await prisma.sucursal.findUnique({ where: { id: req.params.id } });
-  if (!sucursal) {
+  if (!sucursal || !belongsToRequesterClinica(sucursal, req)) {
     return res.status(404).json({ error: 'Sucursal no encontrada' });
   }
   const planCount = await prisma.treatmentPlan.count({ where: { sucursalId: req.params.id } });
@@ -118,7 +119,7 @@ export async function createPrevision(req: Request, res: Response) {
 
 export async function updatePrevision(req: Request<{ id: string }>, res: Response) {
   const prevision = await prisma.prevision.findUnique({ where: { id: req.params.id } });
-  if (!prevision) {
+  if (!prevision || !belongsToRequesterClinica(prevision, req)) {
     return res.status(404).json({ error: 'Previsión no encontrada' });
   }
   const { name, active } = req.body as { name?: string; active?: boolean };
@@ -137,7 +138,7 @@ export async function updatePrevision(req: Request<{ id: string }>, res: Respons
 
 export async function removePrevision(req: Request<{ id: string }>, res: Response) {
   const prevision = await prisma.prevision.findUnique({ where: { id: req.params.id } });
-  if (!prevision) {
+  if (!prevision || !belongsToRequesterClinica(prevision, req)) {
     return res.status(404).json({ error: 'Previsión no encontrada' });
   }
   const planCount = await prisma.treatmentPlan.count({ where: { previsionId: req.params.id } });
@@ -184,7 +185,7 @@ export async function createConvenio(req: Request, res: Response) {
 
 export async function updateConvenio(req: Request<{ id: string }>, res: Response) {
   const convenio = await prisma.convenio.findUnique({ where: { id: req.params.id } });
-  if (!convenio) {
+  if (!convenio || !belongsToRequesterClinica(convenio, req)) {
     return res.status(404).json({ error: 'Convenio no encontrado' });
   }
   const { name, discountPercent, active } = req.body as { name?: string; discountPercent?: number; active?: boolean };
@@ -204,7 +205,7 @@ export async function updateConvenio(req: Request<{ id: string }>, res: Response
 
 export async function removeConvenio(req: Request<{ id: string }>, res: Response) {
   const convenio = await prisma.convenio.findUnique({ where: { id: req.params.id } });
-  if (!convenio) {
+  if (!convenio || !belongsToRequesterClinica(convenio, req)) {
     return res.status(404).json({ error: 'Convenio no encontrado' });
   }
   const planCount = await prisma.treatmentPlan.count({ where: { convenioId: req.params.id } });
@@ -338,7 +339,7 @@ export async function createPrestacion(req: Request, res: Response) {
 
 export async function updatePrestacion(req: Request<{ id: string }>, res: Response) {
   const prestacion = await prisma.prestacion.findUnique({ where: { id: req.params.id } });
-  if (!prestacion) {
+  if (!prestacion || !belongsToRequesterClinica(prestacion, req)) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
   const {
@@ -404,7 +405,7 @@ export async function updatePrestacion(req: Request<{ id: string }>, res: Respon
 
 export async function removePrestacion(req: Request<{ id: string }>, res: Response) {
   const prestacion = await prisma.prestacion.findUnique({ where: { id: req.params.id } });
-  if (!prestacion) {
+  if (!prestacion || !belongsToRequesterClinica(prestacion, req)) {
     return res.status(404).json({ error: 'Prestación no encontrada' });
   }
   const itemCount = await prisma.treatmentItem.count({ where: { prestacionId: req.params.id } });
@@ -447,7 +448,7 @@ export async function createEvolutionTemplate(req: Request, res: Response) {
 
 export async function updateEvolutionTemplate(req: Request<{ id: string }>, res: Response) {
   const template = await prisma.evolutionTemplate.findUnique({ where: { id: req.params.id } });
-  if (!template) {
+  if (!template || !belongsToRequesterClinica(template, req)) {
     return res.status(404).json({ error: 'Plantilla no encontrada' });
   }
   const { name, section, content, active } = req.body as {
@@ -470,7 +471,7 @@ export async function updateEvolutionTemplate(req: Request<{ id: string }>, res:
 
 export async function removeEvolutionTemplate(req: Request<{ id: string }>, res: Response) {
   const template = await prisma.evolutionTemplate.findUnique({ where: { id: req.params.id } });
-  if (!template) {
+  if (!template || !belongsToRequesterClinica(template, req)) {
     return res.status(404).json({ error: 'Plantilla no encontrada' });
   }
   await prisma.evolutionTemplate.delete({ where: { id: req.params.id } });

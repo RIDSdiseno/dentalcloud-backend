@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { buildCartolaPdf } from '../lib/cartolaPdf';
 import { send as sendEmail } from '../lib/emailService';
 import { buildDebtReminderEmailHtml } from '../lib/emailTemplates/debtReminderEmail';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 const MOVEMENT_TYPES = ['abono', 'interes', 'ajuste'];
 const TYPE_LABELS: Record<string, string> = { abono: 'Abono', interes: 'Interés', ajuste: 'Ajuste' };
@@ -314,7 +315,7 @@ export async function createMovement(req: Request, res: Response) {
 
 export async function removeMovement(req: Request<{ id: string }>, res: Response) {
   const movement = await prisma.ledgerMovement.findUnique({ where: { id: req.params.id } });
-  if (!movement) {
+  if (!movement || !belongsToRequesterClinica(movement, req)) {
     return res.status(404).json({ error: 'Movimiento no encontrado' });
   }
   const isOwnerOrAdmin = req.user!.role === 'admin' || movement.registeredById === req.user!.sub;

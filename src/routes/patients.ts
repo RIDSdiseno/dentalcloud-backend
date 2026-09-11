@@ -3,7 +3,16 @@ import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
 import { requireRolePermission } from '../middleware/requireRolePermission';
-import { list, create, getOne, update, uploadPhoto, uploadMotivoConsultaAudio, uploadExamPhoto } from '../controllers/patientsController';
+import {
+  list,
+  create,
+  getOne,
+  update,
+  uploadPhoto,
+  uploadMotivoConsultaAudio,
+  uploadExamPhoto,
+  corroborateData,
+} from '../controllers/patientsController';
 
 const router = Router();
 const uploadMiddleware = multer({ storage: multer.memoryStorage() });
@@ -18,5 +27,6 @@ router.patch('/:id', update);
 router.patch('/:id/photo', uploadMiddleware.single('photo'), uploadPhoto);
 router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), uploadMotivoConsultaAudio);
 router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
+router.post('/:id/corroborate-data', corroborateData);
 
 export default router;

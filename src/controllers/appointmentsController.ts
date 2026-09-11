@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { syncAppointmentToFederation } from '../lib/federationSync';
 import { sendAppointmentConfirmation } from '../lib/emailService';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 type AppointmentInput = {
   chairId?: string;
@@ -362,11 +363,11 @@ export async function createUrgencia(req: Request, res: Response) {
 
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
-  if (!appointment || appointment.clinicaId !== req.user!.clinicaId) {
+  if (!appointment || !belongsToRequesterClinica(appointment, req)) {
     return res.status(404).json({ error: 'Cita no encontrada' });
   }
 
-  if (req.user!.role !== 'admin' && appointment.professionalId !== req.user!.sub) {
+  if (req.user!.role !== 'admin' && req.user!.role !== 'super_admin' && appointment.professionalId !== req.user!.sub) {
     return res.status(403).json({ error: 'No puedes cancelar una cita de otro profesional' });
   }
 
@@ -397,11 +398,11 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
 // paciente.
 export async function markArrival(req: Request<{ id: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
-  if (!appointment) {
+  if (!appointment || !belongsToRequesterClinica(appointment, req)) {
     return res.status(404).json({ error: 'Cita no encontrada' });
   }
 
-  if (req.user!.role !== 'admin' && appointment.professionalId !== req.user!.sub) {
+  if (req.user!.role !== 'admin' && req.user!.role !== 'super_admin' && appointment.professionalId !== req.user!.sub) {
     return res.status(403).json({ error: 'No puedes marcar la llegada de una cita de otro profesional' });
   }
 
@@ -424,11 +425,11 @@ export async function markArrival(req: Request<{ id: string }>, res: Response) {
 
 export async function startAttention(req: Request<{ id: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
-  if (!appointment) {
+  if (!appointment || !belongsToRequesterClinica(appointment, req)) {
     return res.status(404).json({ error: 'Cita no encontrada' });
   }
 
-  if (req.user!.role !== 'admin' && appointment.professionalId !== req.user!.sub) {
+  if (req.user!.role !== 'admin' && req.user!.role !== 'super_admin' && appointment.professionalId !== req.user!.sub) {
     return res.status(403).json({ error: 'No puedes pasar a atención una cita de otro profesional' });
   }
 
@@ -454,11 +455,11 @@ export async function startAttention(req: Request<{ id: string }>, res: Response
 // evolución en otro momento (o en otra visita) sin que eso bloquee la agenda.
 export async function finishAttention(req: Request<{ id: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
-  if (!appointment) {
+  if (!appointment || !belongsToRequesterClinica(appointment, req)) {
     return res.status(404).json({ error: 'Cita no encontrada' });
   }
 
-  if (req.user!.role !== 'admin' && appointment.professionalId !== req.user!.sub) {
+  if (req.user!.role !== 'admin' && req.user!.role !== 'super_admin' && appointment.professionalId !== req.user!.sub) {
     return res.status(403).json({ error: 'No puedes terminar una cita de otro profesional' });
   }
 

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
 import { syncTreatmentItemToFederation } from '../lib/federationSync';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -21,7 +22,7 @@ function hasText(html: string) {
 
 // Solo el autor de la evolución o un admin pueden modificarla/eliminarla.
 function isOwnerOrAdmin(evolution: { professionalId: string }, req: Request): boolean {
-  return req.user!.role === 'admin' || evolution.professionalId === req.user!.sub;
+  return req.user!.role === 'admin' || req.user!.role === 'super_admin' || evolution.professionalId === req.user!.sub;
 }
 
 export async function list(req: Request, res: Response) {
@@ -163,7 +164,7 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request<{ id: string }>, res: Response) {
   const body = req.body as { content?: string; enabled?: boolean };
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
-  if (!evolution) {
+  if (!evolution || !belongsToRequesterClinica(evolution, req)) {
     return res.status(404).json({ error: 'Evolución no encontrada' });
   }
 
@@ -198,7 +199,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   }
 
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
-  if (!evolution) {
+  if (!evolution || !belongsToRequesterClinica(evolution, req)) {
     return res.status(404).json({ error: 'Evolución no encontrada' });
   }
 
@@ -223,7 +224,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
 
 export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
-  if (!evolution) {
+  if (!evolution || !belongsToRequesterClinica(evolution, req)) {
     return res.status(404).json({ error: 'Evolución no encontrada' });
   }
   const file = req.file;
