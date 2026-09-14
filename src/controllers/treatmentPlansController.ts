@@ -34,6 +34,12 @@ type ItemInput = {
   productLot?: string;
   productExpiresAt?: string;
   productQuantity?: string;
+  // Etapa 08: si viene productoMarcaId, cost/listPrice se calculan solos
+  // (productoMarca.precioVenta × productUnitQuantity) e ignoran cualquier
+  // cost/listPrice que haya mandado el frontend — el precio nunca se digita
+  // a mano cuando se elige un producto del catálogo.
+  productoMarcaId?: string;
+  productUnitQuantity?: number;
 };
 type PlanInput = {
   patientId?: string;
@@ -287,20 +293,40 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
     return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
 
+  // Etapa 08: si se eligió un producto del catálogo multimarca, el costo se
+  // calcula acá — nunca se confía en lo que mande el frontend para cost/
+  // listPrice en ese caso, así nadie puede alterar el precio manipulando la
+  // petición.
+  let computedCost: number | null = null;
+  let productoMarcaId: string | null = null;
+  let productUnitQuantity: number | null = null;
+  if (body.productoMarcaId) {
+    const producto = await prisma.productoMarca.findUnique({ where: { id: body.productoMarcaId } });
+    if (!producto || !belongsToRequesterClinica(producto, req)) {
+      return res.status(400).json({ error: 'Producto no encontrado' });
+    }
+    const quantity = Math.max(1, Math.round(body.productUnitQuantity ?? 1));
+    computedCost = producto.precioVenta * quantity;
+    productoMarcaId = producto.id;
+    productUnitQuantity = quantity;
+  }
+
   const newItem = await prisma.treatmentItem.create({
     data: {
       treatmentPlanId: plan.id,
       description: body.description.trim(),
-      cost: Math.round(body.cost ?? 0),
+      cost: computedCost ?? Math.round(body.cost ?? 0),
       prestacionId: body.prestacionId || null,
       toothNumber: body.toothNumber?.trim() || null,
-      listPrice: Math.round(body.listPrice ?? body.cost ?? 0),
+      listPrice: computedCost ?? Math.round(body.listPrice ?? body.cost ?? 0),
       convenioDiscountPercent: Math.round(body.convenioDiscountPercent ?? 0),
       notes: body.notes?.trim() || null,
       productName: body.productName?.trim() || null,
       productLot: body.productLot?.trim() || null,
       productExpiresAt: body.productExpiresAt ? new Date(body.productExpiresAt) : null,
       productQuantity: body.productQuantity?.trim() || null,
+      productoMarcaId,
+      productUnitQuantity,
       clinicaId: plan.clinicaId,
     },
   });

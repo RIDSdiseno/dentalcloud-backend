@@ -67,6 +67,7 @@ model Clinica {
   ledgerMovements            LedgerMovement[]
   patients                   Patient[]
   prestaciones               Prestacion[]
+  productosMarca             ProductoMarca[]
   previsiones                Prevision[]
   sucursales                 Sucursal[]
   treatmentItemPhotos        TreatmentItemPhoto[]
@@ -413,6 +414,15 @@ model TreatmentItem {
   productLot               String?
   productExpiresAt         DateTime?
   productQuantity          String?
+  // Etapa 08 (14/09): si se elige un producto del catálogo multimarca, el
+  // presupuesto ya no se digita — cost/listPrice se calculan solos como
+  // productoMarca.precioVenta × productUnitQuantity (ver
+  // treatmentPlansController.addItem). Quedan aparte de productName/
+  // productQuantity (los de siempre, texto libre) para no romper nada de lo
+  // que ya existía; un ítem puede seguir sin producto de catálogo si el
+  // médico prefiere tipear a mano.
+  productoMarcaId          String?
+  productUnitQuantity      Int?
   treatedAt                DateTime?
   // Id del TreatmentPlanItem espejo en Dental-Demo-Back.
   federatedTreatmentItemId String?              @unique
@@ -421,6 +431,7 @@ model TreatmentItem {
   evolutions               Evolution[]
   clinica                  Clinica              @relation(fields: [clinicaId], references: [id])
   prestacion               Prestacion?          @relation(fields: [prestacionId], references: [id])
+  productoMarca            ProductoMarca?       @relation(fields: [productoMarcaId], references: [id])
   treatedBy                User?                @relation(fields: [treatedById], references: [id])
   treatmentPlan            TreatmentPlan        @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
 
@@ -547,6 +558,36 @@ model Prestacion {
 
   @@unique([clinicaId, code])
   @@map("prestaciones")
+}
+
+// Catálogo multimarca de productos (Etapa 08, reunión 2/9 con Urbina):
+// "el mismo principio activo con varias marcas, cada una con su propio costo
+// y precio... la fórmula es costo → margen deseado → precio de venta". Se
+// configura una sola vez en Catálogo, y desde ahí el presupuesto (Etapa 06)
+// sale calculado solo — nunca se digita el precio a mano (ver
+// TreatmentItem.productoMarcaId/productUnitQuantity y
+// treatmentPlansController.addItem).
+//
+// Fórmula usada (Chile, 14/09): precioVenta = costo × (1 + margenPercent/100),
+// redondeado. España queda pendiente — puede usar otra convención de margen.
+model ProductoMarca {
+  id             String          @id @default(uuid())
+  clinicaId      String
+  nombreGenerico String
+  marca          String
+  unidad         String          @default("unidad")
+  costo          Int             @default(0)
+  margenPercent  Int             @default(0)
+  // Derivado — se recalcula en el backend cada vez que cambian costo o
+  // margen, nunca se edita directo desde el frontend.
+  precioVenta    Int             @default(0)
+  active         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
+  items          TreatmentItem[]
+
+  @@unique([clinicaId, nombreGenerico, marca])
+  @@map("productos_marca")
 }
 
 model Appointment {

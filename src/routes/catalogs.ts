@@ -18,6 +18,10 @@ import {
   createPrestacion,
   updatePrestacion,
   removePrestacion,
+  listProductosMarca,
+  createProductoMarca,
+  updateProductoMarca,
+  removeProductoMarca,
   listEvolutionTemplates,
   createEvolutionTemplate,
   updateEvolutionTemplate,
@@ -48,6 +52,11 @@ router.get('/prestaciones', listPrestaciones);
 router.post('/prestaciones', requireAdmin, createPrestacion);
 router.patch('/prestaciones/:id', requireAdmin, updatePrestacion);
 router.delete('/prestaciones/:id', requireAdmin, removePrestacion);
+
+router.get('/productos-marca', listProductosMarca);
+router.post('/productos-marca', requireAdmin, createProductoMarca);
+router.patch('/productos-marca/:id', requireAdmin, updateProductoMarca);
+router.delete('/productos-marca/:id', requireAdmin, removeProductoMarca);
 
 router.get('/product-lots', searchProductLots);
 

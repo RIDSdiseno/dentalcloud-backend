@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -25,23 +26,45 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     productLot?: string | null;
     productExpiresAt?: string | null;
     productQuantity?: string | null;
+    productoMarcaId?: string | null;
+    productUnitQuantity?: number | null;
   };
   const item = await prisma.treatmentItem.findUnique({
     where: { id: req.params.id },
     include: { treatmentPlan: { select: { status: true } } },
   });
-  if (!item) {
+  if (!item || !belongsToRequesterClinica(item, req)) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
   }
   if (isPlanAlta(item.treatmentPlan)) {
     return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
   }
 
+  // Etapa 08: mismo candado que al crear el ítem — si viene un producto del
+  // catálogo multimarca, el costo se recalcula acá y no se confía en lo que
+  // mande el frontend.
+  let computedCost: number | null = null;
+  let productoMarcaUpdate: { productoMarcaId: string | null; productUnitQuantity: number | null } | null = null;
+  if (body.productoMarcaId !== undefined) {
+    if (body.productoMarcaId === null) {
+      productoMarcaUpdate = { productoMarcaId: null, productUnitQuantity: null };
+    } else {
+      const producto = await prisma.productoMarca.findUnique({ where: { id: body.productoMarcaId } });
+      if (!producto || !belongsToRequesterClinica(producto, req)) {
+        return res.status(400).json({ error: 'Producto no encontrado' });
+      }
+      const quantity = Math.max(1, Math.round(body.productUnitQuantity ?? 1));
+      computedCost = producto.precioVenta * quantity;
+      productoMarcaUpdate = { productoMarcaId: producto.id, productUnitQuantity: quantity };
+    }
+  }
+
   const updatedItem = await prisma.treatmentItem.update({
     where: { id: item.id },
     data: {
       ...(body.description !== undefined ? { description: body.description.trim() } : {}),
-      ...(body.cost !== undefined ? { cost: Math.round(body.cost) } : {}),
+      ...(computedCost !== null ? { cost: computedCost, listPrice: computedCost } : body.cost !== undefined ? { cost: Math.round(body.cost) } : {}),
+      ...(productoMarcaUpdate ?? {}),
       ...(body.completed !== undefined
         ? {
             completed: body.completed,
@@ -77,7 +100,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     include: { treatmentPlan: { select: { status: true } } },
   });
-  if (!item) {
+  if (!item || !belongsToRequesterClinica(item, req)) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
   }
   if (isPlanAlta(item.treatmentPlan)) {
@@ -100,7 +123,7 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     include: { treatmentPlan: { select: { status: true } } },
   });
-  if (!item) {
+  if (!item || !belongsToRequesterClinica(item, req)) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
   }
   if (isPlanAlta(item.treatmentPlan)) {
@@ -147,7 +170,7 @@ export async function removePhoto(req: Request<{ photoId: string }>, res: Respon
     where: { id: req.params.photoId },
     include: { treatmentItem: { select: { treatmentPlanId: true, treatmentPlan: { select: { status: true } } } } },
   });
-  if (!photo) {
+  if (!photo || !belongsToRequesterClinica(photo, req)) {
     return res.status(404).json({ error: 'Foto no encontrada' });
   }
   if (isPlanAlta(photo.treatmentItem.treatmentPlan)) {

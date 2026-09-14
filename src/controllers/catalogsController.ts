@@ -223,6 +223,103 @@ export async function removeConvenio(req: Request<{ id: string }>, res: Response
   return res.status(204).send();
 }
 
+// Etapa 08 (reunión 2/9 con Urbina): "la fórmula es costo → margen deseado →
+// precio de venta". Convención de Chile (14/09, España queda pendiente):
+// precioVenta = costo × (1 + margen/100) — margen sobre el costo, no sobre
+// el precio final.
+function calcularPrecioVenta(costo: number, margenPercent: number): number {
+  return Math.round(costo * (1 + margenPercent / 100));
+}
+
+export async function listProductosMarca(req: Request, res: Response) {
+  const includeInactive = req.query.all === 'true';
+  const productos = await prisma.productoMarca.findMany({
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
+    orderBy: [{ nombreGenerico: 'asc' }, { marca: 'asc' }],
+  });
+  return res.json({ productos });
+}
+
+export async function createProductoMarca(req: Request, res: Response) {
+  const { nombreGenerico, marca, unidad, costo, margenPercent } = req.body as {
+    nombreGenerico?: string;
+    marca?: string;
+    unidad?: string;
+    costo?: number;
+    margenPercent?: number;
+  };
+  if (!nombreGenerico?.trim()) {
+    return res.status(400).json({ error: 'El nombre del producto es requerido' });
+  }
+  if (!marca?.trim()) {
+    return res.status(400).json({ error: 'La marca es requerida' });
+  }
+  const clinicaId = req.user!.clinicaId!;
+  const existing = await prisma.productoMarca.findFirst({
+    where: { clinicaId, nombreGenerico: nombreGenerico.trim(), marca: marca.trim() },
+  });
+  if (existing) {
+    return res.status(409).json({ error: 'Ya existe esa marca para este producto' });
+  }
+  const cleanCosto = Math.max(0, Math.round(costo ?? 0));
+  const cleanMargen = Math.max(0, Math.round(margenPercent ?? 0));
+  const producto = await prisma.productoMarca.create({
+    data: {
+      clinicaId,
+      nombreGenerico: nombreGenerico.trim(),
+      marca: marca.trim(),
+      unidad: unidad?.trim() || 'unidad',
+      costo: cleanCosto,
+      margenPercent: cleanMargen,
+      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen),
+    },
+  });
+  return res.status(201).json({ producto });
+}
+
+export async function updateProductoMarca(req: Request<{ id: string }>, res: Response) {
+  const producto = await prisma.productoMarca.findUnique({ where: { id: req.params.id } });
+  if (!producto || !belongsToRequesterClinica(producto, req)) {
+    return res.status(404).json({ error: 'Producto no encontrado' });
+  }
+  const { nombreGenerico, marca, unidad, costo, margenPercent, active } = req.body as {
+    nombreGenerico?: string;
+    marca?: string;
+    unidad?: string;
+    costo?: number;
+    margenPercent?: number;
+    active?: boolean;
+  };
+  const cleanCosto = costo !== undefined ? Math.max(0, Math.round(costo)) : producto.costo;
+  const cleanMargen = margenPercent !== undefined ? Math.max(0, Math.round(margenPercent)) : producto.margenPercent;
+  const updated = await prisma.productoMarca.update({
+    where: { id: req.params.id },
+    data: {
+      ...(nombreGenerico !== undefined ? { nombreGenerico: nombreGenerico.trim() } : {}),
+      ...(marca !== undefined ? { marca: marca.trim() } : {}),
+      ...(unidad !== undefined ? { unidad: unidad.trim() || 'unidad' } : {}),
+      ...(costo !== undefined ? { costo: cleanCosto } : {}),
+      ...(margenPercent !== undefined ? { margenPercent: cleanMargen } : {}),
+      ...(active !== undefined ? { active } : {}),
+      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen),
+    },
+  });
+  return res.json({ producto: updated });
+}
+
+export async function removeProductoMarca(req: Request<{ id: string }>, res: Response) {
+  const producto = await prisma.productoMarca.findUnique({ where: { id: req.params.id } });
+  if (!producto || !belongsToRequesterClinica(producto, req)) {
+    return res.status(404).json({ error: 'Producto no encontrado' });
+  }
+  const itemCount = await prisma.treatmentItem.count({ where: { productoMarcaId: req.params.id } });
+  if (itemCount > 0) {
+    return res.status(409).json({ error: 'No se puede eliminar un producto usado en presupuestos. Desactívalo en su lugar.' });
+  }
+  await prisma.productoMarca.delete({ where: { id: req.params.id } });
+  return res.status(204).send();
+}
+
 export async function listPrestaciones(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
   const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
