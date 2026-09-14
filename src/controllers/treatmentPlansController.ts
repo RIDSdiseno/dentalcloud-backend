@@ -136,8 +136,23 @@ export async function create(req: Request, res: Response) {
   }
 
   const items = (body.items ?? []).filter((i) => i.description?.trim());
-  const amount = items.reduce((sum, i) => sum + Math.round(i.cost ?? 0), 0);
   const clinicaId = req.user!.clinicaId!;
+
+  // Etapa 08: mismo candado que addItem() — si un ítem trae productoMarcaId,
+  // su costo se calcula acá (nunca se confía en el cost/listPrice que mande
+  // el frontend para ese ítem).
+  const computedCosts = new Map<number, number>();
+  for (const [index, item] of items.entries()) {
+    if (!item.productoMarcaId) continue;
+    const producto = await prisma.productoMarca.findUnique({ where: { id: item.productoMarcaId } });
+    if (!producto || producto.clinicaId !== clinicaId) {
+      return res.status(400).json({ error: 'Producto no encontrado' });
+    }
+    const quantity = Math.max(1, Math.round(item.productUnitQuantity ?? 1));
+    computedCosts.set(index, producto.precioVenta * quantity);
+    item.productUnitQuantity = quantity;
+  }
+  const amount = items.reduce((sum, i, index) => sum + Math.round(computedCosts.get(index) ?? i.cost ?? 0), 0);
 
   const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { tipo: true } });
   let diagramType: string;
@@ -183,21 +198,26 @@ export async function create(req: Request, res: Response) {
         // compartirían el mismo `createdAt` (ver nota del `orderBy` más abajo)
         // — se escalona 1ms por índice para que el orden de la lista refleje
         // el orden en que se ingresaron en el formulario.
-        create: items.map((i, index) => ({
-          description: i.description!.trim(),
-          cost: Math.round(i.cost ?? 0),
-          prestacionId: i.prestacionId || null,
-          toothNumber: i.toothNumber?.trim() || null,
-          listPrice: Math.round(i.listPrice ?? i.cost ?? 0),
-          convenioDiscountPercent: Math.round(i.convenioDiscountPercent ?? 0),
-          notes: i.notes?.trim() || null,
-          productName: i.productName?.trim() || null,
-          productLot: i.productLot?.trim() || null,
-          productExpiresAt: i.productExpiresAt ? new Date(i.productExpiresAt) : null,
-          productQuantity: i.productQuantity?.trim() || null,
-          clinicaId,
-          createdAt: new Date(Date.now() + index),
-        })),
+        create: items.map((i, index) => {
+          const computedCost = computedCosts.get(index) ?? null;
+          return {
+            description: i.description!.trim(),
+            cost: computedCost ?? Math.round(i.cost ?? 0),
+            prestacionId: i.prestacionId || null,
+            toothNumber: i.toothNumber?.trim() || null,
+            listPrice: computedCost ?? Math.round(i.listPrice ?? i.cost ?? 0),
+            convenioDiscountPercent: computedCost !== null ? 0 : Math.round(i.convenioDiscountPercent ?? 0),
+            notes: i.notes?.trim() || null,
+            productName: i.productName?.trim() || null,
+            productLot: i.productLot?.trim() || null,
+            productExpiresAt: i.productExpiresAt ? new Date(i.productExpiresAt) : null,
+            productQuantity: i.productQuantity?.trim() || null,
+            productoMarcaId: i.productoMarcaId || null,
+            productUnitQuantity: i.productUnitQuantity ?? null,
+            clinicaId,
+            createdAt: new Date(Date.now() + index),
+          };
+        }),
       },
     },
     include,
