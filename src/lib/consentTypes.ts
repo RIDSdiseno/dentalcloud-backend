@@ -47,6 +47,10 @@ export const DEFAULT_CONSENT_TYPES: Array<{ code: string; name: string; legalTex
 // el paciente no tiene un Consent con este code en estado 'firmado'.
 export const VOICE_RECORDING_CONSENT_CODE = 'grabacion_voz';
 
+// Mismo candado, para el registro fotográfico de Evaluación Estética (11/09,
+// pedido explícito) — ver patientsController.uploadExamPhoto.
+export const PHOTO_USAGE_CONSENT_CODE = 'uso_imagenes';
+
 function placeholderText(title: string, isAuthorization = false) {
   const heading = isAuthorization ? title : `CONSENTIMIENTO PARA ${title}`;
   return `${heading}\n\n[Este es un texto de ejemplo. Debe ser reemplazado por el texto legal definitivo antes de enviarse a pacientes reales.]`;

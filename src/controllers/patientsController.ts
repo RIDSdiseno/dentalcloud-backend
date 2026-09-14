@@ -6,7 +6,7 @@ import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { syncPatientToFederation } from '../lib/federationSync';
-import { VOICE_RECORDING_CONSENT_CODE } from '../lib/consentTypes';
+import { VOICE_RECORDING_CONSENT_CODE, PHOTO_USAGE_CONSENT_CODE } from '../lib/consentTypes';
 import { PERMISSION_LABELS, type GeneralPatientPermissionKey } from '../lib/rolePermissions';
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 
@@ -412,6 +412,22 @@ export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
   if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  // Candado duro (11/09, pedido explícito): sin el consentimiento de "Uso de
+  // fotografías y registros clínicos" ya firmado, no se sube ninguna foto del
+  // examen estético — no basta con que el frontend oculte el botón.
+  const signedPhotoConsent = await prisma.consent.findFirst({
+    where: {
+      patientId: patient.id,
+      status: 'firmado',
+      consentType: { code: PHOTO_USAGE_CONSENT_CODE },
+    },
+  });
+  if (!signedPhotoConsent) {
+    return res.status(403).json({
+      error: 'El paciente debe firmar el consentimiento de uso de fotografías antes de poder tomar fotos.',
+    });
   }
 
   const photo = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
