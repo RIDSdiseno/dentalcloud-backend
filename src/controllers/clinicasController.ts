@@ -58,7 +58,12 @@ export async function withStats() {
     },
   });
 
-  const [amountsByClinica, ledgerByClinica, consentsByClinica] = await Promise.all([
+  const currentPeriod = (() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  })();
+
+  const [amountsByClinica, ledgerByClinica, consentsByClinica, aiUsageByClinica] = await Promise.all([
     prisma.treatmentPlan.groupBy({ by: ['clinicaId'], _sum: { amount: true } }),
     prisma.ledgerMovement.groupBy({ by: ['clinicaId'], _sum: { debe: true, haber: true } }),
     prisma.consent.groupBy({
@@ -66,7 +71,9 @@ export async function withStats() {
       where: { consentType: { code: 'proteccion_datos' } },
       _count: { _all: true },
     }),
+    prisma.aiTokenUsage.findMany({ where: { periodo: currentPeriod }, select: { clinicaId: true, tokensUsados: true } }),
   ]);
+  const aiTokensUsedByClinicaId = new Map(aiUsageByClinica.map((u) => [u.clinicaId, u.tokensUsados]));
 
   const amountByClinicaId = new Map(amountsByClinica.map((a) => [a.clinicaId, a._sum.amount ?? 0]));
   const ledgerByClinicaId = new Map(
@@ -91,6 +98,8 @@ export async function withStats() {
     logoUrl: c.logoUrl,
     rxEnabled: c.rxEnabled,
     modules: parseClinicaModules(c.modules),
+    aiTokenLimitMonthly: c.aiTokenLimitMonthly,
+    aiTokensUsedThisMonth: aiTokensUsedByClinicaId.get(c.id) ?? 0,
     federatedClinicId: c.federatedClinicId,
     federationCatalogOnly: c.federationCatalogOnly,
     federationPaused: c.federationPaused,
@@ -505,19 +514,31 @@ export async function listAllObservations(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { name, rut, active, tipo, pais, rxEnabled, modules, federationCatalogOnly, federationPaused, federationSyncSettings } =
-    req.body as {
-      name?: string;
-      rut?: string;
-      active?: boolean;
-      tipo?: string;
-      pais?: string;
-      rxEnabled?: boolean;
-      modules?: Partial<Record<ClinicaModuleKey, boolean>>;
-      federationCatalogOnly?: boolean;
-      federationPaused?: boolean;
-      federationSyncSettings?: Partial<Record<FederationSyncKey, boolean>>;
-    };
+  const {
+    name,
+    rut,
+    active,
+    tipo,
+    pais,
+    rxEnabled,
+    modules,
+    federationCatalogOnly,
+    federationPaused,
+    federationSyncSettings,
+    aiTokenLimitMonthly,
+  } = req.body as {
+    name?: string;
+    rut?: string;
+    active?: boolean;
+    tipo?: string;
+    pais?: string;
+    rxEnabled?: boolean;
+    modules?: Partial<Record<ClinicaModuleKey, boolean>>;
+    federationCatalogOnly?: boolean;
+    federationPaused?: boolean;
+    federationSyncSettings?: Partial<Record<FederationSyncKey, boolean>>;
+    aiTokenLimitMonthly?: number;
+  };
 
   if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
@@ -527,6 +548,9 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   }
   if (rut !== undefined && rut.trim() && !isValidRut(rut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  }
+  if (aiTokenLimitMonthly !== undefined && (!Number.isInteger(aiTokenLimitMonthly) || aiTokenLimitMonthly < 0)) {
+    return res.status(400).json({ error: 'El límite de tokens de IA debe ser un entero mayor o igual a 0 (0 = sin límite)' });
   }
 
   const clinica = await prisma.clinica.findUnique({ where: { id: req.params.id } });
@@ -572,6 +596,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       ...(federationCatalogOnly !== undefined ? { federationCatalogOnly } : {}),
       ...(federationPaused !== undefined ? { federationPaused } : {}),
       ...(mergedFederationSyncSettings !== undefined ? { federationSyncSettings: mergedFederationSyncSettings } : {}),
+      ...(aiTokenLimitMonthly !== undefined ? { aiTokenLimitMonthly } : {}),
     },
   });
 

@@ -116,7 +116,7 @@ const INSTRUCTIONS = [
   'No hagas diagnósticos ni recomendaciones de tratamiento — solo resume lo declarado.',
 ].join(' ');
 
-export async function generateAnamnesisSummary(input: SummaryInput): Promise<string> {
+export async function generateAnamnesisSummary(input: SummaryInput): Promise<{ text: string; tokensUsed: number }> {
   const client = getOpenAIClient();
   const response = await client.responses.create({
     model: getOpenAITextModel(),
@@ -126,5 +126,5 @@ export async function generateAnamnesisSummary(input: SummaryInput): Promise<str
   });
   const text = response.output_text?.trim();
   if (!text) throw new Error('El modelo no devolvió texto');
-  return text;
+  return { text, tokensUsed: response.usage?.total_tokens ?? 0 };
 }

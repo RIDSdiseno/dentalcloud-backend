@@ -12,6 +12,7 @@ import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 import { sanitizeAnamnesisData } from '../lib/anamnesisData';
 import { generateAnamnesisSummary } from '../lib/anamnesisSummaryAi';
 import { isOpenAIConfigured } from '../lib/openai';
+import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError } from '../lib/aiTokenUsage';
 
 // Auditoría de seguridad (11/09): getOne/update/uploadPhoto/uploadExamPhoto/
 // uploadMotivoConsultaAudio/corroborateData buscaban el paciente SOLO por id,
@@ -376,8 +377,18 @@ export async function generateAnamnesisSummaryHandler(req: Request<{ id: string 
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
+  const clinicaId = patient.clinicaId;
   try {
-    const summary = await generateAnamnesisSummary({
+    await assertAiTokenBudget(clinicaId);
+  } catch (err) {
+    if (err instanceof AiTokenLimitError) {
+      return res.status(429).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  try {
+    const { text, tokensUsed } = await generateAnamnesisSummary({
       firstName: patient.firstName,
       gender: patient.gender,
       age: calculateAge(patient.birthDate),
@@ -387,10 +398,11 @@ export async function generateAnamnesisSummaryHandler(req: Request<{ id: string 
       allergyNotes: patient.allergyNotes,
       motivoConsulta: patient.motivoConsulta,
     });
+    await recordAiTokenUsage(clinicaId, tokensUsed);
 
     const updated = await prisma.patient.update({
       where: { id: req.params.id },
-      data: { anamnesisSummary: summary },
+      data: { anamnesisSummary: text },
     });
     return res.json({ patient: updated });
   } catch (err) {

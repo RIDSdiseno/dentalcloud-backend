@@ -14,6 +14,13 @@ model Clinica {
   createdAt                  DateTime                    @default(now())
   rxEnabled                  Boolean                     @default(true)
   modules                    Json                        @default("{\"cartola\": true, \"evoluciones\": true, \"observaciones\": true, \"documentosClinicos\": true}")
+  // Regulador manual de tokens de IA (14/09, pedido explícito): todas las
+  // clínicas comparten la misma OPENAI_API_KEY (la de Dental-Demo-Back), así
+  // que sin esto una sola clínica podría gastar todo el presupuesto
+  // compartido. 0 = sin límite. Se reinicia solo cada mes calendario — ver
+  // AiTokenUsage, que lleva el consumo real por (clínica, mes).
+  aiTokenLimitMonthly        Int                         @default(100000)
+  aiTokenUsages              AiTokenUsage[]
   tipo                       String                      @default("dental")
   logoUrl                    String?
   logoPublicId               String?
@@ -607,6 +614,21 @@ model AdministrativeObservation {
 // foto nueva), cada captura queda como su propia fila con fecha, así el
 // médico puede comparar "Antes" vs "Avance" de verdad, y puede haber más de
 // una ronda de avance en el tiempo (mismo patrón que TreatmentPlanPhoto).
+// Consumo real de tokens de IA por clínica y mes calendario (14/09, pedido
+// explícito) — se compara contra Clinica.aiTokenLimitMonthly antes de cada
+// llamada al modelo (ver src/lib/aiTokenUsage.ts). "periodo" es 'YYYY-MM'.
+model AiTokenUsage {
+  id           String   @id @default(uuid())
+  clinicaId    String
+  periodo      String
+  tokensUsados Int      @default(0)
+  updatedAt    DateTime @updatedAt
+  clinica      Clinica  @relation(fields: [clinicaId], references: [id])
+
+  @@unique([clinicaId, periodo])
+  @@map("ai_token_usages")
+}
+
 model ExamPhoto {
   id        String   @id @default(uuid())
   patientId String
