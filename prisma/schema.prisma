@@ -676,7 +676,12 @@ model ExamPhoto {
   id        String   @id @default(uuid())
   patientId String
   clinicaId String
-  // 'frontal' | 'perfilDerecho' | '45derecha' | '45izquierda'
+  // 'facial' | 'corporal' (14/09, pedido explícito: switch para alternar el
+  // registro fotográfico entre rostro y cuerpo) — default 'facial' para no
+  // romper las fotos ya tomadas antes de este cambio.
+  area      String   @default("facial")
+  // Facial: 'frontal' | 'perfilDerecho' | '45derecha' | '45izquierda'.
+  // Corporal: 'frontal' | 'espalda' | 'perfilIzquierdo' | 'perfilDerecho'.
   slot      String
   // 'antes' | 'avance'
   moment    String

@@ -93,6 +93,15 @@ type PatientInput = {
 const EXAM_PHOTO_SLOTS = ['frontal', 'perfilDerecho', '45derecha', '45izquierda'] as const;
 type ExamPhotoSlot = (typeof EXAM_PHOTO_SLOTS)[number];
 
+// Registro corporal (14/09, pedido explícito): mismo mecanismo que el
+// facial, con sus propios 4 ángulos — se distinguen por `area` en ExamPhoto.
+const EXAM_PHOTO_AREAS = ['facial', 'corporal'] as const;
+type ExamPhotoArea = (typeof EXAM_PHOTO_AREAS)[number];
+const EXAM_PHOTO_SLOTS_BY_AREA: Record<ExamPhotoArea, readonly string[]> = {
+  facial: EXAM_PHOTO_SLOTS,
+  corporal: ['frontal', 'espalda', 'perfilIzquierdo', 'perfilDerecho'],
+};
+
 function sanitizeAllergies(allergies?: string[]): string[] | undefined {
   if (allergies === undefined) return undefined;
   if (!Array.isArray(allergies)) return [];
@@ -456,8 +465,12 @@ type ExamPhotoMoment = (typeof EXAM_PHOTO_MOMENTS)[number];
 // por ángulo — así "Antes" y cada ronda de "Avance" quedan disponibles para
 // comparar, y puede haber más de una ronda de avance en el tiempo.
 export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>, res: Response) {
-  const slot = req.params.slot as ExamPhotoSlot;
-  if (!EXAM_PHOTO_SLOTS.includes(slot)) {
+  const area = (req.body?.area || 'facial') as ExamPhotoArea;
+  if (!EXAM_PHOTO_AREAS.includes(area)) {
+    return res.status(400).json({ error: 'area debe ser "facial" o "corporal"' });
+  }
+  const slot = req.params.slot;
+  if (!EXAM_PHOTO_SLOTS_BY_AREA[area].includes(slot)) {
     return res.status(400).json({ error: 'Ángulo de foto no válido' });
   }
   const file = req.file;
@@ -499,7 +512,7 @@ export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>
 
   const photo = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { resource_type: 'image', folder: `dentalcloud/patients/exam-photos/${moment}-${round}/${slot}` },
+      { resource_type: 'image', folder: `dentalcloud/patients/exam-photos/${area}/${moment}-${round}/${slot}` },
       (error, result) => {
         if (error || !result) return reject(error);
         resolve({ secure_url: result.secure_url, public_id: result.public_id });
@@ -512,6 +525,7 @@ export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>
     data: {
       patientId: patient.id,
       clinicaId: patient.clinicaId,
+      area,
       slot,
       moment,
       round,
