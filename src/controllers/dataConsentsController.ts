@@ -579,3 +579,72 @@ export async function removeConsentTypePdf(req: Request<{ consentTypeId: string 
 
   return res.json({ consentType: updated });
 }
+
+function slugify(text: string): string {
+  return (
+    text
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '') // acentos
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 40) || 'consentimiento'
+  );
+}
+
+// Catálogo de consentimientos por clínica (11/09, pedido explícito): algunas
+// clínicas necesitan un tipo propio que el catálogo estándar (DEFAULT_CONSENT_TYPES)
+// no cubre. El code se genera acá — nunca lo escribe el usuario — con el
+// prefijo "custom_" para que jamás choque con los codes estables que el
+// sistema sí usa como llave de negocio (grabacion_voz, uso_imagenes, etc.).
+export async function createConsentType(req: Request, res: Response) {
+  const { name, legalText } = req.body as { name?: string; legalText?: string };
+  if (!name?.trim()) {
+    return res.status(400).json({ error: 'El nombre del consentimiento es requerido' });
+  }
+  if (!legalText?.trim()) {
+    return res.status(400).json({ error: 'El texto legal del consentimiento es requerido' });
+  }
+
+  const clinicaId = req.user!.clinicaId!;
+  const base = `custom_${slugify(name)}`;
+  let code = base;
+  let suffix = 1;
+  while (await prisma.consentType.findUnique({ where: { clinicaId_code: { clinicaId, code } } })) {
+    suffix += 1;
+    code = `${base}_${suffix}`;
+  }
+
+  const consentType = await prisma.consentType.create({
+    data: { clinicaId, code, name: name.trim(), legalText: legalText.trim(), active: true },
+  });
+  return res.status(201).json({ consentType });
+}
+
+// Solo nombre y texto legal — no se expone un toggle de "active" acá porque
+// desactivar "grabacion_voz"/"uso_imagenes" dejaría a la clínica sin forma de
+// pedir ese consentimiento de nuevo, mientras el candado del backend (que no
+// depende de `active`) lo seguiría exigiendo igual. Mejor no dar esa opción
+// por ahora que dar una forma fácil de auto-bloquearse una función.
+export async function updateConsentType(req: Request<{ consentTypeId: string }>, res: Response) {
+  const { name, legalText } = req.body as { name?: string; legalText?: string };
+  const consentType = await prisma.consentType.findUnique({ where: { id: req.params.consentTypeId } });
+  if (!consentType || consentType.clinicaId !== req.user!.clinicaId) {
+    return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
+  }
+  if (name !== undefined && !name.trim()) {
+    return res.status(400).json({ error: 'El nombre del consentimiento es requerido' });
+  }
+  if (legalText !== undefined && !legalText.trim()) {
+    return res.status(400).json({ error: 'El texto legal del consentimiento es requerido' });
+  }
+
+  const updated = await prisma.consentType.update({
+    where: { id: consentType.id },
+    data: {
+      ...(name !== undefined ? { name: name.trim() } : {}),
+      ...(legalText !== undefined ? { legalText: legalText.trim() } : {}),
+    },
+  });
+  return res.json({ consentType: updated });
+}

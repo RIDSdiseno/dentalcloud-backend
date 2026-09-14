@@ -5,6 +5,7 @@ import { requireModuleEnabled } from '../middleware/requireModuleEnabled';
 import { requireRolePermission } from '../middleware/requireRolePermission';
 import { requireAdmin } from '../middleware/requireAdmin';
 import {
+  createConsentType,
   getPdf,
   getText,
   getTypes,
@@ -12,6 +13,7 @@ import {
   removeConsentTypePdf,
   respondInPerson,
   send,
+  updateConsentType,
   uploadConsentTypePdf,
 } from '../controllers/dataConsentsController';
 
@@ -31,6 +33,8 @@ router.get('/patient/:patientId', listForPatient);
 router.get('/:id/pdf', getPdf);
 router.post('/', send);
 router.post('/:patientId/:consentTypeId/respond', respondInPerson);
+router.post('/types', requireAdmin, createConsentType);
+router.patch('/types/:consentTypeId', requireAdmin, updateConsentType);
 router.post('/types/:consentTypeId/pdf', requireAdmin, uploadMiddleware.single('pdf'), uploadConsentTypePdf);
 router.delete('/types/:consentTypeId/pdf', requireAdmin, removeConsentTypePdf);
 
