@@ -51,6 +51,7 @@ model Clinica {
   chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
   examPhotos                 ExamPhoto[]
+  examVideos                 ExamVideo[]
   consentTypes               ConsentType[]
   consents                   Consent[]
   consultationPayments       ConsultationPayment[]
@@ -253,6 +254,7 @@ model Patient {
   treatmentPlans               TreatmentPlan[]
   datosCorroboradosPor         User?                       @relation(fields: [datosCorroboradosPorId], references: [id])
   examPhotos                   ExamPhoto[]
+  examVideos                   ExamVideo[]
 
   @@unique([clinicaId, rut])
   @@map("patients")
@@ -691,6 +693,26 @@ model ExamPhoto {
   @@index([patientId, moment, round])
   @@index([clinicaId])
   @@map("exam_photos")
+}
+
+model ExamVideo {
+  id        String   @id @default(uuid())
+  patientId String
+  clinicaId String
+  // 'antes' | 'avance' — mismo esquema de rondas que ExamPhoto, pero un solo
+  // video por ronda (no hay "slots" de ángulo, ver Etapa pedida por Oscar el
+  // 14/09 vía WhatsApp: "lo mismo que las fotos... solo que con un solo video").
+  moment    String
+  round     Int      @default(1)
+  url       String
+  publicId  String
+  createdAt DateTime @default(now())
+  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
+  patient   Patient  @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, moment, round])
+  @@index([clinicaId])
+  @@map("exam_videos")
 }
 
 model ClinicalDocument {

@@ -12,6 +12,8 @@ import {
   uploadMotivoConsultaAudio,
   uploadExamPhoto,
   listExamPhotos,
+  uploadExamVideo,
+  listExamVideos,
   corroborateData,
   generateAnamnesisSummaryHandler,
 } from '../controllers/patientsController';
@@ -31,6 +33,8 @@ router.patch('/:id/photo', uploadMiddleware.single('photo'), uploadPhoto);
 router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), uploadMotivoConsultaAudio);
 router.get('/:id/exam-photos', listExamPhotos);
 router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
+router.get('/:id/exam-videos', listExamVideos);
+router.patch('/:id/exam-video', uploadMiddleware.single('video'), uploadExamVideo);
 router.post('/:id/corroborate-data', corroborateData);
 router.post('/:id/anamnesis-summary', generateAnamnesisSummaryHandler);
 router.post('/:id/exam-request', createExamRequest);

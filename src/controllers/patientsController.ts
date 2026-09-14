@@ -539,6 +539,87 @@ export async function listExamPhotos(req: Request<{ id: string }>, res: Response
   return res.json({ examPhotos });
 }
 
+// Registro de video (14/09, pedido explícito): mismo esquema de rondas que
+// el registro fotográfico (antes / avance N), pero un solo video por ronda
+// en vez de 4 ángulos — ver ExamVideo en el schema.
+export async function uploadExamVideo(req: Request<{ id: string }>, res: Response) {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de video' });
+  }
+  const moment = req.body?.moment as ExamPhotoMoment;
+  if (!EXAM_PHOTO_MOMENTS.includes(moment)) {
+    return res.status(400).json({ error: 'moment debe ser "antes" o "avance"' });
+  }
+  const round = Number(req.body?.round);
+  if (!Number.isInteger(round) || round < 1) {
+    return res.status(400).json({ error: 'round debe ser un entero positivo' });
+  }
+  if (moment === 'antes' && round !== 1) {
+    return res.status(400).json({ error: 'La ronda "antes" siempre es 1' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  // Mismo candado duro que las fotos del examen estético — un mismo
+  // consentimiento de "uso de imágenes" cubre foto y video.
+  const signedPhotoConsent = await prisma.consent.findFirst({
+    where: {
+      patientId: patient.id,
+      status: 'firmado',
+      consentType: { code: PHOTO_USAGE_CONSENT_CODE },
+    },
+  });
+  if (!signedPhotoConsent) {
+    return res.status(403).json({
+      error: 'El paciente debe firmar el consentimiento de uso de imágenes antes de poder grabar video.',
+    });
+  }
+
+  const video = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'video', folder: `dentalcloud/patients/exam-videos/${moment}-${round}` },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  await prisma.examVideo.create({
+    data: {
+      patientId: patient.id,
+      clinicaId: patient.clinicaId,
+      moment,
+      round,
+      url: video.secure_url,
+      publicId: video.public_id,
+    },
+  });
+
+  const examVideos = await prisma.examVideo.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examVideos });
+}
+
+export async function listExamVideos(req: Request<{ id: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+  const examVideos = await prisma.examVideo.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examVideos });
+}
+
 export async function uploadMotivoConsultaAudio(req: Request<{ id: string }>, res: Response) {
   const file = req.file;
   if (!file) {
