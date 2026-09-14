@@ -11,6 +11,7 @@ import {
   uploadPhoto,
   uploadMotivoConsultaAudio,
   uploadExamPhoto,
+  listExamPhotos,
   corroborateData,
 } from '../controllers/patientsController';
 
@@ -26,6 +27,7 @@ router.get('/:id', getOne);
 router.patch('/:id', update);
 router.patch('/:id/photo', uploadMiddleware.single('photo'), uploadPhoto);
 router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), uploadMotivoConsultaAudio);
+router.get('/:id/exam-photos', listExamPhotos);
 router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
 router.post('/:id/corroborate-data', corroborateData);
 

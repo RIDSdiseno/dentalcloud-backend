@@ -43,6 +43,7 @@ model Clinica {
   appointments               Appointment[]
   chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
+  examPhotos                 ExamPhoto[]
   consentTypes               ConsentType[]
   consents                   Consent[]
   consultationPayments       ConsultationPayment[]
@@ -196,6 +197,10 @@ model Patient {
   examAsymmetries              Boolean?
   examAsymmetryNotes           String?
   examDiagnosis                String?
+  // Deprecados (11/09): reemplazados por la relación `examPhotos` de abajo,
+  // que guarda un historial con fecha en vez de un solo valor que se
+  // sobrescribía en cada foto nueva — no se borran para no perder lo que ya
+  // apunta a estos campos, pero los uploads nuevos ya no escriben acá.
   examPhotoFrontalUrl          String?
   examPhotoPerfilDerechoUrl    String?
   examPhoto45DerechaUrl        String?
@@ -225,6 +230,7 @@ model Patient {
   clinica                      Clinica                     @relation(fields: [clinicaId], references: [id])
   treatmentPlans               TreatmentPlan[]
   datosCorroboradosPor         User?                       @relation(fields: [datosCorroboradosPorId], references: [id])
+  examPhotos                   ExamPhoto[]
 
   @@unique([clinicaId, rut])
   @@map("patients")
@@ -580,6 +586,34 @@ model AdministrativeObservation {
   @@index([patientId, createdAt])
   @@index([clinicaId])
   @@map("administrative_observations")
+}
+
+// Historial del registro fotográfico de Evaluación Estética (11/09) — a
+// diferencia de los 4 campos viejos en Patient (que se sobrescribían en cada
+// foto nueva), cada captura queda como su propia fila con fecha, así el
+// médico puede comparar "Antes" vs "Avance" de verdad, y puede haber más de
+// una ronda de avance en el tiempo (mismo patrón que TreatmentPlanPhoto).
+model ExamPhoto {
+  id        String   @id @default(uuid())
+  patientId String
+  clinicaId String
+  // 'frontal' | 'perfilDerecho' | '45derecha' | '45izquierda'
+  slot      String
+  // 'antes' | 'avance'
+  moment    String
+  // Para 'antes' siempre 1. Para 'avance', 1 la primera ronda de avance, 2 la
+  // segunda, etc. — permite más de un control en el tiempo sin tocar el
+  // esquema de nuevo.
+  round     Int      @default(1)
+  url       String
+  publicId  String
+  createdAt DateTime @default(now())
+  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
+  patient   Patient  @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, moment, round])
+  @@index([clinicaId])
+  @@map("exam_photos")
 }
 
 model ClinicalDocument {

@@ -87,12 +87,6 @@ type PatientInput = {
 
 const EXAM_PHOTO_SLOTS = ['frontal', 'perfilDerecho', '45derecha', '45izquierda'] as const;
 type ExamPhotoSlot = (typeof EXAM_PHOTO_SLOTS)[number];
-const EXAM_PHOTO_FIELD: Record<ExamPhotoSlot, { url: string }> = {
-  frontal: { url: 'examPhotoFrontalUrl' },
-  perfilDerecho: { url: 'examPhotoPerfilDerechoUrl' },
-  '45derecha': { url: 'examPhoto45DerechaUrl' },
-  '45izquierda': { url: 'examPhoto45IzquierdaUrl' },
-};
 
 function sanitizeAllergies(allergies?: string[]): string[] | undefined {
   if (allergies === undefined) return undefined;
@@ -387,6 +381,13 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   return res.json({ patient: updated });
 }
 
+const EXAM_PHOTO_MOMENTS = ['antes', 'avance'] as const;
+type ExamPhotoMoment = (typeof EXAM_PHOTO_MOMENTS)[number];
+
+// Historial del registro fotográfico (11/09, pedido explícito): cada captura
+// queda como su propia fila con fecha, en vez de sobrescribir un solo campo
+// por ángulo — así "Antes" y cada ronda de "Avance" quedan disponibles para
+// comparar, y puede haber más de una ronda de avance en el tiempo.
 export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>, res: Response) {
   const slot = req.params.slot as ExamPhotoSlot;
   if (!EXAM_PHOTO_SLOTS.includes(slot)) {
@@ -396,30 +397,63 @@ export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>
   if (!file) {
     return res.status(400).json({ error: 'Se requiere un archivo de foto' });
   }
+  const moment = req.body?.moment as ExamPhotoMoment;
+  if (!EXAM_PHOTO_MOMENTS.includes(moment)) {
+    return res.status(400).json({ error: 'moment debe ser "antes" o "avance"' });
+  }
+  const round = Number(req.body?.round);
+  if (!Number.isInteger(round) || round < 1) {
+    return res.status(400).json({ error: 'round debe ser un entero positivo' });
+  }
+  if (moment === 'antes' && round !== 1) {
+    return res.status(400).json({ error: 'La ronda "antes" siempre es 1' });
+  }
 
   const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
   if (!patient || !patientBelongsToRequester(patient, req)) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
-  const photo = await new Promise<{ secure_url: string }>((resolve, reject) => {
+  const photo = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { resource_type: 'image', folder: `dentalcloud/patients/exam-photos/${slot}` },
+      { resource_type: 'image', folder: `dentalcloud/patients/exam-photos/${moment}-${round}/${slot}` },
       (error, result) => {
         if (error || !result) return reject(error);
-        resolve({ secure_url: result.secure_url });
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
       }
     );
     stream.end(file.buffer);
   });
 
-  const field = EXAM_PHOTO_FIELD[slot].url;
-  const updated = await prisma.patient.update({
-    where: { id: req.params.id },
-    data: { [field]: photo.secure_url },
+  await prisma.examPhoto.create({
+    data: {
+      patientId: patient.id,
+      clinicaId: patient.clinicaId,
+      slot,
+      moment,
+      round,
+      url: photo.secure_url,
+      publicId: photo.public_id,
+    },
   });
 
-  return res.json({ patient: updated });
+  const examPhotos = await prisma.examPhoto.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examPhotos });
+}
+
+export async function listExamPhotos(req: Request<{ id: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+  const examPhotos = await prisma.examPhoto.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examPhotos });
 }
 
 export async function uploadMotivoConsultaAudio(req: Request<{ id: string }>, res: Response) {
