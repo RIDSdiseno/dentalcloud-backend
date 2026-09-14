@@ -9,6 +9,9 @@ import { syncPatientToFederation } from '../lib/federationSync';
 import { VOICE_RECORDING_CONSENT_CODE, PHOTO_USAGE_CONSENT_CODE } from '../lib/consentTypes';
 import { PERMISSION_LABELS, type GeneralPatientPermissionKey } from '../lib/rolePermissions';
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
+import { sanitizeAnamnesisData } from '../lib/anamnesisData';
+import { generateAnamnesisSummary } from '../lib/anamnesisSummaryAi';
+import { isOpenAIConfigured } from '../lib/openai';
 
 // Auditoría de seguridad (11/09): getOne/update/uploadPhoto/uploadExamPhoto/
 // uploadMotivoConsultaAudio/corroborateData buscaban el paciente SOLO por id,
@@ -73,6 +76,7 @@ type PatientInput = {
   bloodType?: string;
   tags?: string[];
   motivoConsulta?: string;
+  anamnesisData?: unknown;
   expectativasPaciente?: string;
   optimoTratamiento?: string;
   examSkinType?: string;
@@ -134,6 +138,7 @@ function toPatientData(body: PatientInput) {
     bloodType: body.bloodType?.trim() || null,
     tags: sanitizeTags(body.tags) ?? [],
     motivoConsulta: body.motivoConsulta?.trim() || null,
+    anamnesisData: body.anamnesisData !== undefined ? sanitizeAnamnesisData(body.anamnesisData) : undefined,
     expectativasPaciente: body.expectativasPaciente?.trim() || null,
     optimoTratamiento: body.optimoTratamiento?.trim() || null,
     examSkinType: body.examSkinType?.trim() || null,
@@ -175,6 +180,7 @@ function toPatientPatch(body: PatientInput) {
   if (body.bloodType !== undefined) patch.bloodType = body.bloodType.trim() || null;
   if (body.tags !== undefined) patch.tags = sanitizeTags(body.tags);
   if (body.motivoConsulta !== undefined) patch.motivoConsulta = body.motivoConsulta.trim() || null;
+  if (body.anamnesisData !== undefined) patch.anamnesisData = sanitizeAnamnesisData(body.anamnesisData);
   if (body.expectativasPaciente !== undefined) patch.expectativasPaciente = body.expectativasPaciente.trim() || null;
   if (body.optimoTratamiento !== undefined) patch.optimoTratamiento = body.optimoTratamiento.trim() || null;
   if (body.examSkinType !== undefined) patch.examSkinType = body.examSkinType.trim() || null;
@@ -342,6 +348,55 @@ export async function corroborateData(req: Request<{ id: string }>, res: Respons
   });
 
   return res.json({ patient: updated });
+}
+
+function calculateAge(birthDate: Date | null): number | null {
+  if (!birthDate) return null;
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const hasHadBirthdayThisYear =
+    today.getMonth() > birthDate.getMonth() ||
+    (today.getMonth() === birthDate.getMonth() && today.getDate() >= birthDate.getDate());
+  if (!hasHadBirthdayThisYear) age -= 1;
+  return age;
+}
+
+// Etapa 03 (reunión 2/9 con Urbina): "la idea es meterle IA de manera que te
+// entregue un resumen" — toma los 8 bloques de anamnesis + medicación/
+// alergias/motivo de consulta ya guardados y genera el párrafo clínico. Se
+// guarda en anamnesisSummary; se puede volver a generar cuando cambien los
+// datos (no hay historial de versiones, siempre es la última).
+export async function generateAnamnesisSummaryHandler(req: Request<{ id: string }>, res: Response) {
+  if (!isOpenAIConfigured()) {
+    return res.status(503).json({ error: 'La generación de resumen con IA no está configurada en este servidor.' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  try {
+    const summary = await generateAnamnesisSummary({
+      firstName: patient.firstName,
+      gender: patient.gender,
+      age: calculateAge(patient.birthDate),
+      anamnesis: sanitizeAnamnesisData(patient.anamnesisData),
+      currentMedications: patient.currentMedications,
+      allergies: patient.allergies as (typeof ALLERGY_KEYS)[number][],
+      allergyNotes: patient.allergyNotes,
+      motivoConsulta: patient.motivoConsulta,
+    });
+
+    const updated = await prisma.patient.update({
+      where: { id: req.params.id },
+      data: { anamnesisSummary: summary },
+    });
+    return res.json({ patient: updated });
+  } catch (err) {
+    console.error('Error generando resumen de anamnesis con IA', err);
+    return res.status(502).json({ error: 'No se pudo generar el resumen con IA. Intenta nuevamente.' });
+  }
 }
 
 export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {

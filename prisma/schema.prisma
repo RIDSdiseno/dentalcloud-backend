@@ -184,8 +184,22 @@ model Patient {
   // habían corroborado, para no dejar una confirmación vieja como válida.
   datosCorroboradosAt          DateTime?
   datosCorroboradosPorId       String?
-  // Conclusiones de anamnesis (resumen automático se arma en el frontend a
-  // partir de los campos clínicos ya existentes, no se guarda como texto).
+  // Anamnesis por checkbox (Etapa 03, reunión 2/9 con Urbina): los 8 bloques
+  // dictados ("antecedentes mórbidos personales", "quirúrgicos estéticos",
+  // "procedimiento estético previo", "complicaciones previas", "antecedentes
+  // familiares" y "hábitos" — medicación actual y alergias ya viven en sus
+  // propios campos de siempre, currentMedications/allergies/allergyNotes, y
+  // se reusan en vez de duplicarlos acá). Shape en
+  // src/lib/anamnesisData.ts (backend) y src/pages/pacientes/anamnesisData.ts
+  // (frontend) — Json porque cada bloque tiene una forma distinta
+  // (checkbox simple, Sí/No + detalle condicional, o Sí/No + sub-campos).
+  anamnesisData                Json?
+  // Párrafo clínico generado por IA a partir de los 8 bloques (Etapa 03:
+  // "la idea es meterle IA de manera que te entregue un resumen"). Null
+  // hasta que se genera por primera vez; se puede regenerar cuando cambian
+  // los datos de la anamnesis.
+  anamnesisSummary              String?
+  // Conclusiones de anamnesis (Etapa 04 — juicio clínico y bifurcación).
   expectativasPaciente         String?
   optimoTratamiento            String?
   // Examen estético.

@@ -13,7 +13,9 @@ import {
   uploadExamPhoto,
   listExamPhotos,
   corroborateData,
+  generateAnamnesisSummaryHandler,
 } from '../controllers/patientsController';
+import { createExamRequest } from '../controllers/documentsController';
 
 const router = Router();
 const uploadMiddleware = multer({ storage: multer.memoryStorage() });
@@ -30,5 +32,7 @@ router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), upl
 router.get('/:id/exam-photos', listExamPhotos);
 router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
 router.post('/:id/corroborate-data', corroborateData);
+router.post('/:id/anamnesis-summary', generateAnamnesisSummaryHandler);
+router.post('/:id/exam-request', createExamRequest);
 
 export default router;
