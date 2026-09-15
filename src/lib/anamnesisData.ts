@@ -3,14 +3,23 @@
 // ya viven en sus propios campos de Patient (currentMedications/
 // allergies/allergyNotes) desde antes — se reusan tal cual, no se duplican
 // acá.
+// Las 11 condiciones exactas del mockup de Urbina (reunión 2/9), cada una
+// con su propio Sí/No/Desconoce — no una lista de "marca las que aplican".
+// Ajustado el 15/09 tras comparar contra las capturas reales de la reunión:
+// la versión anterior tenía solo 7 (con "cardiopatía" que no estaba en el
+// mockup) y las trataba como una sola lista de casillas.
 export const ANAMNESIS_PATHOLOGY_KEYS = [
   'hipertension',
   'diabetes',
-  'tiroides',
-  'coagulacion',
   'autoinmune',
-  'cardiopatia',
+  'coagulacion',
+  'tiroides',
+  'hepatica',
+  'renal',
+  'cancer',
+  'herpes',
   'embarazo',
+  'lactancia',
 ] as const;
 export type AnamnesisPathologyKey = (typeof ANAMNESIS_PATHOLOGY_KEYS)[number];
 
@@ -19,8 +28,13 @@ export type AnamnesisHabitKey = (typeof ANAMNESIS_HABIT_KEYS)[number];
 
 export type YesNoDetail = { tiene: boolean | null; detalle: string };
 
+// 'si' | 'no' | 'desconoce' | null (null = todavía sin marcar) — un valor
+// independiente por condición, igual al mockup real.
+export type MorbidStatus = 'si' | 'no' | 'desconoce' | null;
+export type AntecedentesMorbidos = Record<AnamnesisPathologyKey, MorbidStatus>;
+
 export type AnamnesisData = {
-  antecedentesMorbidos: AnamnesisPathologyKey[];
+  antecedentesMorbidos: AntecedentesMorbidos;
   antecedentesMorbidosOtro: string;
   quirurgicosEsteticos: YesNoDetail;
   procedimientoPrevio: { tiene: boolean | null; tipo: string; zona: string; fecha: string };
@@ -29,6 +43,37 @@ export type AnamnesisData = {
   habitos: AnamnesisHabitKey[];
   habitosOtro: string;
 };
+
+export const EMPTY_ANTECEDENTES_MORBIDOS: AntecedentesMorbidos = Object.fromEntries(
+  ANAMNESIS_PATHOLOGY_KEYS.map((key) => [key, null])
+) as AntecedentesMorbidos;
+
+const MORBID_STATUS_VALUES = ['si', 'no', 'desconoce'] as const;
+
+function sanitizeMorbidStatus(raw: unknown): MorbidStatus {
+  return typeof raw === 'string' && (MORBID_STATUS_VALUES as readonly string[]).includes(raw)
+    ? (raw as MorbidStatus)
+    : null;
+}
+
+// Migra el formato viejo (array de keys marcadas = "tenía", sin Desconoce) a
+// falta de otra info — así los pacientes ya cargados antes del 15/09 no
+// pierden lo que ya se había marcado como "Sí".
+function sanitizeAntecedentesMorbidos(raw: unknown): AntecedentesMorbidos {
+  if (Array.isArray(raw)) {
+    const result = { ...EMPTY_ANTECEDENTES_MORBIDOS };
+    for (const key of ANAMNESIS_PATHOLOGY_KEYS) {
+      if (raw.includes(key)) result[key] = 'si';
+    }
+    return result;
+  }
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const result = { ...EMPTY_ANTECEDENTES_MORBIDOS };
+  for (const key of ANAMNESIS_PATHOLOGY_KEYS) {
+    result[key] = sanitizeMorbidStatus(obj[key]);
+  }
+  return result;
+}
 
 function sanitizeYesNoDetail(raw: unknown): YesNoDetail {
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -55,7 +100,7 @@ export function sanitizeAnamnesisData(raw: unknown): AnamnesisData {
   ) as Record<string, unknown>;
 
   return {
-    antecedentesMorbidos: sanitizeStringArray(obj.antecedentesMorbidos, ANAMNESIS_PATHOLOGY_KEYS),
+    antecedentesMorbidos: sanitizeAntecedentesMorbidos(obj.antecedentesMorbidos),
     antecedentesMorbidosOtro:
       typeof obj.antecedentesMorbidosOtro === 'string' ? obj.antecedentesMorbidosOtro.trim() : '',
     quirurgicosEsteticos: sanitizeYesNoDetail(obj.quirurgicosEsteticos),
@@ -75,11 +120,15 @@ export function sanitizeAnamnesisData(raw: unknown): AnamnesisData {
 export const ANAMNESIS_PATHOLOGY_LABEL: Record<AnamnesisPathologyKey, string> = {
   hipertension: 'Hipertensión',
   diabetes: 'Diabetes',
-  tiroides: 'Enfermedad tiroidea',
+  autoinmune: 'Enfermedades autoinmunes',
   coagulacion: 'Trastornos de coagulación',
-  autoinmune: 'Enfermedad autoinmune',
-  cardiopatia: 'Cardiopatía',
+  tiroides: 'Enfermedad tiroidea',
+  hepatica: 'Enfermedad hepática',
+  renal: 'Enfermedad renal',
+  cancer: 'Cáncer',
+  herpes: 'Herpes recurrente',
   embarazo: 'Embarazo',
+  lactancia: 'Lactancia',
 };
 
 export const ANAMNESIS_HABIT_LABEL: Record<AnamnesisHabitKey, string> = {

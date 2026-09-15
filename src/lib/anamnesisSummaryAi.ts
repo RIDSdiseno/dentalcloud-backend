@@ -3,6 +3,8 @@ import {
   ANAMNESIS_PATHOLOGY_LABEL,
   ANAMNESIS_HABIT_LABEL,
   type AnamnesisData,
+  type AnamnesisPathologyKey,
+  type MorbidStatus,
 } from './anamnesisData';
 import type { AllergyKey } from './allergies';
 
@@ -44,15 +46,22 @@ function describeAnamnesis(input: SummaryInput): string {
   );
 
   const { anamnesis } = input;
+  // Cada condición es independiente (Sí/No/Desconoce) — se agrupan por
+  // estado para redactar como el ejemplo real de Urbina: "Antecedente de
+  // hipotiroidismo... Niega hipertensión, diabetes...".
+  const morbidEntries = Object.entries(anamnesis.antecedentesMorbidos) as [AnamnesisPathologyKey, MorbidStatus][];
+  const morbidSi = morbidEntries.filter(([, v]) => v === 'si').map(([k]) => ANAMNESIS_PATHOLOGY_LABEL[k]);
+  const morbidNo = morbidEntries.filter(([, v]) => v === 'no').map(([k]) => ANAMNESIS_PATHOLOGY_LABEL[k]);
+  const morbidDesconoce = morbidEntries.filter(([, v]) => v === 'desconoce').map(([k]) => ANAMNESIS_PATHOLOGY_LABEL[k]);
+  const morbidParts: string[] = [];
+  if (morbidSi.length > 0) morbidParts.push(`Antecedente de ${morbidSi.join(', ')}`);
+  if (morbidNo.length > 0) morbidParts.push(`Niega ${morbidNo.join(', ')}`);
+  if (morbidDesconoce.length > 0) morbidParts.push(`Desconoce antecedentes de ${morbidDesconoce.join(', ')}`);
+  if (anamnesis.antecedentesMorbidosOtro) morbidParts.push(anamnesis.antecedentesMorbidosOtro);
   lines.push(
-    anamnesis.antecedentesMorbidos.length > 0 || anamnesis.antecedentesMorbidosOtro
-      ? `Antecedentes mórbidos personales: ${[
-          ...anamnesis.antecedentesMorbidos.map((k) => ANAMNESIS_PATHOLOGY_LABEL[k]),
-          anamnesis.antecedentesMorbidosOtro,
-        ]
-          .filter(Boolean)
-          .join(', ')}.`
-      : 'Sin antecedentes mórbidos personales relevantes.'
+    morbidParts.length > 0
+      ? `Antecedentes mórbidos personales: ${morbidParts.join('. ')}.`
+      : 'Antecedentes mórbidos personales no evaluados.'
   );
 
   lines.push(
