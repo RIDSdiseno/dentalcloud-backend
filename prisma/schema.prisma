@@ -579,9 +579,16 @@ model ProductoMarca {
   marca          String
   unidad         String          @default("unidad")
   costo          Int             @default(0)
+  // Cuántas "unidad" rinde UN envase comprado (ej. 500 UI por vial) — el
+  // costo se ingresa por ENVASE, no por unidad. 15/09: encontrado al
+  // comparar contra el mockup real de Urbina ("ml/und por vial/jeringa"),
+  // que esta versión no tenía — sin esto, costo/margen se aplicaban sobre
+  // el envase completo en vez de por unidad real de aplicación.
+  rendimientoPorEnvase Int       @default(1)
   margenPercent  Int             @default(0)
-  // Derivado — se recalcula en el backend cada vez que cambian costo o
-  // margen, nunca se edita directo desde el frontend.
+  // Derivado — se recalcula en el backend cada vez que cambian costo,
+  // rendimiento o margen, nunca se edita directo desde el frontend.
+  // precioVenta = (costo / rendimientoPorEnvase) × (1 + margenPercent/100)
   precioVenta    Int             @default(0)
   active         Boolean         @default(true)
   createdAt      DateTime        @default(now())

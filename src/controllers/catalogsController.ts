@@ -225,10 +225,14 @@ export async function removeConvenio(req: Request<{ id: string }>, res: Response
 
 // Etapa 08 (reunión 2/9 con Urbina): "la fórmula es costo → margen deseado →
 // precio de venta". Convención de Chile (14/09, España queda pendiente):
-// precioVenta = costo × (1 + margen/100) — margen sobre el costo, no sobre
-// el precio final.
-function calcularPrecioVenta(costo: number, margenPercent: number): number {
-  return Math.round(costo * (1 + margenPercent / 100));
+// margen sobre el costo, no sobre el precio final.
+// 15/09: el costo se ingresa por ENVASE comprado (ej. un vial), no por
+// unidad de aplicación — rendimientoPorEnvase dice cuántas "unidad" rinde
+// ese envase (mockup real de Urbina: "ml/und por vial/jeringa"). Con
+// rendimiento 1 (default) el cálculo queda igual que antes.
+function calcularPrecioVenta(costo: number, margenPercent: number, rendimientoPorEnvase: number): number {
+  const costoPorUnidad = costo / Math.max(1, rendimientoPorEnvase);
+  return Math.round(costoPorUnidad * (1 + margenPercent / 100));
 }
 
 export async function listProductosMarca(req: Request, res: Response) {
@@ -241,11 +245,12 @@ export async function listProductosMarca(req: Request, res: Response) {
 }
 
 export async function createProductoMarca(req: Request, res: Response) {
-  const { nombreGenerico, marca, unidad, costo, margenPercent } = req.body as {
+  const { nombreGenerico, marca, unidad, costo, rendimientoPorEnvase, margenPercent } = req.body as {
     nombreGenerico?: string;
     marca?: string;
     unidad?: string;
     costo?: number;
+    rendimientoPorEnvase?: number;
     margenPercent?: number;
   };
   if (!nombreGenerico?.trim()) {
@@ -262,6 +267,7 @@ export async function createProductoMarca(req: Request, res: Response) {
     return res.status(409).json({ error: 'Ya existe esa marca para este producto' });
   }
   const cleanCosto = Math.max(0, Math.round(costo ?? 0));
+  const cleanRendimiento = Math.max(1, Math.round(rendimientoPorEnvase ?? 1));
   const cleanMargen = Math.max(0, Math.round(margenPercent ?? 0));
   const producto = await prisma.productoMarca.create({
     data: {
@@ -270,8 +276,9 @@ export async function createProductoMarca(req: Request, res: Response) {
       marca: marca.trim(),
       unidad: unidad?.trim() || 'unidad',
       costo: cleanCosto,
+      rendimientoPorEnvase: cleanRendimiento,
       margenPercent: cleanMargen,
-      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen),
+      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen, cleanRendimiento),
     },
   });
   return res.status(201).json({ producto });
@@ -282,15 +289,18 @@ export async function updateProductoMarca(req: Request<{ id: string }>, res: Res
   if (!producto || !belongsToRequesterClinica(producto, req)) {
     return res.status(404).json({ error: 'Producto no encontrado' });
   }
-  const { nombreGenerico, marca, unidad, costo, margenPercent, active } = req.body as {
+  const { nombreGenerico, marca, unidad, costo, rendimientoPorEnvase, margenPercent, active } = req.body as {
     nombreGenerico?: string;
     marca?: string;
     unidad?: string;
     costo?: number;
+    rendimientoPorEnvase?: number;
     margenPercent?: number;
     active?: boolean;
   };
   const cleanCosto = costo !== undefined ? Math.max(0, Math.round(costo)) : producto.costo;
+  const cleanRendimiento =
+    rendimientoPorEnvase !== undefined ? Math.max(1, Math.round(rendimientoPorEnvase)) : producto.rendimientoPorEnvase;
   const cleanMargen = margenPercent !== undefined ? Math.max(0, Math.round(margenPercent)) : producto.margenPercent;
   const updated = await prisma.productoMarca.update({
     where: { id: req.params.id },
@@ -299,9 +309,10 @@ export async function updateProductoMarca(req: Request<{ id: string }>, res: Res
       ...(marca !== undefined ? { marca: marca.trim() } : {}),
       ...(unidad !== undefined ? { unidad: unidad.trim() || 'unidad' } : {}),
       ...(costo !== undefined ? { costo: cleanCosto } : {}),
+      ...(rendimientoPorEnvase !== undefined ? { rendimientoPorEnvase: cleanRendimiento } : {}),
       ...(margenPercent !== undefined ? { margenPercent: cleanMargen } : {}),
       ...(active !== undefined ? { active } : {}),
-      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen),
+      precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen, cleanRendimiento),
     },
   });
   return res.json({ producto: updated });
