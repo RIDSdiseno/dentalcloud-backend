@@ -27,6 +27,27 @@ model Clinica {
   rut                        String?                     @unique
   rolePermissions            Json                        @default("{}")
   pais                       String                      @default("Chile")
+  // "Compañía" en Configuración (15/09) — Lámina 8 de la reunión con
+  // Urbina: se usan en el encabezado de los PDFs que ya genera el sistema
+  // (presupuestos, consentimientos, recetas, solicitudes de examen), igual
+  // que ya se usan name/logoUrl/rut hoy.
+  address                    String?
+  email                      String?
+  phone                      String?
+  website                    String?
+  // "Información legal" — razón social/datos tributarios, cuando difieren
+  // del nombre comercial de arriba (emisión de documentos tributarios).
+  legalName                  String?
+  legalAddress               String?
+  legalEmail                 String?
+  legalPhone                 String?
+  legalWebsite               String?
+  // "Información de contacto" — la persona de contacto principal del
+  // sistema, distinta de la clínica misma.
+  contactName                String?
+  contactEmail               String?
+  contactPhone               String?
+  contactAddress             String?
   slotDurationMinutes        Int                         @default(15)
   // Id de la Clinic espejo en Dental-Demo-Back, si esta clínica fue creada (o
   // emparejada) por federación. Null = clínica local, sin par en el otro sistema.
