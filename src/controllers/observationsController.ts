@@ -13,7 +13,10 @@ export async function list(req: Request, res: Response) {
   }
 
   const observations = await prisma.administrativeObservation.findMany({
-    where: { patientId },
+    where: {
+      patientId,
+      ...(req.user!.role === 'super_admin' ? {} : { clinicaId: req.user!.clinicaId! }),
+    },
     include,
     orderBy: { createdAt: 'desc' },
   });

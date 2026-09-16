@@ -38,6 +38,7 @@ export async function list(req: Request, res: Response) {
   const evolutions = await prisma.evolution.findMany({
     where: {
       patientId,
+      ...(req.user!.role === 'super_admin' ? {} : { clinicaId: req.user!.clinicaId! }),
       ...(professionalId ? { professionalId } : {}),
       ...(enabledFilter === 'all' ? {} : { enabled: enabledFilter === 'false' ? false : true }),
     },

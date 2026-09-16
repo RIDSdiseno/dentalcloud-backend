@@ -63,7 +63,10 @@ export async function list(req: Request, res: Response) {
   }
 
   const plans = await prisma.treatmentPlan.findMany({
-    where: { patientId },
+    where: {
+      patientId,
+      ...(req.user!.role === 'super_admin' ? {} : { clinicaId: req.user!.clinicaId! }),
+    },
     include,
     orderBy: { createdAt: 'desc' },
   });

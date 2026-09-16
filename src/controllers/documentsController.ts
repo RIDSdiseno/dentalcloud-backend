@@ -27,7 +27,11 @@ export async function list(req: Request, res: Response) {
   const category = typeof req.query.category === 'string' ? req.query.category : undefined;
 
   const documents = await prisma.clinicalDocument.findMany({
-    where: { patientId, ...(category ? { category } : {}) },
+    where: {
+      patientId,
+      ...(req.user!.role === 'super_admin' ? {} : { clinicaId: req.user!.clinicaId! }),
+      ...(category ? { category } : {}),
+    },
     include,
     orderBy: { createdAt: 'desc' },
   });
