@@ -26,6 +26,7 @@ import { resolveExamGroups } from '../lib/dimageExamGroups';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { listOrderDicomFiles, isRidsRxStorageConfigured } from '../lib/ridsRxStorage';
 import { signDicomViewerToken } from '../utils/tokens';
+import { isOrderAccessAllowed, recordRxOrderClinic } from '../lib/rxOrderGuard';
 
 function dimageErrorMessage(err: unknown, fallback: string) {
   if (axios.isAxiosError(err) && typeof err.response?.data?.error === 'string') {
@@ -186,6 +187,9 @@ export async function createRxOrder(req: Request, res: Response) {
         otroinput: e.otroInput,
       })),
     });
+    if (order?.id !== undefined) {
+      await recordRxOrderClinic(order.id, req.user!.clinicaId!, patient.id);
+    }
     return res.status(201).json(order);
   } catch (err) {
     return res.status(502).json({ error: dimageErrorMessage(err, 'No se pudo crear la orden en RIDS RX') });
@@ -194,6 +198,9 @@ export async function createRxOrder(req: Request, res: Response) {
 
 export async function sendOrder(req: Request<{ id: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   try {
     const result = await sendOrderToRadiologo(req.params.id);
     return res.json(result);
@@ -204,6 +211,9 @@ export async function sendOrder(req: Request<{ id: string }>, res: Response) {
 
 export async function orderPdf(req: Request<{ id: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   try {
     const result = await fetchOrderPdfUrl(req.params.id);
     return res.json(result);
@@ -214,6 +224,9 @@ export async function orderPdf(req: Request<{ id: string }>, res: Response) {
 
 export async function orderZip(req: Request<{ id: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   try {
     const result = await fetchOrderZipUrl(req.params.id);
     return res.json(result);
@@ -224,6 +237,9 @@ export async function orderZip(req: Request<{ id: string }>, res: Response) {
 
 export async function orderDetail(req: Request<{ id: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   try {
     const order = await fetchOrderById(req.params.id);
     return res.json(order);
@@ -242,6 +258,9 @@ export async function dicomViewerToken(req: Request<{ id: string }>, res: Respon
   if (!isRidsRxStorageConfigured()) {
     return res.status(503).json({ error: 'El visor 3D no está configurado en el servidor.' });
   }
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   try {
     const files = await listOrderDicomFiles(req.params.id);
     if (files.length === 0) {
@@ -257,6 +276,9 @@ export async function dicomViewerToken(req: Request<{ id: string }>, res: Respon
 
 export async function updateRxOrder(req: Request<{ id: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
   const body = req.body as {
     diagnostico?: string;
     observaciones?: string;
@@ -302,6 +324,12 @@ export async function uploadOrderFilesController(req: Request<{ id: string; exam
   if (files.length === 0) {
     return res.status(400).json({ error: 'Se requiere al menos un archivo' });
   }
+  // multer ya guardó los archivos como temporales en disco antes de llegar
+  // acá — si se rechaza el acceso, igual hay que limpiarlos.
+  if (!(await isOrderAccessAllowed(req.params.id, req))) {
+    await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => {})));
+    return res.status(404).json({ error: 'Orden no encontrada' });
+  }
 
   try {
     const result = await uploadOrderFiles(
@@ -320,6 +348,13 @@ export async function uploadOrderFilesController(req: Request<{ id: string; exam
   }
 }
 
+// NO tiene el mismo candado que el resto (isOrderAccessAllowed) — esta ruta
+// solo recibe `fileId` (id de archivo de Dimage), nunca el id de la orden a
+// la que pertenece, y el cliente de Dimage no expone ningún endpoint para
+// resolver archivo → orden. Cerrarlo requeriría que Dimage agregue esa
+// consulta, o guardar acá el mapeo file↔orden al momento de subir cada
+// archivo (uploadOrderFilesController no lo hace hoy). Queda como hueco
+// conocido — documentado en vez de bloquearlo a ciegas.
 export async function deleteOrderFileController(req: Request<{ fileId: string }>, res: Response) {
   if (!requireDimageConfigured(res)) return;
   try {

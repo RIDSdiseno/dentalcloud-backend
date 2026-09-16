@@ -964,6 +964,28 @@ model FederationSyncFailure {
   @@map("federation_sync_failures")
 }
 
+// Auditoría de seguridad (16/09): las órdenes de RIDS RX (Dimage) viven
+// SOLO en ese sistema externo — no hay ninguna tabla local con las órdenes
+// en sí, así que orderDetail/orderPdf/orderZip/sendOrder/updateRxOrder/
+// dicomViewerToken/uploadOrderFilesController no tenían forma de confirmar
+// que el `id` de orden pedido fuera de la clínica de quien pregunta (ver
+// rxController.ts). Esta tabla es solo el MAPEO orden↔clínica (no la orden
+// completa): se llena sola al crear una orden nueva (createRxOrder) y de una
+// vez por todas para las órdenes viejas vía el script de backfill
+// (scripts/backfillRxOrderClinics.ts). Si un id no aparece acá (backfill
+// incompleto, orden borrada, etc.), el candado deja pasar en vez de romper
+// el acceso a algo que ya funcionaba — ver rxOrderGuard.ts.
+model RxOrderClinic {
+  id            String   @id @default(uuid())
+  dimageOrderId String   @unique
+  clinicaId     String
+  patientId     String?
+  createdAt     DateTime @default(now())
+
+  @@index([clinicaId])
+  @@map("rx_order_clinics")
+}
+
 // Plantillas de documentos configurables por clínica (Configuración >
 // Formatos): presupuesto, exámenes, plan de tratamiento, receta. `body` es
 // texto simple por ahora (no HTML/PDF real todavía).
