@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 
 export async function list(req: Request, res: Response) {
   const includeInactive = req.query.all === 'true';
@@ -32,7 +33,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   const { name, active } = req.body as { name?: string | null; active?: boolean };
 
   const chair = await prisma.chair.findUnique({ where: { id } });
-  if (!chair) {
+  if (!chair || !belongsToRequesterClinica(chair, req)) {
     return res.status(404).json({ error: 'Sillón no encontrado' });
   }
 
@@ -50,7 +51,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   const { id } = req.params;
 
   const chair = await prisma.chair.findUnique({ where: { id } });
-  if (!chair) {
+  if (!chair || !belongsToRequesterClinica(chair, req)) {
     return res.status(404).json({ error: 'Sillón no encontrado' });
   }
 

@@ -2,6 +2,7 @@ import fs from 'fs';
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import prisma from '../lib/prisma';
+import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { dimageRut } from '../utils/rut';
 import {
   isDimageConfigured,
@@ -43,9 +44,9 @@ function requireDimageConfigured(res: Response) {
   return true;
 }
 
-async function getPatientOrFail(patientId: string, res: Response) {
+async function getPatientOrFail(patientId: string, req: Request, res: Response) {
   const patient = await prisma.patient.findUnique({ where: { id: patientId } });
-  if (!patient) {
+  if (!patient || !belongsToRequesterClinica(patient, req)) {
     res.status(400).json({ error: 'El paciente seleccionado no existe' });
     return null;
   }
@@ -67,7 +68,7 @@ export async function patientStatus(req: Request, res: Response) {
   const patientId = typeof req.query.patientId === 'string' ? req.query.patientId : undefined;
   if (!patientId) return res.status(400).json({ error: 'Se requiere patientId' });
 
-  const patient = await getPatientOrFail(patientId, res);
+  const patient = await getPatientOrFail(patientId, req, res);
   if (!patient) return;
 
   try {
@@ -83,7 +84,7 @@ export async function syncPatient(req: Request, res: Response) {
   const { patientId } = req.body as { patientId?: string };
   if (!patientId) return res.status(400).json({ error: 'Se requiere patientId' });
 
-  const patient = await getPatientOrFail(patientId, res);
+  const patient = await getPatientOrFail(patientId, req, res);
   if (!patient) return;
 
   try {
@@ -107,7 +108,7 @@ export async function listOrders(req: Request, res: Response) {
   const patientId = typeof req.query.patientId === 'string' ? req.query.patientId : undefined;
   if (!patientId) return res.status(400).json({ error: 'Se requiere patientId' });
 
-  const patient = await getPatientOrFail(patientId, res);
+  const patient = await getPatientOrFail(patientId, req, res);
   if (!patient) return;
 
   try {
@@ -137,11 +138,13 @@ export async function createRxOrder(req: Request, res: Response) {
     return res.status(400).json({ error: 'patientId, sucursalId y al menos un examen son requeridos' });
   }
 
-  const patient = await getPatientOrFail(body.patientId, res);
+  const patient = await getPatientOrFail(body.patientId, req, res);
   if (!patient) return;
 
   const sucursal = await prisma.sucursal.findUnique({ where: { id: body.sucursalId } });
-  if (!sucursal) return res.status(400).json({ error: 'La sucursal seleccionada no existe' });
+  if (!sucursal || !belongsToRequesterClinica(sucursal, req)) {
+    return res.status(400).json({ error: 'La sucursal seleccionada no existe' });
+  }
   if (!sucursal.dimageClinicId) {
     return res.status(400).json({
       error: `La sucursal "${sucursal.name}" no tiene configurado su ID de clínica en RIDS RX. Pídele a un administrador que lo configure.`,
@@ -150,7 +153,9 @@ export async function createRxOrder(req: Request, res: Response) {
 
   const professionalId = body.professionalId || req.user!.sub;
   const professional = await prisma.user.findUnique({ where: { id: professionalId } });
-  if (!professional) return res.status(400).json({ error: 'El profesional seleccionado no existe' });
+  if (!professional || !belongsToRequesterClinica(professional, req)) {
+    return res.status(400).json({ error: 'El profesional seleccionado no existe' });
+  }
   if (!professional.rut) {
     return res.status(400).json({
       error: `${professional.name} no tiene un RUT configurado. Un administrador debe agregarlo en Profesionales antes de crear órdenes Rx.`,
@@ -263,7 +268,10 @@ export async function updateRxOrder(req: Request<{ id: string }>, res: Response)
   let odontologoRut: string | undefined;
   if (body.professionalId) {
     const professional = await prisma.user.findUnique({ where: { id: body.professionalId } });
-    if (!professional?.rut) {
+    if (!professional || !belongsToRequesterClinica(professional, req)) {
+      return res.status(400).json({ error: 'El profesional seleccionado no tiene un RUT configurado' });
+    }
+    if (!professional.rut) {
       return res.status(400).json({ error: 'El profesional seleccionado no tiene un RUT configurado' });
     }
     odontologoRut = dimageRut(professional.rut);
