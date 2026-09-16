@@ -1,3 +1,4 @@
+import prisma from './prisma';
 import { CONSENT_LEGAL_TEXT } from './consentText';
 
 // Catálogo estándar de tipos de consentimiento de una clínica dental. Cada
@@ -54,4 +55,40 @@ export const PHOTO_USAGE_CONSENT_CODE = 'uso_imagenes';
 function placeholderText(title: string, isAuthorization = false) {
   const heading = isAuthorization ? title : `CONSENTIMIENTO PARA ${title}`;
   return `${heading}\n\n[Este es un texto de ejemplo. Debe ser reemplazado por el texto legal definitivo antes de enviarse a pacientes reales.]`;
+}
+
+// Etapa 09 (16/09, pedido explícito de Urbina): "los consentimientos
+// generalmente son por producto que yo te estoy inyectando" — no uno por
+// sesión ni uno genérico. Cada ProductoMarca del catálogo tiene su propio
+// ConsentType (1 a 1, vía `productoMarcaId`), para que el bloqueo duro al
+// registrar el tratamiento (ver treatmentItemsController/evolutionsController)
+// pueda exigir la firma de ESE producto puntual. El texto legal queda como
+// plantilla — cada médico la edita desde Consentimientos, igual que ya hacía
+// con los tipos custom.
+export async function ensureProductConsentType(producto: {
+  id: string;
+  clinicaId: string;
+  nombreGenerico: string;
+  marca: string;
+}) {
+  const name = `Consentimiento: ${producto.nombreGenerico} (${producto.marca})`;
+  const existing = await prisma.consentType.findUnique({ where: { productoMarcaId: producto.id } });
+  if (existing) {
+    if (existing.name !== name) {
+      await prisma.consentType.update({ where: { id: existing.id }, data: { name } });
+    }
+    return existing;
+  }
+  return prisma.consentType.create({
+    data: {
+      clinicaId: producto.clinicaId,
+      // Estable y único por construcción (el id del producto ya es único) —
+      // no necesita slug ni chequeo de colisión como los tipos "custom_...".
+      code: `producto_${producto.id}`,
+      name,
+      legalText: placeholderText(`APLICACIÓN DE ${producto.nombreGenerico.toUpperCase()} (${producto.marca.toUpperCase()})`),
+      productoMarcaId: producto.id,
+      active: true,
+    },
+  });
 }

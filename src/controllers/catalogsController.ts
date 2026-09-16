@@ -5,6 +5,7 @@ import { syncConvenioToFederation, syncPrestacionToFederation, syncPrevisionToFe
 import { guessOdontogramMode, ODONTOGRAM_MODES, type OdontogramMode } from '../lib/odontogramMode';
 import { fetchRemoteSupplyLots, isFederationConfigured } from '../lib/federationClient';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+import { ensureProductConsentType } from '../lib/consentTypes';
 
 // Busca lotes de insumos reales en Dental-Demo-Back (inventario administrativo)
 // para que el profesional elija uno existente en vez de tipear el N° de lote
@@ -281,6 +282,11 @@ export async function createProductoMarca(req: Request, res: Response) {
       precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen, cleanRendimiento),
     },
   });
+  // Etapa 09: todo producto del catálogo tiene su propio consentimiento —
+  // best-effort, nunca debe tumbar la creación del producto si esto falla.
+  await ensureProductConsentType(producto).catch((err) => {
+    console.error('No se pudo crear el consentimiento del producto', err);
+  });
   return res.status(201).json({ producto });
 }
 
@@ -314,6 +320,11 @@ export async function updateProductoMarca(req: Request<{ id: string }>, res: Res
       ...(active !== undefined ? { active } : {}),
       precioVenta: calcularPrecioVenta(cleanCosto, cleanMargen, cleanRendimiento),
     },
+  });
+  // Mantiene el nombre del consentimiento del producto en sync si cambió el
+  // nombre genérico o la marca (ver ensureProductConsentType).
+  await ensureProductConsentType(updated).catch((err) => {
+    console.error('No se pudo actualizar el consentimiento del producto', err);
   });
   return res.json({ producto: updated });
 }

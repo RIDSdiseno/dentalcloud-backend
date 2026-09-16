@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
 import { syncTreatmentItemToFederation } from '../lib/federationSync';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -95,6 +96,13 @@ export async function create(req: Request, res: Response) {
     }
     if (isPlanAlta(item.treatmentPlan)) {
       return res.status(403).json({ error: 'Este presupuesto está de alta y ya no se puede modificar' });
+    }
+    // Etapa 09: evolucionar marca el ítem como realizado (ver más abajo) —
+    // si tiene un producto del catálogo, exige la firma del consentimiento
+    // de ESE producto antes de dejarlo pasar.
+    if (item.productoMarcaId) {
+      const blockReason = await getUnsignedProductConsentError(item.treatmentPlan.patientId, item.productoMarcaId);
+      if (blockReason) return res.status(409).json({ error: blockReason });
     }
     // Si la prestación exige trazabilidad, el producto/lote/vencimiento/cantidad
     // se vuelven obligatorios acá (no basta con dejarlos vacíos y completarlos después).

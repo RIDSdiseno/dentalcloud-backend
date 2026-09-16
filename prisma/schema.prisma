@@ -294,6 +294,11 @@ model ConsentType {
   clinicaId   String
   pdfPublicId String?
   pdfUrl      String?
+  // Etapa 09 (16/09): si viene lleno, este ConsentType es el consentimiento
+  // específico de ESE producto del catálogo (uno por producto, nunca
+  // genérico) — ver ensureProductConsentType en lib/consentTypes.ts. Null
+  // para todos los tipos de siempre (protección de datos, anestesia, etc.).
+  productoMarcaId String?   @unique
   clinica     Clinica   @relation(fields: [clinicaId], references: [id])
   consents    Consent[]
 

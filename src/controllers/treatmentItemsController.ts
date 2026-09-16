@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -31,7 +32,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   };
   const item = await prisma.treatmentItem.findUnique({
     where: { id: req.params.id },
-    include: { treatmentPlan: { select: { status: true } } },
+    include: { treatmentPlan: { select: { status: true, patientId: true } } },
   });
   if (!item || !belongsToRequesterClinica(item, req)) {
     return res.status(404).json({ error: 'Procedimiento no encontrado' });
@@ -56,6 +57,17 @@ export async function update(req: Request<{ id: string }>, res: Response) {
       const quantity = Math.max(1, Math.round(body.productUnitQuantity ?? 1));
       computedCost = producto.precioVenta * quantity;
       productoMarcaUpdate = { productoMarcaId: producto.id, productUnitQuantity: quantity };
+    }
+  }
+
+  // Etapa 09: bloqueo duro — no se puede marcar como realizado un
+  // procedimiento con producto del catálogo si el paciente no firmó el
+  // consentimiento de ESE producto puntual.
+  if (body.completed === true) {
+    const effectiveProductoMarcaId = productoMarcaUpdate ? productoMarcaUpdate.productoMarcaId : item.productoMarcaId;
+    if (effectiveProductoMarcaId) {
+      const blockReason = await getUnsignedProductConsentError(item.treatmentPlan.patientId, effectiveProductoMarcaId);
+      if (blockReason) return res.status(409).json({ error: blockReason });
     }
   }
 
