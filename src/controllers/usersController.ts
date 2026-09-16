@@ -83,6 +83,7 @@ function toPublicUser(user: {
   createdAt: Date;
   clinicaId: string | null;
   signatureUrl?: string | null;
+  active?: boolean;
 }) {
   return {
     id: user.id,
@@ -93,13 +94,18 @@ function toPublicUser(user: {
     createdAt: user.createdAt,
     clinicaId: user.clinicaId,
     signatureUrl: user.signatureUrl ?? null,
+    active: user.active ?? true,
   };
 }
 
+// Por default solo trae profesionales activos (para no ofrecerlos en
+// selectores de "asignar a...") — la pantalla de gestión de Profesionales
+// pide `?includeInactive=true` para poder verlos y reactivarlos.
 export async function list(req: Request, res: Response) {
+  const includeInactive = req.query.includeInactive === 'true';
   const users = await prisma.user.findMany({
-    where: { clinicaId: req.user!.clinicaId! },
-    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true, signatureUrl: true },
+    where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
+    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true, signatureUrl: true, active: true },
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
   return res.json({ users });
@@ -168,7 +174,7 @@ export async function create(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { rut } = req.body as { rut?: string | null };
+  const { rut, active } = req.body as { rut?: string | null; active?: boolean };
   const user = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!user || !belongsToRequesterClinica(user, req)) {
     return res.status(404).json({ error: 'Usuario no encontrado' });
@@ -186,9 +192,16 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     }
   }
 
+  if (active === false && user.id === req.user!.sub) {
+    return res.status(400).json({ error: 'No puedes desactivar tu propia cuenta' });
+  }
+
   const updated = await prisma.user.update({
     where: { id: req.params.id },
-    data: { ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}) },
+    data: {
+      ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
+      ...(active !== undefined ? { active } : {}),
+    },
   });
 
   const gainedRut = !user.rut && cleanedRut;

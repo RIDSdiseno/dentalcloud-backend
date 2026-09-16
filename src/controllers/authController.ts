@@ -48,6 +48,7 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     email: user.email,
     name: user.name,
     role: user.role,
+    active: user.active,
     clinicaId: user.clinicaId,
     clinicaModules: baseModules ? applyModuleOverrides(baseModules, user.moduleOverrides) : null,
     clinicaTipo: user.clinica ? user.clinica.tipo : null,

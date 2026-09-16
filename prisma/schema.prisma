@@ -114,6 +114,13 @@ model User {
   updatedAt                      DateTime                    @updatedAt
   rut                            String?
   clinicaId                      String?
+  // Baja de profesional (softlimit): false = no puede iniciar sesión con
+  // permisos de escritura (ver middleware/authenticate.ts) — sigue pudiendo
+  // ver su propio historial, pero no crear/modificar nada nuevo, y desaparece
+  // de los selectores de "asignar profesional". No se borra nunca la fila:
+  // así todo lo que ya hizo (evoluciones, documentos, tratamientos) sigue
+  // intacto y correctamente atribuido a su nombre.
+  active                         Boolean                     @default(true)
   // Excepciones de permisos/módulos para ESTE usuario puntual, por encima del
   // default de su rol (`Clinica.rolePermissions`) y del plan de la clínica
   // (`Clinica.modules`). Sólo se guardan las llaves explícitamente distintas

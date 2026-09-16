@@ -6,6 +6,7 @@ export interface AccessTokenPayload {
   email: string;
   role: string;
   clinicaId: string | null;
+  active?: boolean;
 }
 
 export interface RefreshTokenPayload {
@@ -14,7 +15,7 @@ export interface RefreshTokenPayload {
 
 export function signAccessToken(user: User) {
   return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role, clinicaId: user.clinicaId },
+    { sub: user.id, email: user.email, role: user.role, clinicaId: user.clinicaId, active: user.active },
     process.env.JWT_ACCESS_SECRET as string,
     { expiresIn: process.env.JWT_ACCESS_EXPIRES_IN } as SignOptions
   );
