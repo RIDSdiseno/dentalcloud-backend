@@ -4,6 +4,7 @@ import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
 import { syncTreatmentItemToFederation } from '../lib/federationSync';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
+import { sanitizeHtml } from '../lib/sanitizeHtml';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -128,7 +129,7 @@ export async function create(req: Request, res: Response) {
     data: {
       patientId: body.patientId,
       professionalId,
-      content: body.content,
+      content: sanitizeHtml(body.content),
       treatmentItemId: treatmentItem?.id ?? null,
       productName,
       productLot,
@@ -188,7 +189,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   const updated = await prisma.evolution.update({
     where: { id: req.params.id },
     data: {
-      ...(body.content !== undefined ? { content: body.content } : {}),
+      ...(body.content !== undefined ? { content: sanitizeHtml(body.content) } : {}),
       ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
     },
     include,
