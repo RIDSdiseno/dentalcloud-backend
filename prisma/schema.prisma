@@ -234,6 +234,9 @@ model Patient {
   optimoTratamiento            String?
   // Examen estético.
   examSkinType                 String?
+  // Texto libre (15/09) — mockup real de Urbina (Lámina 5) lo pedía aparte
+  // de "Tipo de piel", que solo cubre Seca/Mixta/Grasa/Sensible.
+  examSkinQuality               String?
   examFitzpatrick              String?
   examWrinkles                 String?
   examFlaccidity               String?

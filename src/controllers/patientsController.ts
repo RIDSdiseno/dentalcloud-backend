@@ -81,6 +81,7 @@ type PatientInput = {
   expectativasPaciente?: string;
   optimoTratamiento?: string;
   examSkinType?: string;
+  examSkinQuality?: string;
   examFitzpatrick?: string;
   examWrinkles?: string;
   examFlaccidity?: string;
@@ -152,6 +153,7 @@ function toPatientData(body: PatientInput) {
     expectativasPaciente: body.expectativasPaciente?.trim() || null,
     optimoTratamiento: body.optimoTratamiento?.trim() || null,
     examSkinType: body.examSkinType?.trim() || null,
+    examSkinQuality: body.examSkinQuality?.trim() || null,
     examFitzpatrick: body.examFitzpatrick?.trim() || null,
     examWrinkles: body.examWrinkles?.trim() || null,
     examFlaccidity: body.examFlaccidity?.trim() || null,
@@ -194,6 +196,7 @@ function toPatientPatch(body: PatientInput) {
   if (body.expectativasPaciente !== undefined) patch.expectativasPaciente = body.expectativasPaciente.trim() || null;
   if (body.optimoTratamiento !== undefined) patch.optimoTratamiento = body.optimoTratamiento.trim() || null;
   if (body.examSkinType !== undefined) patch.examSkinType = body.examSkinType.trim() || null;
+  if (body.examSkinQuality !== undefined) patch.examSkinQuality = body.examSkinQuality.trim() || null;
   if (body.examFitzpatrick !== undefined) patch.examFitzpatrick = body.examFitzpatrick.trim() || null;
   if (body.examWrinkles !== undefined) patch.examWrinkles = body.examWrinkles.trim() || null;
   if (body.examFlaccidity !== undefined) patch.examFlaccidity = body.examFlaccidity.trim() || null;
