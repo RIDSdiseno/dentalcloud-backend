@@ -42,6 +42,20 @@ async function sendViaSmtp(
   });
 }
 
+// TLDs reservados por RFC 2606 específicamente para que NUNCA resuelvan a un
+// buzón real (.invalid, .test, .example) — usados por datos de prueba/demo
+// (ej. pacientes fake tipo nombre.apellido.0916.1@demo-fordent.invalid). Si
+// se intenta mandar ahí, Microsoft Graph lo entrega igual y rebota de vuelta
+// al remitente global (soporte@rids.cl), inundándolo de "no se pudo
+// entregar" — se corta acá antes de intentar, en vez de depender de que cada
+// generador de datos de prueba use un dominio real.
+const UNDELIVERABLE_TEST_TLDS = ['.invalid', '.test', '.example'];
+
+function isUndeliverableTestDomain(email: string): boolean {
+  const domain = email.toLowerCase().split('@')[1] ?? '';
+  return UNDELIVERABLE_TEST_TLDS.some((tld) => domain.endsWith(tld));
+}
+
 export async function send(params: {
   to: string;
   subject: string;
@@ -49,6 +63,10 @@ export async function send(params: {
   clinicaId: string;
   attachments?: MailAttachment[];
 }): Promise<void> {
+  if (isUndeliverableTestDomain(params.to)) {
+    console.warn(`Correo omitido — dominio de prueba no entregable: ${params.to}`);
+    return;
+  }
   const config = await getEmailConfigForClinica(params.clinicaId);
   if (config) {
     await sendViaSmtp(config, params);
