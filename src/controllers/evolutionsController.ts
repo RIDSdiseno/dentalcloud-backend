@@ -68,14 +68,14 @@ export async function create(req: Request, res: Response) {
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: body.patientId } });
-  if (!patient) {
+  if (!patient || !belongsToRequesterClinica(patient, req)) {
     return res.status(400).json({ error: 'El paciente seleccionado no existe' });
   }
 
   let professionalId = req.user!.sub;
   if (body.professionalId) {
     const professional = await prisma.user.findUnique({ where: { id: body.professionalId } });
-    if (!professional) {
+    if (!professional || !belongsToRequesterClinica(professional, req)) {
       return res.status(400).json({ error: 'El profesional seleccionado no existe' });
     }
     professionalId = body.professionalId;
@@ -290,7 +290,7 @@ export async function removePhoto(req: Request<{ photoId: string }>, res: Respon
     where: { id: req.params.photoId },
     include: { evolution: { select: { treatmentItemId: true } } },
   });
-  if (!photo) {
+  if (!photo || !belongsToRequesterClinica(photo, req)) {
     return res.status(404).json({ error: 'Foto no encontrada' });
   }
 

@@ -272,7 +272,7 @@ export async function createMovement(req: Request, res: Response) {
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: body.patientId } });
-  if (!patient) {
+  if (!patient || !belongsToRequesterClinica(patient, req)) {
     return res.status(400).json({ error: 'El paciente seleccionado no existe' });
   }
 

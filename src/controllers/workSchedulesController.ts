@@ -13,7 +13,10 @@ export async function list(req: Request, res: Response) {
   const professionalId = typeof req.query.professionalId === 'string' ? req.query.professionalId : undefined;
 
   const schedules = await prisma.workSchedule.findMany({
-    where: professionalId ? { professionalId } : undefined,
+    where: {
+      ...(professionalId ? { professionalId } : {}),
+      ...(req.user!.role === 'super_admin' ? {} : { clinicaId: req.user!.clinicaId! }),
+    },
     include: { chair: { select: { id: true, number: true, name: true } } },
     orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }],
   });
@@ -46,12 +49,12 @@ export async function create(req: Request, res: Response) {
   }
 
   const professional = await prisma.user.findUnique({ where: { id: professionalId } });
-  if (!professional) {
+  if (!professional || !belongsToRequesterClinica(professional, req)) {
     return res.status(400).json({ error: 'El profesional seleccionado no existe' });
   }
   if (chairId) {
     const chair = await prisma.chair.findUnique({ where: { id: chairId } });
-    if (!chair) {
+    if (!chair || !belongsToRequesterClinica(chair, req)) {
       return res.status(400).json({ error: 'El sillón seleccionado no existe' });
     }
   }

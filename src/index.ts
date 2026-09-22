@@ -47,7 +47,10 @@ const allowedOrigins = (process.env.FRONTEND_ORIGIN ?? '')
 
 app.use(
   cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : undefined,
+    // `undefined` hace que el paquete `cors` refleje cualquier origen que
+    // mande el navegador (fail-open) — si por error FRONTEND_ORIGIN queda
+    // vacío, mejor bloquear todo (fail-closed) que abrir la API a cualquiera.
+    origin: allowedOrigins.length > 0 ? allowedOrigins : false,
     credentials: true,
   })
 );

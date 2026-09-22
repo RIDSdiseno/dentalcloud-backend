@@ -106,14 +106,14 @@ export async function create(req: Request, res: Response) {
   }
 
   const patient = await prisma.patient.findUnique({ where: { id: body.patientId } });
-  if (!patient) {
+  if (!patient || !belongsToRequesterClinica(patient, req)) {
     return res.status(400).json({ error: 'El paciente seleccionado no existe' });
   }
 
   let professionalId: string | null = req.user!.sub;
   if (body.professionalId) {
     const professional = await prisma.user.findUnique({ where: { id: body.professionalId } });
-    if (!professional) {
+    if (!professional || !belongsToRequesterClinica(professional, req)) {
       return res.status(400).json({ error: 'El profesional seleccionado no existe' });
     }
     professionalId = body.professionalId;
@@ -121,19 +121,19 @@ export async function create(req: Request, res: Response) {
 
   if (body.sucursalId) {
     const sucursal = await prisma.sucursal.findUnique({ where: { id: body.sucursalId } });
-    if (!sucursal) {
+    if (!sucursal || !belongsToRequesterClinica(sucursal, req)) {
       return res.status(400).json({ error: 'La sucursal seleccionada no existe' });
     }
   }
   if (body.previsionId) {
     const prevision = await prisma.prevision.findUnique({ where: { id: body.previsionId } });
-    if (!prevision) {
+    if (!prevision || !belongsToRequesterClinica(prevision, req)) {
       return res.status(400).json({ error: 'La previsión seleccionada no existe' });
     }
   }
   if (body.convenioId) {
     const convenio = await prisma.convenio.findUnique({ where: { id: body.convenioId } });
-    if (!convenio) {
+    if (!convenio || !belongsToRequesterClinica(convenio, req)) {
       return res.status(400).json({ error: 'El convenio seleccionado no existe' });
     }
   }
@@ -261,6 +261,12 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   }
   if (body.status && !TREATMENT_STATUSES.includes(body.status)) {
     return res.status(400).json({ error: `El estado debe ser uno de: ${TREATMENT_STATUSES.join(', ')}` });
+  }
+  if (body.professionalId) {
+    const professional = await prisma.user.findUnique({ where: { id: body.professionalId } });
+    if (!professional || !belongsToRequesterClinica(professional, req)) {
+      return res.status(400).json({ error: 'El profesional seleccionado no existe' });
+    }
   }
 
   const updated = await prisma.treatmentPlan.update({
