@@ -495,6 +495,19 @@ export async function finishAttention(req: Request<{ id: string }>, res: Respons
 
 // --- Confirmación pública por el paciente (link del correo, sin sesión) ---
 
+// A diferencia del link de consentimientos (vence a los N días de mandado,
+// ver dataConsentsController.ts), acá el vencimiento se cuenta desde la
+// FECHA DE LA CITA, no desde que se creó — una cita agendada con semanas de
+// anticipación necesita que el link siga sirviendo hasta cerca de esa fecha,
+// no unos días después de agendada. Un par de días de margen después de la
+// cita evita que el link muera justo antes de que el paciente lo use.
+const APPOINTMENT_CONFIRM_GRACE_DAYS = 2;
+
+function isConfirmationExpired(appointment: { startAt: Date }): boolean {
+  const expiresAt = new Date(appointment.startAt.getTime() + APPOINTMENT_CONFIRM_GRACE_DAYS * 24 * 60 * 60 * 1000);
+  return new Date() > expiresAt;
+}
+
 export async function getByConfirmationToken(req: Request<{ token: string }>, res: Response) {
   const appointment = await prisma.appointment.findUnique({
     where: { confirmationToken: req.params.token },
@@ -509,6 +522,9 @@ export async function getByConfirmationToken(req: Request<{ token: string }>, re
   }
   if (appointment.status === 'cancelada') {
     return res.status(410).json({ error: 'Esta cita fue cancelada' });
+  }
+  if (isConfirmationExpired(appointment)) {
+    return res.status(410).json({ error: 'Este link ya venció' });
   }
 
   return res.json({
@@ -528,6 +544,9 @@ export async function confirmByToken(req: Request<{ token: string }>, res: Respo
   }
   if (appointment.status === 'cancelada') {
     return res.status(410).json({ error: 'Esta cita fue cancelada' });
+  }
+  if (isConfirmationExpired(appointment)) {
+    return res.status(410).json({ error: 'Este link ya venció' });
   }
 
   if (!appointment.patientConfirmedAt) {
