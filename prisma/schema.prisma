@@ -664,6 +664,12 @@ model Appointment {
   // Id del Appointment espejo en Dental-Demo-Back, si esta cita fue creada (o
   // sincronizada) por federación.
   federatedAppointmentId String?   @unique
+  // Confirmación real del paciente por correo (no solo el aviso de "tu cita
+  // fue agendada"): token de un solo uso mandado en el correo, y la marca de
+  // cuándo lo clickeó. `confirmationToken` queda null una vez usado, mismo
+  // criterio que ConsentType/verificationToken en el registro del portal.
+  confirmationToken      String?   @unique
+  patientConfirmedAt     DateTime?
   chair                  Chair     @relation(fields: [chairId], references: [id])
   clinica                Clinica   @relation(fields: [clinicaId], references: [id])
   patient                Patient   @relation(fields: [patientId], references: [id])

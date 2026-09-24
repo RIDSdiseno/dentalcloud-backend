@@ -83,6 +83,7 @@ export async function sendAppointmentConfirmation(params: {
   startAt: Date;
   clinicaNombre: string;
   clinicaLogoUrl?: string | null;
+  confirmUrl?: string | null;
 }): Promise<void> {
   const html = buildAppointmentConfirmationEmailHtml({
     patientFirstName: params.patientFirstName,
@@ -90,6 +91,7 @@ export async function sendAppointmentConfirmation(params: {
     startAt: params.startAt,
     clinicaNombre: params.clinicaNombre,
     clinicaLogoUrl: params.clinicaLogoUrl,
+    confirmUrl: params.confirmUrl,
   });
   await send({
     to: params.patientEmail,

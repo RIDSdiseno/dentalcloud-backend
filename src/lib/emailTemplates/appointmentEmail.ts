@@ -4,8 +4,9 @@ export function buildAppointmentConfirmationEmailHtml(params: {
   startAt: Date;
   clinicaNombre: string;
   clinicaLogoUrl?: string | null;
+  confirmUrl?: string | null;
 }): string {
-  const { patientFirstName, professionalName, startAt, clinicaNombre, clinicaLogoUrl } = params;
+  const { patientFirstName, professionalName, startAt, clinicaNombre, clinicaLogoUrl, confirmUrl } = params;
   const dateLabel = startAt.toLocaleDateString('es-CL', {
     weekday: 'long',
     day: 'numeric',
@@ -29,6 +30,16 @@ export function buildAppointmentConfirmationEmailHtml(params: {
         <p style="margin: 0 0 6px; font-size: 15px;"><strong>Hora:</strong> ${timeLabel}</p>
         <p style="margin: 0; font-size: 15px;"><strong>Profesional:</strong> ${professionalName}</p>
       </div>
+      ${
+        confirmUrl
+          ? `<div style="text-align: center; margin: 24px 0;">
+              <a href="${confirmUrl}" style="display: inline-block; background-color: #0f172a; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: bold; padding: 12px 28px; border-radius: 8px;">Confirmar mi asistencia</a>
+            </div>
+            <p style="font-size: 13px; color: #64748b;">
+              Avísanos si vas a venir — nos ayuda a organizar mejor la agenda del día.
+            </p>`
+          : ''
+      }
       <p style="font-size: 13px; color: #64748b;">
         Si necesitas reprogramar o cancelar tu cita, comunícate directamente con ${clinicaNombre}.
       </p>

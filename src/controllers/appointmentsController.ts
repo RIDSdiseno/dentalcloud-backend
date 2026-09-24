@@ -1,8 +1,17 @@
+import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { syncAppointmentToFederation } from '../lib/federationSync';
 import { sendAppointmentConfirmation } from '../lib/emailService';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+
+function getAppBaseUrl() {
+  const origins = (process.env.FRONTEND_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+  return origins[0] ?? 'http://localhost:5173';
+}
 
 type AppointmentInput = {
   chairId?: string;
@@ -33,6 +42,7 @@ const DEFAULT_URGENCY_DURATION_MINUTES = 30;
 async function sendAppointmentBookedEmail(appointment: {
   clinicaId: string;
   startAt: Date;
+  confirmationToken: string | null;
   patient: { firstName: string; email: string | null };
   professional: { name: string } | null;
 }) {
@@ -52,6 +62,7 @@ async function sendAppointmentBookedEmail(appointment: {
     startAt: appointment.startAt,
     clinicaNombre: clinica?.name ?? 'fordentcloud',
     clinicaLogoUrl: clinica?.logoUrl,
+    confirmUrl: appointment.confirmationToken ? `${getAppBaseUrl()}/confirmar-cita/${appointment.confirmationToken}` : null,
   });
 }
 
@@ -183,6 +194,7 @@ export async function create(req: Request, res: Response) {
       notes: body.notes?.trim() || null,
       type: body.type || 'cita',
       clinicaId: req.user!.clinicaId!,
+      confirmationToken: crypto.randomBytes(24).toString('hex'),
     },
     include,
   });
@@ -252,6 +264,7 @@ async function createFromOpenSlot(
           notes: notes?.trim() || null,
           type: type || 'cita',
           clinicaId,
+          confirmationToken: crypto.randomBytes(24).toString('hex'),
         },
         include,
       });
@@ -478,4 +491,51 @@ export async function finishAttention(req: Request<{ id: string }>, res: Respons
   });
 
   return res.json({ appointment: updated });
+}
+
+// --- Confirmación pública por el paciente (link del correo, sin sesión) ---
+
+export async function getByConfirmationToken(req: Request<{ token: string }>, res: Response) {
+  const appointment = await prisma.appointment.findUnique({
+    where: { confirmationToken: req.params.token },
+    include: {
+      patient: { select: { firstName: true } },
+      professional: { select: { name: true } },
+      clinica: { select: { name: true, logoUrl: true } },
+    },
+  });
+  if (!appointment) {
+    return res.status(404).json({ error: 'Link no válido' });
+  }
+  if (appointment.status === 'cancelada') {
+    return res.status(410).json({ error: 'Esta cita fue cancelada' });
+  }
+
+  return res.json({
+    patientFirstName: appointment.patient.firstName,
+    professionalName: appointment.professional?.name ?? 'Por confirmar',
+    startAt: appointment.startAt,
+    clinicaNombre: appointment.clinica.name,
+    clinicaLogoUrl: appointment.clinica.logoUrl,
+    alreadyConfirmed: Boolean(appointment.patientConfirmedAt),
+  });
+}
+
+export async function confirmByToken(req: Request<{ token: string }>, res: Response) {
+  const appointment = await prisma.appointment.findUnique({ where: { confirmationToken: req.params.token } });
+  if (!appointment) {
+    return res.status(404).json({ error: 'Link no válido' });
+  }
+  if (appointment.status === 'cancelada') {
+    return res.status(410).json({ error: 'Esta cita fue cancelada' });
+  }
+
+  if (!appointment.patientConfirmedAt) {
+    await prisma.appointment.update({
+      where: { id: appointment.id },
+      data: { patientConfirmedAt: new Date() },
+    });
+  }
+
+  return res.json({ confirmed: true });
 }

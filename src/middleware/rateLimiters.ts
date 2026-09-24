@@ -32,3 +32,13 @@ export const publicConsentRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Demasiadas solicitudes. Espera unos minutos antes de volver a intentar.' },
 });
+
+// Mismo criterio que publicConsentRateLimiter, para el link público de
+// confirmación de cita por correo.
+export const publicAppointmentRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes. Espera unos minutos antes de volver a intentar.' },
+});
