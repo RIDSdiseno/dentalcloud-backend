@@ -12,6 +12,9 @@ import {
   uploadMotivoConsultaAudio,
   uploadExamPhoto,
   listExamPhotos,
+  uploadExamPhotoMarkup,
+  listExamPhotoMarkups,
+  deleteExamPhotoMarkup,
   uploadExamVideo,
   listExamVideos,
   corroborateData,
@@ -33,6 +36,9 @@ router.patch('/:id/photo', uploadMiddleware.single('photo'), uploadPhoto);
 router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), uploadMotivoConsultaAudio);
 router.get('/:id/exam-photos', listExamPhotos);
 router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
+router.get('/:id/exam-photo-markups', listExamPhotoMarkups);
+router.post('/:id/exam-photo/:examPhotoId/markup', uploadMiddleware.single('photo'), uploadExamPhotoMarkup);
+router.delete('/:id/exam-photo-markups/:markupId', deleteExamPhotoMarkup);
 router.get('/:id/exam-videos', listExamVideos);
 router.patch('/:id/exam-video', uploadMiddleware.single('video'), uploadExamVideo);
 router.post('/:id/corroborate-data', corroborateData);

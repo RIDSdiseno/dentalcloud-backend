@@ -556,6 +556,107 @@ export async function listExamPhotos(req: Request<{ id: string }>, res: Response
   return res.json({ examPhotos });
 }
 
+// Etapa 07 (marcación sobre la foto, 25/09 pedido explícito): el médico
+// dibuja encima de una foto del examen estético ya tomada (puntos de botox,
+// líneas punteadas de ojeras, líneas continuas de filler/hilos) y el
+// resultado se aplana en una imagen nueva — la ExamPhoto original nunca se
+// modifica ni se reemplaza, para no perder el registro si la marcación sale
+// mal. Por eso vive en su propia tabla (ExamPhotoMarkup), no como otra fila
+// de ExamPhoto.
+export async function uploadExamPhotoMarkup(req: Request<{ id: string; examPhotoId: string }>, res: Response) {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de imagen' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const examPhoto = await prisma.examPhoto.findUnique({ where: { id: req.params.examPhotoId } });
+  if (!examPhoto || examPhoto.patientId !== patient.id) {
+    return res.status(404).json({ error: 'Foto del examen estético no encontrada' });
+  }
+
+  // Mismo candado que subir una foto del examen: sin el consentimiento de uso
+  // de fotografías firmado, tampoco se puede marcar una ya existente.
+  const signedPhotoConsent = await prisma.consent.findFirst({
+    where: {
+      patientId: patient.id,
+      status: 'firmado',
+      consentType: { code: PHOTO_USAGE_CONSENT_CODE },
+    },
+  });
+  if (!signedPhotoConsent) {
+    return res.status(403).json({
+      error: 'El paciente debe firmar el consentimiento de uso de fotografías antes de poder marcar una foto.',
+    });
+  }
+
+  const uploaded = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'image', folder: `dentalcloud/patients/exam-photo-markups/${examPhoto.id}` },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  await prisma.examPhotoMarkup.create({
+    data: {
+      examPhotoId: examPhoto.id,
+      patientId: patient.id,
+      clinicaId: patient.clinicaId,
+      url: uploaded.secure_url,
+      publicId: uploaded.public_id,
+    },
+  });
+
+  const examPhotoMarkups = await prisma.examPhotoMarkup.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examPhotoMarkups });
+}
+
+export async function listExamPhotoMarkups(req: Request<{ id: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+  const examPhotoMarkups = await prisma.examPhotoMarkup.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examPhotoMarkups });
+}
+
+export async function deleteExamPhotoMarkup(req: Request<{ id: string; markupId: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const markup = await prisma.examPhotoMarkup.findUnique({ where: { id: req.params.markupId } });
+  if (!markup || markup.patientId !== patient.id) {
+    return res.status(404).json({ error: 'Imagen marcada no encontrada' });
+  }
+
+  await cloudinary.uploader.destroy(markup.publicId).catch(() => {
+    // Best-effort: si ya no existe en Cloudinary, igual se borra el registro.
+  });
+  await prisma.examPhotoMarkup.delete({ where: { id: markup.id } });
+
+  const examPhotoMarkups = await prisma.examPhotoMarkup.findMany({
+    where: { patientId: patient.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ examPhotoMarkups });
+}
+
 // Registro de video (14/09, pedido explícito): mismo esquema de rondas que
 // el registro fotográfico (antes / avance N), pero un solo video por ronda
 // en vez de 4 ángulos — ver ExamVideo en el schema.

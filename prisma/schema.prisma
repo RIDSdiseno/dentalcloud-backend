@@ -72,6 +72,7 @@ model Clinica {
   chairs                     Chair[]
   clinicalDocuments          ClinicalDocument[]
   examPhotos                 ExamPhoto[]
+  examPhotoMarkups           ExamPhotoMarkup[]
   examVideos                 ExamVideo[]
   consentTypes               ConsentType[]
   consents                   Consent[]
@@ -285,6 +286,7 @@ model Patient {
   treatmentPlans               TreatmentPlan[]
   datosCorroboradosPor         User?                       @relation(fields: [datosCorroboradosPorId], references: [id])
   examPhotos                   ExamPhoto[]
+  examPhotoMarkups             ExamPhotoMarkup[]
   examVideos                   ExamVideo[]
 
   @@unique([clinicaId, rut])
@@ -743,10 +745,34 @@ model ExamPhoto {
   createdAt DateTime @default(now())
   clinica   Clinica  @relation(fields: [clinicaId], references: [id])
   patient   Patient  @relation(fields: [patientId], references: [id])
+  markups   ExamPhotoMarkup[]
 
   @@index([patientId, moment, round])
   @@index([clinicaId])
   @@map("exam_photos")
+}
+
+// Etapa 07 (marcación sobre la foto): dibujo del médico (puntos de botox,
+// líneas punteadas de ojeras, líneas continuas de filler/hilos) aplanado
+// sobre una copia de la foto original — la foto de ExamPhoto NUNCA se toca,
+// esto es siempre una imagen nueva y separada, para no perder el registro
+// original si la marcación sale mal (se puede borrar sin dejar rastro).
+model ExamPhotoMarkup {
+  id          String    @id @default(uuid())
+  examPhotoId String
+  patientId   String
+  clinicaId   String
+  url         String
+  publicId    String
+  createdAt   DateTime  @default(now())
+  examPhoto   ExamPhoto @relation(fields: [examPhotoId], references: [id], onDelete: Cascade)
+  clinica     Clinica   @relation(fields: [clinicaId], references: [id])
+  patient     Patient   @relation(fields: [patientId], references: [id])
+
+  @@index([examPhotoId])
+  @@index([patientId])
+  @@index([clinicaId])
+  @@map("exam_photo_markups")
 }
 
 model ExamVideo {
