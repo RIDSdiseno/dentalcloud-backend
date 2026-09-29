@@ -29,3 +29,11 @@ export async function uploadUserSignature(
     return null;
   }
 }
+
+export async function deleteUserSignature(publicId: string): Promise<void> {
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+  } catch (err) {
+    console.error('No se pudo eliminar la firma en Cloudinary', err);
+  }
+}

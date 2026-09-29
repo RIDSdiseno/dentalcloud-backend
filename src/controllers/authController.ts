@@ -7,7 +7,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/
 import { parseClinicaModules } from '../lib/clinicaModules';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
 import { applyPermissionOverrides, applyModuleOverrides } from '../lib/userAccessOverrides';
-import { isPngDataUrl, uploadUserSignature } from '../lib/userSignature';
+import { isPngDataUrl, uploadUserSignature, deleteUserSignature } from '../lib/userSignature';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
@@ -157,6 +157,24 @@ export async function updateMySignature(req: Request, res: Response) {
   const updated = await prisma.user.update({
     where: { id: user.id },
     data: { signatureUrl: signature.url, signaturePublicId: signature.publicId },
+    include: { clinica: true },
+  });
+  return res.json({ user: toPublicUser(updated) });
+}
+
+// Pedido explícito del usuario (29/09): un lugar donde cada profesional
+// pueda borrar su propia firma, no solo reemplazarla.
+export async function deleteMySignature(req: Request, res: Response) {
+  const user = await prisma.user.findUnique({ where: { id: req.user!.sub } });
+  if (!user) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+  if (user.signaturePublicId) {
+    await deleteUserSignature(user.signaturePublicId);
+  }
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { signatureUrl: null, signaturePublicId: null },
     include: { clinica: true },
   });
   return res.json({ user: toPublicUser(updated) });
