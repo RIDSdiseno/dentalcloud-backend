@@ -199,6 +199,12 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
   if (!clinica) {
     return res.status(404).json({ error: 'Clínica no encontrada' });
   }
+  // La firma habilita el guardado de la receta (pedido explícito, 29/09):
+  // sin firma guardada, no se genera. El frontend ya bloquea el botón, esto
+  // es el resguardo del lado del servidor.
+  if (!professional?.signatureUrl) {
+    return res.status(400).json({ error: 'Necesitas guardar tu firma antes de generar una receta' });
+  }
 
   const createdAt = new Date();
   const pdfBuffer = await buildRecetaManualPdf({

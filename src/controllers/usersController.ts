@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
-import cloudinary from '../lib/cloudinary';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { cleanRut, isValidRut } from '../utils/rut';
 import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
@@ -18,35 +17,9 @@ import {
 } from '../lib/userAccessOverrides';
 import type { ClinicaModuleKey } from '../lib/clinicaModules';
 import { syncUserToFederation } from '../lib/federationSync';
+import { isPngDataUrl, uploadUserSignature } from '../lib/userSignature';
 
 const DIMAGE_SYNCED_ROLES = ['odontologo', 'radiologo'];
-
-function isPngDataUrl(value: unknown): value is string {
-  return typeof value === 'string' && value.startsWith('data:image/png;base64,') && value.length > 'data:image/png;base64,'.length;
-}
-
-// Firma dibujada por el propio profesional (canvas) al crear su cuenta —
-// mismo patrón que la firma de consentimientos: se manda como data URL y se
-// sube directo a Cloudinary. Es opcional: si falla la subida, no bloquea la
-// creación del profesional, solo queda sin firma (se puede agregar después).
-async function uploadUserSignature(
-  dataUrl: string,
-  clinicaId: string,
-  userId: string
-): Promise<{ url: string; publicId: string } | null> {
-  try {
-    const result = await cloudinary.uploader.upload(dataUrl, {
-      resource_type: 'image',
-      folder: `dentalcloud/${clinicaId}/firmas-profesionales`,
-      public_id: userId,
-      overwrite: true,
-    });
-    return { url: result.secure_url, publicId: result.public_id };
-  } catch (err) {
-    console.error('No se pudo subir la firma del profesional', err);
-    return null;
-  }
-}
 
 async function tryDimageSync(user: { rut: string | null; name: string; email: string; role: string; clinicaId: string | null }) {
   if (!user.rut || !DIMAGE_SYNCED_ROLES.includes(user.role) || !user.clinicaId) {

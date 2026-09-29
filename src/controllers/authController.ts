@@ -7,6 +7,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/
 import { parseClinicaModules } from '../lib/clinicaModules';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
 import { applyPermissionOverrides, applyModuleOverrides } from '../lib/userAccessOverrides';
+import { isPngDataUrl, uploadUserSignature } from '../lib/userSignature';
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 
@@ -57,6 +58,7 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,
     slotDurationMinutes: user.clinica ? user.clinica.slotDurationMinutes : null,
     permissions: resolvePermissions(user, user.clinica),
+    signatureUrl: user.signatureUrl,
   };
 }
 
@@ -127,4 +129,35 @@ export async function me(req: Request, res: Response) {
     return res.status(404).json({ error: 'Usuario no encontrado' });
   }
   return res.json({ user: toPublicUser(user) });
+}
+
+// Feedback de un usuario real (29/09): la firma solo se podía dibujar al
+// crear la cuenta de un profesional (ProfessionalFormModal, admin-only) —
+// no había forma de agregarla o cambiarla después, aunque el comentario del
+// schema ya decía "o después, desde su perfil". Este endpoint es self-service
+// (cualquier usuario autenticado, no solo un admin) para que cada
+// profesional pueda guardar su propia firma cuando la necesite — por
+// ejemplo, para poder generar una receta manual, que ahora la exige.
+export async function updateMySignature(req: Request, res: Response) {
+  const { signatureDataUrl } = req.body as { signatureDataUrl?: string };
+  if (!isPngDataUrl(signatureDataUrl)) {
+    return res.status(400).json({ error: 'La firma debe ser una imagen PNG válida' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: req.user!.sub } });
+  if (!user || !user.clinicaId) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+
+  const signature = await uploadUserSignature(signatureDataUrl, user.clinicaId, user.id);
+  if (!signature) {
+    return res.status(502).json({ error: 'No se pudo guardar la firma. Intenta nuevamente.' });
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { signatureUrl: signature.url, signaturePublicId: signature.publicId },
+    include: { clinica: true },
+  });
+  return res.json({ user: toPublicUser(updated) });
 }
