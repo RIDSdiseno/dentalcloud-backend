@@ -116,7 +116,10 @@ export async function createExamRequest(req: Request<{ id: string }>, res: Respo
   }
 
   const [clinica, professional] = await Promise.all([
-    prisma.clinica.findUnique({ where: { id: req.user!.clinicaId! }, select: { name: true, logoUrl: true } }),
+    prisma.clinica.findUnique({
+      where: { id: req.user!.clinicaId! },
+      select: { name: true, logoUrl: true, address: true, phone: true, email: true, rut: true },
+    }),
     prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true } }),
   ]);
   if (!clinica) {
@@ -187,8 +190,11 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
   }
 
   const [clinica, professional] = await Promise.all([
-    prisma.clinica.findUnique({ where: { id: req.user!.clinicaId! }, select: { name: true, logoUrl: true } }),
-    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true } }),
+    prisma.clinica.findUnique({
+      where: { id: req.user!.clinicaId! },
+      select: { name: true, logoUrl: true, address: true, phone: true, email: true, rut: true },
+    }),
+    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true, rut: true, signatureUrl: true } }),
   ]);
   if (!clinica) {
     return res.status(404).json({ error: 'Clínica no encontrada' });
@@ -197,7 +203,13 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
   const createdAt = new Date();
   const pdfBuffer = await buildRecetaManualPdf({
     clinica,
-    patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut, birthDate: patient.birthDate },
+    patient: {
+      firstName: patient.firstName,
+      lastName: patient.lastName,
+      rut: patient.rut,
+      birthDate: patient.birthDate,
+      address: patient.address,
+    },
     professional,
     medicamentos,
     observaciones: body.observaciones?.trim() || null,

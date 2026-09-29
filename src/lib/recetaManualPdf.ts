@@ -1,16 +1,20 @@
-import axios from 'axios';
 import PDFDocument from 'pdfkit';
+import { drawClinicHeader, downloadPdfImage, type ClinicaPdfInfo } from './pdfClinicHeader';
+import { formatRut } from '../utils/rut';
 
 type Medicamento = { medicamento: string; indicaciones: string };
 
 type RecetaManualPdfInput = {
-  clinica: { name: string; logoUrl: string | null };
-  patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null };
-  professional: { name: string } | null;
+  clinica: ClinicaPdfInfo;
+  patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null; address: string | null };
+  professional: { name: string; rut: string | null; signatureUrl: string | null } | null;
   medicamentos: Medicamento[];
   observaciones: string | null;
   createdAt: Date;
 };
+
+const INK = '#0f172a';
+const MUTED = '#64748b';
 
 function formatAge(birthDate: Date | null): string {
   if (!birthDate) return '';
@@ -19,24 +23,24 @@ function formatAge(birthDate: Date | null): string {
   const hasHadBirthday =
     today.getMonth() > birthDate.getMonth() || (today.getMonth() === birthDate.getMonth() && today.getDate() >= birthDate.getDate());
   if (!hasHadBirthday) age -= 1;
-  return ` (${age} años)`;
+  return `${age} años`;
 }
 
-async function downloadLogo(logoUrl: string): Promise<Buffer | null> {
-  try {
-    const { data } = await axios.get<ArrayBuffer>(logoUrl, { responseType: 'arraybuffer', timeout: 8000 });
-    return Buffer.from(data);
-  } catch {
-    return null;
-  }
+function labelValue(doc: PDFKit.PDFDocument, label: string, value: string, width: number) {
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text(label.toUpperCase(), { width, characterSpacing: 0.4 });
+  doc.font('Helvetica').fontSize(10.5).fillColor(INK).text(value, { width });
+  doc.moveDown(0.5);
 }
 
-// Feedback de un usuario real (29/09): la pestaña "Recetas Médicas" de
-// Documentos clínicos solo permite SUBIR un archivo ya existente — no hay
-// forma de redactar una receta desde cero. Este PDF resuelve eso siguiendo
-// el mismo patrón que `buildExamRequestPdf`: se genera el archivo acá y
-// queda guardado como un ClinicalDocument más (categoría "receta"), sin
-// tocar el flujo de subida manual que ya existía.
+// Feedback de un usuario real (29/09): la primera versión de este PDF se
+// veía "pelada" — solo nombre y RUT del paciente, sin dirección ni el
+// resto de los datos que trae una receta real, y el encabezado no mostraba
+// el logo/datos de la clínica salvo que ya estuvieran perfectos. Rediseñado
+// tomando como referencia el formato estándar de receta médica en Chile
+// (paciente identificado con nombre, RUT y edad; medicamento con
+// indicaciones claras; firma y timbre del profesional) — sin inventar
+// campos que la app no tiene (no hay diagnóstico ni N° de ficha, por
+// ejemplo, así que no se muestran).
 export async function buildRecetaManualPdf({
   clinica,
   patient,
@@ -45,8 +49,6 @@ export async function buildRecetaManualPdf({
   observaciones,
   createdAt,
 }: RecetaManualPdfInput): Promise<Buffer> {
-  const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
-
   const doc = new PDFDocument({ size: 'A4', margin: 56 });
   const chunks: Buffer[] = [];
   doc.on('data', (chunk) => chunks.push(chunk));
@@ -54,62 +56,96 @@ export async function buildRecetaManualPdf({
     doc.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
-  if (logoBuffer) {
-    try {
-      doc.image(logoBuffer, doc.page.width - doc.page.margins.right - 80, 40, { fit: [80, 80] });
-    } catch {
-      // Formato de imagen no soportado por pdfkit — se omite el logo.
-    }
+  await drawClinicHeader(doc, clinica, 'Receta médica');
+
+  const signatureBuffer = professional?.signatureUrl ? await downloadPdfImage(professional.signatureUrl) : null;
+
+  const colWidth = (doc.page.width - doc.page.margins.left - doc.page.margins.right - 24) / 2;
+  const colX = [doc.page.margins.left, doc.page.margins.left + colWidth + 24];
+  const rowTop = doc.y;
+
+  function fieldAt(col: 0 | 1, y: number, label: string, value: string): number {
+    doc.x = colX[col];
+    doc.y = y;
+    labelValue(doc, label, value, colWidth);
+    return doc.y;
   }
 
-  doc.fontSize(16).font('Helvetica-Bold').text(clinica.name, { width: 320 });
-  doc.moveDown(0.4);
-  doc.fontSize(13).font('Helvetica-Bold').text('Receta médica', { width: 320 });
-  doc.fillColor('#000000');
+  const patientName = `${patient.firstName} ${patient.lastName}`.trim();
+  const ageSuffix = formatAge(patient.birthDate);
+  let leftY = fieldAt(0, rowTop, 'Paciente', ageSuffix ? `${patientName} (${ageSuffix})` : patientName);
+  leftY = fieldAt(0, leftY, 'RUT paciente', formatRut(patient.rut));
+  if (patient.address) leftY = fieldAt(0, leftY, 'Dirección', patient.address);
 
-  doc.moveDown(1.5);
-  doc.fontSize(10).font('Helvetica-Bold').text('Paciente');
-  doc
-    .font('Helvetica')
-    .text(`${patient.firstName} ${patient.lastName}${formatAge(patient.birthDate)} — RUT ${patient.rut}`);
-
-  doc.moveDown(0.6);
-  doc.font('Helvetica-Bold').text('Fecha');
-  doc.font('Helvetica').text(createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
-
+  let rightY = fieldAt(1, rowTop, 'Fecha', createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
   if (professional) {
-    doc.moveDown(0.6);
-    doc.font('Helvetica-Bold').text('Prescrito por');
-    doc.font('Helvetica').text(professional.name);
+    rightY = fieldAt(1, rightY, 'Prescrito por', professional.rut ? `${professional.name} — RUT ${formatRut(professional.rut)}` : professional.name);
   }
 
-  doc.moveDown(1.5);
-  doc.font('Helvetica-Bold').fontSize(11).text('Medicamentos');
-  doc.moveDown(0.4);
+  doc.x = doc.page.margins.left;
+  doc.y = Math.max(leftY, rightY, rowTop + 60) + 8;
+
+  doc
+    .moveTo(doc.page.margins.left, doc.y)
+    .lineTo(doc.page.width - doc.page.margins.right, doc.y)
+    .lineWidth(1)
+    .strokeColor('#e2e8f0')
+    .stroke();
+  doc.moveDown(1.2);
+
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(INK).text('Medicamentos', { characterSpacing: 0.3 });
+  doc.moveDown(0.6);
   medicamentos.forEach((item, index) => {
-    doc.font('Helvetica-Bold').fontSize(10).text(`${index + 1}. ${item.medicamento}`);
+    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(INK).text(`${index + 1}.  ${item.medicamento}`);
     if (item.indicaciones.trim()) {
-      doc.font('Helvetica').fontSize(10).text(item.indicaciones, { indent: 14 });
+      doc.font('Helvetica').fontSize(10).fillColor(MUTED).text(item.indicaciones, { indent: 18 });
     }
-    doc.moveDown(0.5);
+    doc.moveDown(0.7);
   });
 
   if (observaciones?.trim()) {
-    doc.moveDown(0.6);
-    doc.font('Helvetica-Bold').fontSize(10).text('Observaciones');
-    doc.moveDown(0.3);
-    doc.font('Helvetica').fontSize(10).text(observaciones, { align: 'justify' });
+    doc.moveDown(0.4);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(INK).text('Observaciones');
+    doc.moveDown(0.2);
+    doc.font('Helvetica').fontSize(10).fillColor(INK).text(observaciones, { align: 'justify' });
   }
 
-  doc.moveDown(3);
-  doc.font('Helvetica').fontSize(10).text('_______________________________');
-  doc.text('Firma y timbre profesional');
+  const signatureBlockHeight = 138;
+  if (doc.y > doc.page.height - doc.page.margins.bottom - signatureBlockHeight) {
+    doc.addPage();
+  }
+  doc.y = doc.page.height - doc.page.margins.bottom - signatureBlockHeight;
 
-  doc.moveDown(2);
+  if (signatureBuffer) {
+    try {
+      doc.image(signatureBuffer, doc.page.margins.left, doc.y, { fit: [180, 60] });
+    } catch {
+      // Formato de imagen no soportado por pdfkit — se omite y queda solo la línea.
+    }
+  }
+  doc.y += 64;
   doc
-    .fontSize(8)
-    .fillColor('#64748b')
-    .text('Documento generado automáticamente por fordentcloud.', { align: 'center' });
+    .moveTo(doc.page.margins.left, doc.y)
+    .lineTo(doc.page.margins.left + 220, doc.y)
+    .lineWidth(1)
+    .strokeColor('#94a3b8')
+    .stroke();
+  doc.moveDown(0.4);
+  doc.font('Helvetica').fontSize(9.5).fillColor(MUTED).text('Firma y timbre profesional', doc.page.margins.left);
+  if (professional) {
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor(INK).text(professional.name, doc.page.margins.left);
+  }
+
+  doc.moveDown(0.8);
+  doc
+    .font('Helvetica')
+    .fontSize(7.5)
+    .fillColor('#94a3b8')
+    .text('Documento generado automáticamente por fordentcloud.', doc.page.margins.left, doc.y, {
+      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+      align: 'center',
+      lineBreak: false,
+    });
 
   doc.end();
   return finished;

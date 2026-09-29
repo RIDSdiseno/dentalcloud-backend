@@ -1,14 +1,18 @@
-import axios from 'axios';
 import PDFDocument from 'pdfkit';
+import { drawClinicHeader, type ClinicaPdfInfo } from './pdfClinicHeader';
+import { formatRut } from '../utils/rut';
 
 type ExamRequestPdfInput = {
-  clinica: { name: string; logoUrl: string | null };
+  clinica: ClinicaPdfInfo;
   patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null };
   professional: { name: string } | null;
   exams: string;
   notes: string | null;
   createdAt: Date;
 };
+
+const INK = '#0f172a';
+const MUTED = '#64748b';
 
 function formatAge(birthDate: Date | null): string {
   if (!birthDate) return '';
@@ -20,19 +24,13 @@ function formatAge(birthDate: Date | null): string {
   return ` (${age} años)`;
 }
 
-async function downloadLogo(logoUrl: string): Promise<Buffer | null> {
-  try {
-    const { data } = await axios.get<ArrayBuffer>(logoUrl, { responseType: 'arraybuffer', timeout: 8000 });
-    return Buffer.from(data);
-  } catch {
-    return null;
-  }
-}
-
 // Etapa 04 (reunión 2/9 con Urbina): "si tú apretáis solicitud de exámenes,
 // se te abriera algún tipo de receta de manera que salga qué exámenes
 // necesitáis y lo imprima rápido" — formato simple, pensado para imprimir de
 // inmediato en la misma consulta, no un informe clínico extenso.
+// Encabezado actualizado (29/09) al mismo `drawClinicHeader` que usa la
+// receta manual, para que ambos PDFs se vean consistentes y siempre
+// muestren el logo/datos reales de la clínica que los emite.
 export async function buildExamRequestPdf({
   clinica,
   patient,
@@ -41,8 +39,6 @@ export async function buildExamRequestPdf({
   notes,
   createdAt,
 }: ExamRequestPdfInput): Promise<Buffer> {
-  const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
-
   const doc = new PDFDocument({ size: 'A4', margin: 56 });
   const chunks: Buffer[] = [];
   doc.on('data', (chunk) => chunks.push(chunk));
@@ -50,55 +46,54 @@ export async function buildExamRequestPdf({
     doc.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
-  if (logoBuffer) {
-    try {
-      doc.image(logoBuffer, doc.page.width - doc.page.margins.right - 80, 40, { fit: [80, 80] });
-    } catch {
-      // Formato de imagen no soportado por pdfkit — se omite el logo.
-    }
-  }
+  await drawClinicHeader(doc, clinica, 'Solicitud de exámenes previos');
 
-  doc.fontSize(16).font('Helvetica-Bold').text(clinica.name, { width: 320 });
-  doc.moveDown(0.4);
-  doc.fontSize(13).font('Helvetica-Bold').text('Solicitud de exámenes previos', { width: 320 });
-  doc.fillColor('#000000');
-
-  doc.moveDown(1.5);
-  doc.fontSize(10).font('Helvetica-Bold').text('Paciente');
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('PACIENTE', { characterSpacing: 0.4 });
   doc
     .font('Helvetica')
-    .text(`${patient.firstName} ${patient.lastName}${formatAge(patient.birthDate)} — RUT ${patient.rut}`);
+    .fontSize(10.5)
+    .fillColor(INK)
+    .text(`${patient.firstName} ${patient.lastName}${formatAge(patient.birthDate)} — RUT ${formatRut(patient.rut)}`);
+  doc.moveDown(0.5);
 
-  doc.moveDown(0.6);
-  doc.font('Helvetica-Bold').text('Fecha');
-  doc.font('Helvetica').text(createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('FECHA', { characterSpacing: 0.4 });
+  doc.font('Helvetica').fontSize(10.5).fillColor(INK).text(createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
+  doc.moveDown(0.5);
 
   if (professional) {
-    doc.moveDown(0.6);
-    doc.font('Helvetica-Bold').text('Solicitado por');
-    doc.font('Helvetica').text(professional.name);
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('SOLICITADO POR', { characterSpacing: 0.4 });
+    doc.font('Helvetica').fontSize(10.5).fillColor(INK).text(professional.name);
+    doc.moveDown(0.5);
   }
 
-  doc.moveDown(1.5);
-  doc.font('Helvetica-Bold').fontSize(11).text('Exámenes solicitados');
-  doc.moveDown(0.3);
-  doc.font('Helvetica').fontSize(10).text(exams, { align: 'left' });
+  doc.moveDown(0.6);
+  doc
+    .moveTo(doc.page.margins.left, doc.y)
+    .lineTo(doc.page.width - doc.page.margins.right, doc.y)
+    .lineWidth(1)
+    .strokeColor('#e2e8f0')
+    .stroke();
+  doc.moveDown(1.2);
+
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(INK).text('Exámenes solicitados');
+  doc.moveDown(0.4);
+  doc.font('Helvetica').fontSize(10).fillColor(INK).text(exams, { align: 'left' });
 
   if (notes?.trim()) {
     doc.moveDown(1);
-    doc.font('Helvetica-Bold').fontSize(10).text('Observaciones');
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(INK).text('Observaciones');
     doc.moveDown(0.3);
-    doc.font('Helvetica').fontSize(10).text(notes, { align: 'justify' });
+    doc.font('Helvetica').fontSize(10).fillColor(INK).text(notes, { align: 'justify' });
   }
 
   doc.moveDown(3);
-  doc.font('Helvetica').fontSize(10).text('_______________________________');
+  doc.font('Helvetica').fontSize(10).fillColor(MUTED).text('_______________________________');
   doc.text('Firma y timbre profesional');
 
   doc.moveDown(2);
   doc
-    .fontSize(8)
-    .fillColor('#64748b')
+    .fontSize(7.5)
+    .fillColor('#94a3b8')
     .text('Documento generado automáticamente por fordentcloud.', { align: 'center' });
 
   doc.end();
