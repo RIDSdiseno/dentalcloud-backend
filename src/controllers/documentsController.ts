@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
+import { buildRecetaManualPdf } from '../lib/recetaManualPdf';
 
 export const DOCUMENT_CATEGORIES = [
   'receta',
@@ -162,6 +163,77 @@ export async function createExamRequest(req: Request<{ id: string }>, res: Respo
   } catch (err) {
     console.error('Error generando/subiendo la solicitud de exámenes', err);
     return res.status(502).json({ error: 'No se pudo generar la solicitud de exámenes. Intenta nuevamente.' });
+  }
+}
+
+// Feedback de un usuario real (29/09): la pestaña "Recetas Médicas" exigía
+// subir un archivo — no había forma de redactar una receta a mano. Se deja
+// intacto el flujo de subida y se agrega este, en paralelo, siguiendo el
+// mismo patrón de `createExamRequest`: arma el PDF acá mismo y lo guarda
+// como un ClinicalDocument más (categoría "receta").
+export async function createManualReceta(req: Request<{ id: string }>, res: Response) {
+  const body = req.body as { medicamentos?: { medicamento?: string; indicaciones?: string }[]; observaciones?: string };
+  const medicamentos = (body.medicamentos ?? [])
+    .map((item) => ({ medicamento: item.medicamento?.trim() ?? '', indicaciones: item.indicaciones?.trim() ?? '' }))
+    .filter((item) => item.medicamento);
+
+  if (medicamentos.length === 0) {
+    return res.status(400).json({ error: 'Agrega al menos un medicamento' });
+  }
+
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !belongsToRequesterClinica(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const [clinica, professional] = await Promise.all([
+    prisma.clinica.findUnique({ where: { id: req.user!.clinicaId! }, select: { name: true, logoUrl: true } }),
+    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true } }),
+  ]);
+  if (!clinica) {
+    return res.status(404).json({ error: 'Clínica no encontrada' });
+  }
+
+  const createdAt = new Date();
+  const pdfBuffer = await buildRecetaManualPdf({
+    clinica,
+    patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut, birthDate: patient.birthDate },
+    professional,
+    medicamentos,
+    observaciones: body.observaciones?.trim() || null,
+    createdAt,
+  });
+
+  try {
+    const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { resource_type: 'raw', format: 'pdf', folder: `dentalcloud/${patient.id}/receta` },
+        (error, result) => {
+          if (error || !result) return reject(error);
+          resolve({ secure_url: result.secure_url, public_id: result.public_id });
+        }
+      );
+      stream.end(pdfBuffer);
+    });
+
+    const document = await prisma.clinicalDocument.create({
+      data: {
+        patientId: patient.id,
+        uploadedById: req.user!.sub,
+        category: 'receta',
+        fileName: `receta-${createdAt.toISOString().slice(0, 10)}.pdf`,
+        fileUrl: uploadResult.secure_url,
+        resourceType: 'raw',
+        publicId: uploadResult.public_id,
+        description: medicamentos.map((item) => item.medicamento).join(', '),
+        clinicaId: req.user!.clinicaId!,
+      },
+      include,
+    });
+    return res.status(201).json({ document });
+  } catch (err) {
+    console.error('Error generando/subiendo la receta manual', err);
+    return res.status(502).json({ error: 'No se pudo generar la receta. Intenta nuevamente.' });
   }
 }
 

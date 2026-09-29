@@ -20,7 +20,7 @@ import {
   corroborateData,
   generateAnamnesisSummaryHandler,
 } from '../controllers/patientsController';
-import { createExamRequest } from '../controllers/documentsController';
+import { createExamRequest, createManualReceta } from '../controllers/documentsController';
 
 const router = Router();
 const uploadMiddleware = multer({ storage: multer.memoryStorage() });
@@ -44,5 +44,6 @@ router.patch('/:id/exam-video', uploadMiddleware.single('video'), uploadExamVide
 router.post('/:id/corroborate-data', corroborateData);
 router.post('/:id/anamnesis-summary', generateAnamnesisSummaryHandler);
 router.post('/:id/exam-request', createExamRequest);
+router.post('/:id/receta-manual', createManualReceta);
 
 export default router;
