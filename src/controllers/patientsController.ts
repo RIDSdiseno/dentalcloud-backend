@@ -96,11 +96,17 @@ type ExamPhotoSlot = (typeof EXAM_PHOTO_SLOTS)[number];
 
 // Registro corporal (14/09, pedido explícito): mismo mecanismo que el
 // facial, con sus propios 4 ángulos — se distinguen por `area` en ExamPhoto.
-const EXAM_PHOTO_AREAS = ['facial', 'corporal'] as const;
+// 'facialAvanzado' (30/09, demo): mismos 4 ángulos que el facial, pero
+// tomados con el escaneo guiado que detecta la orientación de la cabeza en
+// vivo. Se guarda como un área aparte para que conviva con el registro normal
+// sin mezclarse — `area` es una columna de texto, así que no necesita
+// migración, solo aceptarse acá.
+const EXAM_PHOTO_AREAS = ['facial', 'corporal', 'facialAvanzado'] as const;
 type ExamPhotoArea = (typeof EXAM_PHOTO_AREAS)[number];
 const EXAM_PHOTO_SLOTS_BY_AREA: Record<ExamPhotoArea, readonly string[]> = {
   facial: EXAM_PHOTO_SLOTS,
   corporal: ['frontal', 'espalda', 'perfilIzquierdo', 'perfilDerecho'],
+  facialAvanzado: EXAM_PHOTO_SLOTS,
 };
 
 function sanitizeAllergies(allergies?: string[]): string[] | undefined {
@@ -470,7 +476,7 @@ type ExamPhotoMoment = (typeof EXAM_PHOTO_MOMENTS)[number];
 export async function uploadExamPhoto(req: Request<{ id: string; slot: string }>, res: Response) {
   const area = (req.body?.area || 'facial') as ExamPhotoArea;
   if (!EXAM_PHOTO_AREAS.includes(area)) {
-    return res.status(400).json({ error: 'area debe ser "facial" o "corporal"' });
+    return res.status(400).json({ error: 'area debe ser "facial", "corporal" o "facialAvanzado"' });
   }
   const slot = req.params.slot;
   if (!EXAM_PHOTO_SLOTS_BY_AREA[area].includes(slot)) {
