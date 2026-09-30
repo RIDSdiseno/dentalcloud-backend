@@ -15,6 +15,8 @@ import {
   uploadExamPhotoMarkup,
   listExamPhotoMarkups,
   deleteExamPhotoMarkup,
+  deleteExamPhoto,
+  deleteExamPhotoRound,
   uploadExamVideo,
   listExamVideos,
   corroborateData,
@@ -39,6 +41,9 @@ router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadEx
 router.get('/:id/exam-photo-markups', listExamPhotoMarkups);
 router.post('/:id/exam-photo/:examPhotoId/markup', uploadMiddleware.single('photo'), uploadExamPhotoMarkup);
 router.delete('/:id/exam-photo-markups/:markupId', deleteExamPhotoMarkup);
+// La ronda va ANTES de la ruta por id: si no, 'round' entraría como :examPhotoId.
+router.delete('/:id/exam-photos/round', deleteExamPhotoRound);
+router.delete('/:id/exam-photos/:examPhotoId', deleteExamPhoto);
 router.get('/:id/exam-videos', listExamVideos);
 router.patch('/:id/exam-video', uploadMiddleware.single('video'), uploadExamVideo);
 router.post('/:id/corroborate-data', corroborateData);

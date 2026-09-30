@@ -663,6 +663,90 @@ export async function deleteExamPhotoMarkup(req: Request<{ id: string; markupId:
   return res.json({ examPhotoMarkups });
 }
 
+// Borrado de fotos del examen (30/09, pedido explícito): hacía falta poder
+// deshacer una toma mala y limpiar rondas de prueba completas. Las dos
+// funciones de abajo comparten esta ayuda: al borrar una foto hay que borrar
+// también sus marcaciones, y de cada una su archivo en Cloudinary — la fila de
+// ExamPhotoMarkup se va sola por el onDelete: Cascade del schema, pero la
+// imagen subida no, y quedaría ocupando espacio para siempre.
+async function destroyExamPhotoAssets(photos: { id: string; publicId: string }[]) {
+  if (photos.length === 0) return;
+  const markups = await prisma.examPhotoMarkup.findMany({
+    where: { examPhotoId: { in: photos.map((p) => p.id) } },
+    select: { publicId: true },
+  });
+  await Promise.all(
+    [...photos, ...markups].map((asset) =>
+      cloudinary.uploader.destroy(asset.publicId).catch(() => {
+        // Best-effort: si ya no está en Cloudinary, igual se borra el registro.
+      })
+    )
+  );
+}
+
+async function examPhotoState(patientId: string) {
+  const [examPhotos, examPhotoMarkups] = await Promise.all([
+    prisma.examPhoto.findMany({ where: { patientId }, orderBy: { createdAt: 'asc' } }),
+    prisma.examPhotoMarkup.findMany({ where: { patientId }, orderBy: { createdAt: 'asc' } }),
+  ]);
+  // Se devuelven las dos listas porque borrar una foto arrastra sus
+  // marcaciones: si solo se devolvieran las fotos, la pantalla seguiría
+  // mostrando marcaciones de una foto que ya no existe.
+  return { examPhotos, examPhotoMarkups };
+}
+
+export async function deleteExamPhoto(req: Request<{ id: string; examPhotoId: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const photo = await prisma.examPhoto.findUnique({ where: { id: req.params.examPhotoId } });
+  if (!photo || photo.patientId !== patient.id) {
+    return res.status(404).json({ error: 'Foto no encontrada' });
+  }
+
+  await destroyExamPhotoAssets([photo]);
+  await prisma.examPhoto.delete({ where: { id: photo.id } });
+
+  return res.json(await examPhotoState(patient.id));
+}
+
+// Borra una ronda completa (los 4 ángulos de un area + moment + round). "Antes"
+// no se puede borrar: es la línea base de la que cuelga todo el registro, y
+// dejar avances colgando de una comparación que ya no existe no tiene sentido.
+export async function deleteExamPhotoRound(req: Request<{ id: string }>, res: Response) {
+  const patient = await prisma.patient.findUnique({ where: { id: req.params.id } });
+  if (!patient || !patientBelongsToRequester(patient, req)) {
+    return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  const area = (req.query.area || 'facial') as ExamPhotoArea;
+  if (!EXAM_PHOTO_AREAS.includes(area)) {
+    return res.status(400).json({ error: 'area debe ser "facial", "corporal" o "facialAvanzado"' });
+  }
+  if (req.query.moment !== 'avance') {
+    return res.status(400).json({ error: 'Solo se pueden borrar rondas de "avance"' });
+  }
+  const round = Number(req.query.round);
+  if (!Number.isInteger(round) || round < 1) {
+    return res.status(400).json({ error: 'round debe ser un número entero mayor o igual a 1' });
+  }
+
+  const photos = await prisma.examPhoto.findMany({
+    where: { patientId: patient.id, area, moment: 'avance', round },
+    select: { id: true, publicId: true },
+  });
+  if (photos.length === 0) {
+    return res.status(404).json({ error: 'Esa ronda no tiene fotos' });
+  }
+
+  await destroyExamPhotoAssets(photos);
+  await prisma.examPhoto.deleteMany({ where: { id: { in: photos.map((p) => p.id) } } });
+
+  return res.json(await examPhotoState(patient.id));
+}
+
 // Registro de video (14/09, pedido explícito): mismo esquema de rondas que
 // el registro fotográfico (antes / avance N), pero un solo video por ronda
 // en vez de 4 ángulos — ver ExamVideo en el schema.
