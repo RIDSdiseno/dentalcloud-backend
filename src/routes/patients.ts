@@ -36,16 +36,27 @@ router.get('/:id', getOne);
 router.patch('/:id', update);
 router.patch('/:id/photo', uploadMiddleware.single('photo'), uploadPhoto);
 router.patch('/:id/motivo-consulta-audio', uploadMiddleware.single('audio'), uploadMotivoConsultaAudio);
-router.get('/:id/exam-photos', listExamPhotos);
-router.patch('/:id/exam-photo/:slot', uploadMiddleware.single('photo'), uploadExamPhoto);
-router.get('/:id/exam-photo-markups', listExamPhotoMarkups);
-router.post('/:id/exam-photo/:examPhotoId/markup', uploadMiddleware.single('photo'), uploadExamPhotoMarkup);
-router.delete('/:id/exam-photo-markups/:markupId', deleteExamPhotoMarkup);
+// Todo lo del Examen Estético va detrás de su propio permiso: esconder la
+// pestaña en pantalla no basta, porque las fotos y el examen se pedirían igual
+// a la API y bastaría con mirar la respuesta para verlos (mismo problema que
+// tenían los permisos de campos del paciente).
+const requireExamenEstetico = requireRolePermission('fichaExamenEstetico');
+
+router.get('/:id/exam-photos', requireExamenEstetico, listExamPhotos);
+router.patch('/:id/exam-photo/:slot', requireExamenEstetico, uploadMiddleware.single('photo'), uploadExamPhoto);
+router.get('/:id/exam-photo-markups', requireExamenEstetico, listExamPhotoMarkups);
+router.post(
+  '/:id/exam-photo/:examPhotoId/markup',
+  requireExamenEstetico,
+  uploadMiddleware.single('photo'),
+  uploadExamPhotoMarkup
+);
+router.delete('/:id/exam-photo-markups/:markupId', requireExamenEstetico, deleteExamPhotoMarkup);
 // La ronda va ANTES de la ruta por id: si no, 'round' entraría como :examPhotoId.
-router.delete('/:id/exam-photos/round', deleteExamPhotoRound);
-router.delete('/:id/exam-photos/:examPhotoId', deleteExamPhoto);
-router.get('/:id/exam-videos', listExamVideos);
-router.patch('/:id/exam-video', uploadMiddleware.single('video'), uploadExamVideo);
+router.delete('/:id/exam-photos/round', requireExamenEstetico, deleteExamPhotoRound);
+router.delete('/:id/exam-photos/:examPhotoId', requireExamenEstetico, deleteExamPhoto);
+router.get('/:id/exam-videos', requireExamenEstetico, listExamVideos);
+router.patch('/:id/exam-video', requireExamenEstetico, uploadMiddleware.single('video'), uploadExamVideo);
 router.post('/:id/corroborate-data', corroborateData);
 router.post('/:id/anamnesis-summary', generateAnamnesisSummaryHandler);
 router.post('/:id/exam-request', createExamRequest);

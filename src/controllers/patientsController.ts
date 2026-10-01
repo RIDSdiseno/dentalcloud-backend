@@ -213,6 +213,44 @@ function toPatientPatch(body: PatientInput) {
   return patch;
 }
 
+// Oculta los grupos de campos que el perfil no tiene permitido ver.
+//
+// Hasta ahora los "permisos generales" solo bloqueaban ESCRIBIR esos campos
+// (ver el chequeo en update()); al LEER se devolvía la ficha completa. Por eso
+// poner "Datos personales = No" no ocultaba el teléfono: el dato igual viajaba
+// al navegador y la pantalla lo mostraba. Peor aún, los datos llegaban al
+// cliente aunque la interfaz los escondiera, así que bastaba con mirar la
+// respuesta de la API para verlos.
+//
+// Se devuelven en null en vez de omitir la propiedad para no romper a quien
+// espera que el campo exista; "sin acceso" se ve igual que "sin dato".
+function hidePatientFieldsWithoutPermission<T extends Record<string, unknown>>(
+  patient: T,
+  permissions: Awaited<ReturnType<typeof resolveRequestPermissions>>
+): T {
+  if (permissions === 'full-access') return patient;
+  if (permissions === 'no-clinic') return patient;
+  const result: Record<string, unknown> = { ...patient };
+  for (const [key, fields] of Object.entries(PATIENT_FIELD_GROUPS) as [
+    GeneralPatientPermissionKey,
+    (keyof PatientInput)[],
+  ][]) {
+    if (permissions[key]) continue;
+    for (const field of fields) {
+      if (field in result) result[field] = Array.isArray(result[field]) ? [] : null;
+    }
+  }
+  // El examen estético viaja dentro del propio paciente, no solo en sus
+  // endpoints de fotos: sin esto, ocultar la pestaña dejaría igual a la vista
+  // el diagnóstico y el resto de la evaluación en la respuesta de la API.
+  if (!permissions.fichaExamenEstetico) {
+    for (const field of Object.keys(result)) {
+      if (field.startsWith('exam')) result[field] = Array.isArray(result[field]) ? [] : null;
+    }
+  }
+  return result as T;
+}
+
 export async function list(req: Request, res: Response) {
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const searchRut = cleanRut(search);
@@ -235,7 +273,12 @@ export async function list(req: Request, res: Response) {
     take: 50,
   });
   const summaries = await fetchPrivacyConsentSummaries(patients.map((p) => p.id));
-  return res.json({ patients: patients.map((p) => withPrivacyConsentSummary(p, summaries)) });
+  const permissions = await resolveRequestPermissions(req);
+  return res.json({
+    patients: patients.map((p) =>
+      hidePatientFieldsWithoutPermission(withPrivacyConsentSummary(p, summaries), permissions)
+    ),
+  });
 }
 
 export async function getOne(req: Request<{ id: string }>, res: Response) {
@@ -244,7 +287,8 @@ export async function getOne(req: Request<{ id: string }>, res: Response) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
   const summary = await fetchPrivacyConsentSummary(patient.id);
-  return res.json({ patient: { ...patient, ...summary } });
+  const permissions = await resolveRequestPermissions(req);
+  return res.json({ patient: hidePatientFieldsWithoutPermission({ ...patient, ...summary }, permissions) });
 }
 
 export async function create(req: Request, res: Response) {
@@ -305,10 +349,15 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   const permissions = await resolveRequestPermissions(req);
   if (permissions !== 'full-access' && permissions !== 'no-clinic') {
     for (const [key, fields] of Object.entries(PATIENT_FIELD_GROUPS) as [GeneralPatientPermissionKey, (keyof PatientInput)[]][]) {
-      const touchesGroup = fields.some((field) => body[field] !== undefined);
-      if (touchesGroup && !permissions[key]) {
-        return res.status(403).json({ error: `Tu perfil no tiene acceso a "${PERMISSION_LABELS[key]}"` });
-      }
+      if (permissions[key]) continue;
+      // Los campos sin permiso se descartan del cuerpo en vez de rechazar la
+      // petición completa. Antes esto devolvía 403 apenas el cuerpo mencionara
+      // uno de estos campos, y el formulario SIEMPRE manda estatura, peso,
+      // alergias y etiquetas aunque vayan vacías — así que apagar un permiso
+      // dejaba a ese perfil sin poder guardar absolutamente nada del paciente,
+      // ni siquiera lo que sí tenía permitido. Descartándolos, cada perfil
+      // edita lo suyo y lo bloqueado nunca se toca ni se sobrescribe.
+      for (const field of fields) delete body[field];
     }
   }
 

@@ -26,16 +26,26 @@ export const GENERAL_PATIENT_PERMISSION_KEYS = [
 ] as const;
 export type GeneralPatientPermissionKey = (typeof GENERAL_PATIENT_PERMISSION_KEYS)[number];
 
+// Pestañas de la ficha del paciente que no tenían permiso propio. Las otras
+// siete (tratamientos, evoluciones, cartola, observaciones, documentos
+// clínicos, consentimientos y rx) ya se controlan con las llaves de módulo, y
+// en el panel se muestran agrupadas junto a éstas: son las mismas llaves, no
+// interruptores duplicados.
+export const PATIENT_TAB_PERMISSION_KEYS = ['fichaDatos', 'fichaExamenEstetico', 'fichaHoras'] as const;
+export type PatientTabPermissionKey = (typeof PATIENT_TAB_PERMISSION_KEYS)[number];
+
 // Las 8 pantallas de `Clinica.modules` + Rx (que se controla aparte, vía
 // `Clinica.rxEnabled`, pero también necesita su propio permiso por perfil) +
 // permisos de acción puntuales que no son "ver una pantalla completa" sino
 // "hacer algo específico dentro de ella" (ej. crear presupuestos, ver
-// treatmentPlansController.ts) + los 5 "permisos generales" de arriba.
+// treatmentPlansController.ts) + los 5 "permisos generales" + las pestañas
+// propias de la ficha.
 export const PERMISSION_KEYS = [
   ...(Object.keys(CLINICA_MODULE_LABELS) as ClinicaModuleKey[]),
   'rx',
   'crearPresupuestos',
   ...GENERAL_PATIENT_PERMISSION_KEYS,
+  ...PATIENT_TAB_PERMISSION_KEYS,
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
@@ -64,6 +74,9 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   antecedentesMedicos: 'Antecedentes médicos',
   motivoConsulta: 'Motivo de consulta',
   contactoEmergencia: 'Contacto de emergencia',
+  fichaDatos: 'Datos paciente',
+  fichaExamenEstetico: 'Examen Estético',
+  fichaHoras: 'Horas',
 };
 
 // Mismo espíritu que `parseClinicaModules`: rellena cualquier rol/llave
