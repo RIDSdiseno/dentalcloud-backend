@@ -144,6 +144,7 @@ model User {
   administrativeObservations     AdministrativeObservation[]
   appointments                   Appointment[]               @relation("AppointmentProfessional")
   appointmentsReceived           Appointment[]               @relation("AppointmentReceivedBy")
+  appointmentsCancelled          Appointment[]               @relation("AppointmentCancelledBy")
   clinicalDocuments              ClinicalDocument[]
   consentsSent                   Consent[]                   @relation("ConsentsSentBy")
   consultationPaymentsRegistered ConsultationPayment[]
@@ -681,11 +682,24 @@ model Appointment {
   // criterio que ConsentType/verificationToken en el registro del portal.
   confirmationToken      String?   @unique
   patientConfirmedAt     DateTime?
+  // Cancelacion. Cancelar ya no solo cambia `status`: exige un motivo y deja
+  // registrado quien cancelo y cuando (reunion 30/09 — "paciente no
+  // contesto", etc.). La cita no se borra nunca, queda en el historial del
+  // paciente con su motivo a la vista.
+  canceladaAt            DateTime?
+  canceladaPorId         String?
+  cancelacionMotivo      String?
+  // "Primera vez / Tratamiento" y, cuando es tratamiento, el motivo por el
+  // que viene. Antes todo esto se escribia mezclado en `notes`, que sigue
+  // existiendo para las notas sueltas de recepcion.
+  consultaTipo           String?
+  motivoConsulta         String?
   chair                  Chair     @relation(fields: [chairId], references: [id])
   clinica                Clinica   @relation(fields: [clinicaId], references: [id])
   patient                Patient   @relation(fields: [patientId], references: [id])
   professional           User?     @relation("AppointmentProfessional", fields: [professionalId], references: [id])
   receivedBy             User?     @relation("AppointmentReceivedBy", fields: [receivedByUserId], references: [id])
+  canceladaPor           User?     @relation("AppointmentCancelledBy", fields: [canceladaPorId], references: [id])
   // Presente solo si esta cita nació de tomar una hora publicada ("Agregar
   // horas disponibles") — al cancelar la cita, se usa para reabrir esa hora.
   openSlot               OpenSlot?

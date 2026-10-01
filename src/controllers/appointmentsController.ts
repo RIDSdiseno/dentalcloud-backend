@@ -21,6 +21,10 @@ type AppointmentInput = {
   endAt?: string;
   notes?: string;
   type?: string;
+  // "Primera vez / Tratamiento" y, cuando es tratamiento, el motivo por el
+  // que viene. `notes` sigue siendo las notas sueltas de recepción.
+  consultaTipo?: string;
+  motivoConsulta?: string;
   // Si viene, la cita nace de tomar una hora publicada ("Agregar horas
   // disponibles") — chairId/professionalId/startAt/endAt se ignoran y se
   // usan los de la hora publicada, nunca los que mande el cliente.
@@ -36,6 +40,10 @@ type UrgencyInput = {
 };
 
 const APPOINTMENT_TYPES = ['cita', 'control'];
+// "Primera vez / Tratamiento" (reunión 30/09, tarea 21). Opcional: las citas
+// anteriores a este cambio no lo tienen, y un control tampoco lo pide — un
+// control es por definición un seguimiento, nunca una primera vez.
+const CONSULTA_TIPOS = ['primera_vez', 'tratamiento'];
 const TRIAGE_LEVELS = ['leve', 'moderada', 'grave'];
 const DEFAULT_URGENCY_DURATION_MINUTES = 30;
 
@@ -74,6 +82,9 @@ const include = {
     select: { id: true, name: true },
   },
   receivedBy: {
+    select: { id: true, name: true },
+  },
+  canceladaPor: {
     select: { id: true, name: true },
   },
   chair: {
@@ -131,11 +142,27 @@ class HttpError extends Error {
   }
 }
 
+// El motivo escrito solo tiene sentido si la cita es de tratamiento: en una
+// primera vez todavía no hay nada que continuar. Se guarda null en vez de
+// rechazar para no pelear con el formulario, que puede traer texto residual
+// si el usuario escribió y después cambió el selector.
+function consultaMotivoFor(body: AppointmentInput): string | null {
+  if (body.consultaTipo !== 'tratamiento') return null;
+  return body.motivoConsulta?.trim() || null;
+}
+
+function validateConsulta(body: AppointmentInput): string | null {
+  if (body.consultaTipo && !CONSULTA_TIPOS.includes(body.consultaTipo)) {
+    return `El motivo de consulta debe ser uno de: ${CONSULTA_TIPOS.join(', ')}`;
+  }
+  return null;
+}
+
 export async function create(req: Request, res: Response) {
   const body = req.body as AppointmentInput;
 
   if (body.openSlotId) {
-    return createFromOpenSlot(req, res, body.openSlotId, body.patientId, body.notes, body.type);
+    return createFromOpenSlot(req, res, body.openSlotId, body);
   }
 
   if (!body.chairId || !body.patientId || !body.startAt || !body.endAt) {
@@ -150,6 +177,10 @@ export async function create(req: Request, res: Response) {
 
   if (body.type && !APPOINTMENT_TYPES.includes(body.type)) {
     return res.status(400).json({ error: `El tipo debe ser uno de: ${APPOINTMENT_TYPES.join(', ')}` });
+  }
+  const consultaError = validateConsulta(body);
+  if (consultaError) {
+    return res.status(400).json({ error: consultaError });
   }
 
   const [chair, patient] = await Promise.all([
@@ -193,6 +224,8 @@ export async function create(req: Request, res: Response) {
       endAt,
       notes: body.notes?.trim() || null,
       type: body.type || 'cita',
+      consultaTipo: body.consultaTipo || null,
+      motivoConsulta: consultaMotivoFor(body),
       clinicaId: req.user!.clinicaId!,
       confirmationToken: crypto.randomBytes(24).toString('hex'),
     },
@@ -219,19 +252,17 @@ export async function create(req: Request, res: Response) {
 // horario SIEMPRE salen de la hora publicada, nunca de lo que mande el
 // cliente, para que nadie pueda "tomar" una hora pero inyectar un horario
 // distinto al que en verdad se publicó.
-async function createFromOpenSlot(
-  req: Request,
-  res: Response,
-  openSlotId: string,
-  patientId: string | undefined,
-  notes: string | undefined,
-  type: string | undefined
-) {
+async function createFromOpenSlot(req: Request, res: Response, openSlotId: string, body: AppointmentInput) {
+  const { patientId, notes, type } = body;
   if (!patientId) {
     return res.status(400).json({ error: 'Selecciona o crea un paciente para tomar esta hora' });
   }
   if (type && !APPOINTMENT_TYPES.includes(type)) {
     return res.status(400).json({ error: `El tipo debe ser uno de: ${APPOINTMENT_TYPES.join(', ')}` });
+  }
+  const consultaError = validateConsulta(body);
+  if (consultaError) {
+    return res.status(400).json({ error: consultaError });
   }
 
   const clinicaId = req.user!.clinicaId!;
@@ -263,6 +294,8 @@ async function createFromOpenSlot(
           endAt: openSlot.endAt,
           notes: notes?.trim() || null,
           type: type || 'cita',
+          consultaTipo: body.consultaTipo || null,
+          motivoConsulta: consultaMotivoFor(body),
           clinicaId,
           confirmationToken: crypto.randomBytes(24).toString('hex'),
         },
@@ -374,7 +407,17 @@ export async function createUrgencia(req: Request, res: Response) {
   return res.status(201).json({ appointment });
 }
 
+// Cancelar una cita. Exige un motivo ("paciente no contestó", etc., reunión
+// 30/09) y deja registrado quién canceló y cuándo. La cita nunca se borra:
+// sigue en el historial del paciente, marcada como cancelada y con su motivo
+// a la vista — lo que desaparece es solo su lugar en la parrilla de sillones,
+// porque esa hora vuelve a estar libre de verdad.
 export async function remove(req: Request<{ id: string }>, res: Response) {
+  const body = req.body as { reason?: string };
+  if (!body?.reason?.trim()) {
+    return res.status(400).json({ error: 'El motivo de la cancelación es requerido' });
+  }
+
   const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
   if (!appointment || !belongsToRequesterClinica(appointment, req)) {
     return res.status(404).json({ error: 'Cita no encontrada' });
@@ -384,9 +427,19 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     return res.status(403).json({ error: 'No puedes cancelar una cita de otro profesional' });
   }
 
+  if (appointment.status === 'cancelada') {
+    return res.status(409).json({ error: 'Esta cita ya está cancelada' });
+  }
+
   const cancelled = await prisma.appointment.update({
     where: { id: req.params.id },
-    data: { status: 'cancelada' },
+    data: {
+      status: 'cancelada',
+      canceladaAt: new Date(),
+      canceladaPorId: req.user!.sub,
+      cancelacionMotivo: body.reason.trim(),
+    },
+    include,
   });
 
   // Si esta cita nació de tomar una hora publicada, la hora vuelve a quedar
@@ -401,7 +454,7 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     console.error('No se pudo sincronizar la cancelación de la cita con Dental-Demo-Back', err);
   });
 
-  return res.status(204).send();
+  return res.json({ appointment: cancelled });
 }
 
 // Hitos de los Circuitos del Paciente: cada transición sella su propia hora
