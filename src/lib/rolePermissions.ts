@@ -61,11 +61,15 @@ const ALL_TRUE = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Re
 // Excepciones de fábrica (el resto parte en true):
 //  - "operador" (recepción) sin "Motivo de consulta": lo completa el profesional
 //    durante la atención, pedido explícito del cliente.
-//  - NADIE puede eliminar evoluciones. Es un registro clínico: en Chile no se
-//    pueden borrar y hacerlo sería fraude (reunión 30/09). Queda como permiso y
-//    no como bloqueo absoluto para que una clínica pueda concedérselo a alguien
-//    puntual si lo necesita, pero nunca por defecto. El administrador sí puede,
-//    como con el resto de los permisos.
+//  - NADIE puede anular evoluciones. Es un registro clínico: en Chile no se
+//    puede borrar y hacerlo sería fraude (reunión 30/09) — por eso ni siquiera
+//    se borran, se anulan: quedan a la vista tachadas, con quién, cuándo y por
+//    qué (ver evolutionsController.ts). Queda como permiso y no como bloqueo
+//    absoluto para que una clínica pueda concedérselo a alguien puntual si lo
+//    necesita, pero nunca por defecto. El administrador sí puede, como con el
+//    resto de los permisos.
+//    La llave sigue llamándose `eliminarEvoluciones` para no invalidar las
+//    excepciones por usuario ya guardadas en la base.
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
   odontologo: { ...ALL_TRUE, eliminarEvoluciones: false },
   radiologo: { ...ALL_TRUE, eliminarEvoluciones: false },
@@ -76,7 +80,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   ...CLINICA_MODULE_LABELS,
   rx: 'Módulo Rx',
   crearPresupuestos: 'Crear presupuestos',
-  eliminarEvoluciones: 'Eliminar evoluciones',
+  eliminarEvoluciones: 'Anular evoluciones',
   datosPersonales: 'Datos personales',
   datosContacto: 'Datos de contacto',
   antecedentesMedicos: 'Antecedentes médicos',

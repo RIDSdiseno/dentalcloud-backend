@@ -147,7 +147,8 @@ model User {
   clinicalDocuments              ClinicalDocument[]
   consentsSent                   Consent[]                   @relation("ConsentsSentBy")
   consultationPaymentsRegistered ConsultationPayment[]
-  evolutions                     Evolution[]
+  evolutions                     Evolution[]                 @relation("EvolutionProfessional")
+  evolucionesAnuladas            Evolution[]                 @relation("EvolutionAnuladaPor")
   evolutionDeletions             EvolutionDeletion[]
   ledgerMovements                LedgerMovement[]
   treatmentItemsTreatedBy        TreatmentItem[]
@@ -848,9 +849,18 @@ model Evolution {
   productLot       String?
   productExpiresAt DateTime?
   productQuantity  String?
+  // Anulación. Una evolución es registro clínico: no se borra, se anula. Antes
+  // se eliminaba de verdad y, aunque quedaba copia en EvolutionDeletion, esa
+  // tabla no se muestra en ninguna pantalla — la evolución simplemente
+  // desaparecía del historial del paciente, que es justo lo que el respaldo
+  // legal busca impedir. Anulada sigue a la vista, tachada y con el motivo.
+  anuladaAt        DateTime?
+  anuladaPorId     String?
+  anulacionMotivo  String?
   clinica          Clinica          @relation(fields: [clinicaId], references: [id])
   patient          Patient          @relation(fields: [patientId], references: [id])
-  professional     User             @relation(fields: [professionalId], references: [id])
+  professional     User             @relation("EvolutionProfessional", fields: [professionalId], references: [id])
+  anuladaPor       User?            @relation("EvolutionAnuladaPor", fields: [anuladaPorId], references: [id])
   treatmentItem    TreatmentItem?   @relation(fields: [treatmentItemId], references: [id])
   photos           EvolutionPhoto[]
 

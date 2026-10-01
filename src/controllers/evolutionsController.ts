@@ -14,6 +14,7 @@ import {
 
 const include = {
   professional: { select: { id: true, name: true } },
+  anuladaPor: { select: { id: true, name: true } },
   treatmentItem: { select: { id: true, description: true, treatmentPlanId: true } },
   photos: { orderBy: { createdAt: 'asc' as const } },
 } as const;
@@ -182,6 +183,13 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(403).json({ error: 'Solo el autor o un administrador pueden modificar esta evolución' });
   }
 
+  // Una evolución anulada queda congelada: el registro que se anuló tiene que
+  // seguir siendo el mismo que se leyó al anularlo, si no la anulación no vale
+  // como respaldo de nada.
+  if (evolution.anuladaAt) {
+    return res.status(409).json({ error: 'Esta evolución está anulada y ya no se puede modificar' });
+  }
+
   if (body.content !== undefined && !hasText(body.content)) {
     return res.status(400).json({ error: 'El contenido de la evolución es requerido' });
   }
@@ -197,15 +205,23 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   return res.json({ evolution: updated });
 }
 
-// Se puede borrar una evolución, pero solo dando un motivo — queda una copia
-// del contenido en `EvolutionDeletion` (auditoría) antes de borrarla de
-// verdad. No revierte nada que ya se haya sincronizado al TreatmentItem
+// Anular una evolución. NO se borra: una evolución es registro clínico y en
+// Chile no se puede eliminar — hacerlo sería fraude (planteado por el cliente
+// en la reunión del 30/09). Queda visible en la ficha, tachada, con quién la
+// anuló, cuándo y por qué.
+//
+// Antes esto borraba de verdad y dejaba copia en `EvolutionDeletion`. Esa
+// tabla no se muestra en ninguna pantalla, así que la evolución desaparecía
+// igual del historial del paciente: justo lo que el respaldo busca impedir.
+// La tabla se conserva (guarda los borrados antiguos) pero ya no se escribe.
+//
+// No revierte nada que ya se haya sincronizado al TreatmentItem
 // (completed/producto/fotos) cuando la evolución documentaba un procedimiento
-// — borrar la nota no deshace el tratamiento que ya se hizo.
+// — anular la nota no deshace el tratamiento que ya se hizo.
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const body = req.body as { reason?: string };
   if (!body.reason?.trim()) {
-    return res.status(400).json({ error: 'El motivo de la eliminación es requerido' });
+    return res.status(400).json({ error: 'El motivo de la anulación es requerido' });
   }
 
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
@@ -214,28 +230,32 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   }
 
   if (!isOwnerOrAdmin(evolution, req)) {
-    return res.status(403).json({ error: 'Solo el autor o un administrador pueden eliminar esta evolución' });
+    return res.status(403).json({ error: 'Solo el autor o un administrador pueden anular esta evolución' });
   }
 
-  await prisma.evolutionDeletion.create({
+  if (evolution.anuladaAt) {
+    return res.status(409).json({ error: 'Esta evolución ya está anulada' });
+  }
+
+  const updated = await prisma.evolution.update({
+    where: { id: evolution.id },
     data: {
-      evolutionId: evolution.id,
-      patientId: evolution.patientId,
-      professionalId: evolution.professionalId,
-      content: evolution.content,
-      reason: body.reason.trim(),
-      deletedByUserId: req.user!.sub,
-      clinicaId: evolution.clinicaId,
+      anuladaAt: new Date(),
+      anuladaPorId: req.user!.sub,
+      anulacionMotivo: body.reason.trim(),
     },
+    include,
   });
-  await prisma.evolution.delete({ where: { id: evolution.id } });
-  return res.status(204).send();
+  return res.json({ evolution: updated });
 }
 
 export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
   if (!evolution || !belongsToRequesterClinica(evolution, req)) {
     return res.status(404).json({ error: 'Evolución no encontrada' });
+  }
+  if (evolution.anuladaAt) {
+    return res.status(409).json({ error: 'Esta evolución está anulada: no admite fotos nuevas' });
   }
   const file = req.file;
   if (!file) {
@@ -288,10 +308,15 @@ export async function uploadPhoto(req: Request<{ id: string }>, res: Response) {
 export async function removePhoto(req: Request<{ photoId: string }>, res: Response) {
   const photo = await prisma.evolutionPhoto.findUnique({
     where: { id: req.params.photoId },
-    include: { evolution: { select: { treatmentItemId: true } } },
+    include: { evolution: { select: { treatmentItemId: true, anuladaAt: true } } },
   });
   if (!photo || !belongsToRequesterClinica(photo, req)) {
     return res.status(404).json({ error: 'Foto no encontrada' });
+  }
+  // Las fotos de una evolución anulada son parte del registro que se anuló:
+  // se quedan, igual que el texto.
+  if (photo.evolution.anuladaAt) {
+    return res.status(409).json({ error: 'Esta evolución está anulada: sus fotos ya no se pueden eliminar' });
   }
 
   await deleteImageFromCloudinary(photo.publicId);
