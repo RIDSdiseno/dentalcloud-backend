@@ -1,16 +1,13 @@
-function formatCLP(amount: number): string {
-  return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(
-    amount
-  );
-}
+import { formatMoney } from '../paises';
 
 export function buildDebtReminderEmailHtml(params: {
   patientFirstName: string;
   clinicaNombre: string;
+  clinicaPais: string;
   clinicaLogoUrl?: string | null;
   saldoTotal: number;
 }): string {
-  const { patientFirstName, clinicaNombre, clinicaLogoUrl, saldoTotal } = params;
+  const { patientFirstName, clinicaNombre, clinicaPais, clinicaLogoUrl, saldoTotal } = params;
   const hasDebt = saldoTotal > 0;
 
   return `
@@ -32,7 +29,7 @@ export function buildDebtReminderEmailHtml(params: {
       </p>
       <p style="text-align: center; margin: 24px 0;">
         <span style="background-color: ${hasDebt ? '#fef3c7' : '#dcfce7'}; color: ${hasDebt ? '#92400e' : '#166534'}; padding: 10px 20px; border-radius: 8px; font-weight: 700; font-size: 18px; display: inline-block;">
-          ${hasDebt ? `Saldo total: ${formatCLP(saldoTotal)}` : 'Tu cuenta está al día'}
+          ${hasDebt ? `Saldo total: ${formatMoney(saldoTotal, clinicaPais)}` : 'Tu cuenta está al día'}
         </span>
       </p>
       <p style="font-size: 13px; color: #64748b;">

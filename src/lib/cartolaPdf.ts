@@ -1,3 +1,4 @@
+import { formatMoney } from './paises';
 import axios from 'axios';
 import PDFDocument from 'pdfkit';
 
@@ -47,7 +48,7 @@ type LedgerRow = {
 };
 
 type CartolaPdfInput = {
-  clinica: { name: string; logoUrl: string | null };
+  clinica: { name: string; logoUrl: string | null; pais: string };
   patient: { firstName: string; lastName: string; rut: string };
   plans: PlanRow[];
   totals: Totals;
@@ -72,11 +73,6 @@ const HEADER_BG = '#eff6ff';
 const ZEBRA_BG = '#f8fafc';
 const TOTALS_BG = '#dbeafe';
 
-function formatCLP(amount: number): string {
-  return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(
-    amount
-  );
-}
 
 function formatDate(value: Date): string {
   return value.toLocaleDateString('es-CL');
@@ -205,6 +201,7 @@ export async function buildCartolaPdf({
   ledger,
   saldoTotal,
 }: CartolaPdfInput): Promise<Buffer> {
+  const money = (amount: number) => formatMoney(amount, clinica.pais);
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
 
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 40, bufferPages: true });
@@ -289,22 +286,22 @@ export async function buildCartolaPdf({
       number: String(p.number),
       createdAt: formatDate(p.createdAt),
       professional: p.professional ?? '—',
-      subtotal: formatCLP(p.subtotal),
-      interes: formatCLP(p.interes),
-      ajustes: formatCLP(p.ajustes),
-      total: formatCLP(p.total),
-      abonado: formatCLP(p.abonado),
-      saldo: formatCLP(p.saldo),
+      subtotal: money(p.subtotal),
+      interes: money(p.interes),
+      ajustes: money(p.ajustes),
+      total: money(p.total),
+      abonado: money(p.abonado),
+      saldo: money(p.saldo),
     })),
     plans.length > 0
       ? {
           professional: 'Totales',
-          subtotal: formatCLP(totals.subtotal),
-          interes: formatCLP(totals.interes),
-          ajustes: formatCLP(totals.ajustes),
-          total: formatCLP(totals.total),
-          abonado: formatCLP(totals.abonado),
-          saldo: formatCLP(totals.saldo),
+          subtotal: money(totals.subtotal),
+          interes: money(totals.interes),
+          ajustes: money(totals.ajustes),
+          total: money(totals.total),
+          abonado: money(totals.abonado),
+          saldo: money(totals.saldo),
         }
       : undefined
   );
@@ -325,7 +322,7 @@ export async function buildCartolaPdf({
         createdAt: formatDate(m.createdAt),
         paymentMethod: m.paymentMethod ?? 'Sin forma de pago',
         registeredBy: m.registeredBy.name,
-        monto: formatCLP(m.haber),
+        monto: money(m.haber),
       }))
     );
   }
@@ -344,7 +341,7 @@ export async function buildCartolaPdf({
         description: `${m.description || 'Interés'}${m.treatmentPlan ? ` · Presupuesto N° ${m.treatmentPlan.number}` : ''}`,
         createdAt: formatDate(m.createdAt),
         registeredBy: m.registeredBy.name,
-        monto: formatCLP(m.debe),
+        monto: money(m.debe),
       }))
     );
   }
@@ -363,7 +360,7 @@ export async function buildCartolaPdf({
         description: `${m.description || 'Ajuste'}${m.treatmentPlan ? ` · Presupuesto N° ${m.treatmentPlan.number}` : ''}`,
         createdAt: formatDate(m.createdAt),
         registeredBy: m.registeredBy.name,
-        monto: m.debe > 0 ? formatCLP(m.debe) : `-${formatCLP(m.haber)}`,
+        monto: m.debe > 0 ? money(m.debe) : `-${money(m.haber)}`,
       }))
     );
   }
@@ -387,8 +384,8 @@ export async function buildCartolaPdf({
       comprobante: row.comprobante,
       number: String(row.number),
       createdAt: formatDate(row.createdAt),
-      debe: row.debe > 0 ? formatCLP(row.debe) : '—',
-      haber: row.haber > 0 ? formatCLP(row.haber) : '—',
+      debe: row.debe > 0 ? money(row.debe) : '—',
+      haber: row.haber > 0 ? money(row.haber) : '—',
       planNumber: row.planNumber != null ? String(row.planNumber) : '—',
       description: row.description ?? '—',
       paymentMethod: row.paymentMethod ?? '—',
@@ -414,7 +411,7 @@ export async function buildCartolaPdf({
     .fontSize(16)
     .font('Helvetica-Bold')
     .fillColor(saldoTotal > 0 ? '#92400e' : '#166534')
-    .text(formatCLP(saldoTotal), doc.page.margins.left, bannerY + 10, { width: contentWidth - 16, align: 'right' });
+    .text(money(saldoTotal), doc.page.margins.left, bannerY + 10, { width: contentWidth - 16, align: 'right' });
   doc.fillColor(INK);
   doc.y = bannerY + bannerHeight + 16;
 

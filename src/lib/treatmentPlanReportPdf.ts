@@ -354,7 +354,7 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
   doc.font(FONTS.body)
      .fontSize(9)
      .fillColor(COLORS.textLight)
-     .text(`Monto: ${formatCLP(plan.amount)}`, col2, cardY + 58);
+     .text(`Monto: ${formatCLP(plan.amount, clinica.pais)}`, col2, cardY + 58);
 
   // Columna 3: Estado y fechas
   drawStatusBadge(doc, plan.status, col3, cardY + 12);
@@ -442,14 +442,14 @@ export async function buildTreatmentPlanReportPdf({ clinica, patient, plan, item
       zona: item.toothNumber || '—',
       fecha: item.treatedAt ? formatReportDate(item.treatedAt) : '—',
       profesional: item.treatedBy?.name || '—',
-      costo: formatCLP(item.cost),
+      costo: formatCLP(item.cost, clinica.pais),
     })),
     { 
       item: 'TOTAL', 
       zona: '', 
       fecha: '', 
       profesional: '', 
-      costo: formatCLP(plan.amount) 
+      costo: formatCLP(plan.amount, clinica.pais) 
     }
   );
 

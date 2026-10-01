@@ -106,7 +106,7 @@ export async function buildTreatmentPlanReportDocx({ clinica, patient, plan, ite
               new TableCell({ margins: CELL_MARGIN, children: [new Paragraph(item.treatedBy?.name ?? '—')] }),
               new TableCell({
                 margins: CELL_MARGIN,
-                children: [new Paragraph({ alignment: AlignmentType.RIGHT, text: formatCLP(item.cost) })],
+                children: [new Paragraph({ alignment: AlignmentType.RIGHT, text: formatCLP(item.cost, clinica.pais) })],
               }),
             ],
           })
@@ -127,7 +127,7 @@ export async function buildTreatmentPlanReportDocx({ clinica, patient, plan, ite
             children: [
               new Paragraph({
                 alignment: AlignmentType.RIGHT,
-                children: [new TextRun({ text: formatCLP(plan.amount), bold: true, color: '1E40AF' })],
+                children: [new TextRun({ text: formatCLP(plan.amount, clinica.pais), bold: true, color: '1E40AF' })],
               }),
             ],
           }),

@@ -63,12 +63,28 @@ export async function updateCompanyInfo(req: Request, res: Response) {
   if (body.name !== undefined && !body.name.trim()) {
     return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
   }
+  // El país NO se edita desde Configuración. De él salen la moneda y los tipos
+  // de documento de toda la clínica, y cambiarlo no convierte los montos ya
+  // cargados: los mismos números pasarían a leerse en otra moneda. Si de verdad
+  // hay que corregirlo, lo hace el super admin desde el detalle del holding.
+  if (body.pais !== undefined) {
+    const clinica = await prisma.clinica.findUnique({
+      where: { id: req.user!.clinicaId! },
+      select: { pais: true },
+    });
+    if (clinica && body.pais.trim() !== clinica.pais) {
+      return res.status(403).json({
+        error:
+          'El país de la clínica se define al crearla y no se puede cambiar desde acá, porque determina la moneda y los documentos. Si está equivocado, pídelo al administrador de la plataforma.',
+      });
+    }
+  }
   const updated = await prisma.clinica.update({
     where: { id: req.user!.clinicaId! },
     data: {
       ...(body.name !== undefined ? { name: body.name.trim() } : {}),
       ...(body.rut !== undefined ? { rut: body.rut.trim() || null } : {}),
-      ...(body.pais !== undefined ? { pais: body.pais.trim() || 'Chile' } : {}),
+      // `pais` se omite a propósito: ver el chequeo de arriba.
       ...(body.address !== undefined ? { address: body.address.trim() || null } : {}),
       ...(body.email !== undefined ? { email: body.email.trim() || null } : {}),
       ...(body.phone !== undefined ? { phone: body.phone.trim() || null } : {}),

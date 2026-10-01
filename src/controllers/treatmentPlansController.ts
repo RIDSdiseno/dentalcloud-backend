@@ -490,7 +490,7 @@ export async function getReport(req: Request<{ id: string }>, res: Response) {
   ];
 
   const input = {
-    clinica: { name: clinica?.name ?? '', logoUrl: clinica?.logoUrl ?? null },
+    clinica: { name: clinica?.name ?? '', logoUrl: clinica?.logoUrl ?? null, pais: clinica?.pais ?? 'Chile' },
     patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut, birthDate: patient.birthDate },
     plan: {
       number: plan.number,

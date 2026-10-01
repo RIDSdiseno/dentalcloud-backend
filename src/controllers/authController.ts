@@ -5,6 +5,7 @@ import type { User, Clinica } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { parseClinicaModules } from '../lib/clinicaModules';
+import { paisConfig } from '../lib/paises';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
 import { applyPermissionOverrides, applyModuleOverrides } from '../lib/userAccessOverrides';
 import { isPngDataUrl, uploadUserSignature, deleteUserSignature } from '../lib/userSignature';
@@ -53,6 +54,10 @@ function toPublicUser(user: User & { clinica?: Clinica | null }) {
     clinicaId: user.clinicaId,
     clinicaModules: baseModules ? applyModuleOverrides(baseModules, user.moduleOverrides) : null,
     clinicaTipo: user.clinica ? user.clinica.tipo : null,
+    // El país define la moneda y el tipo de documento por defecto; sin él, el
+    // frontend no puede formatear montos ni elegir la validación correcta.
+    clinicaPais: user.clinica ? user.clinica.pais : null,
+    clinicaCurrency: user.clinica ? paisConfig(user.clinica.pais).currency : null,
     clinicaName: user.clinica ? user.clinica.name : null,
     clinicaLogoUrl: user.clinica ? user.clinica.logoUrl : null,
     rxEnabled: user.clinica ? user.clinica.rxEnabled : null,

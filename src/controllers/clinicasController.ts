@@ -7,6 +7,7 @@ import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModule
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { VALID_PAISES, paisConfig } from '../lib/paises';
 import { isDocumentType, isValidDocument, normalizeDocument, COMPANY_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import {
   fetchRemoteAppointments,
@@ -136,21 +137,6 @@ export async function list(req: Request, res: Response) {
 }
 
 const VALID_TIPOS = ['dental', 'estetica', 'ambas'];
-const VALID_PAISES = [
-  'Chile',
-  'Argentina',
-  'Perú',
-  'Colombia',
-  'México',
-  'Bolivia',
-  'Ecuador',
-  'Uruguay',
-  'Paraguay',
-  'Venezuela',
-  'España',
-  'Estados Unidos',
-  'Otro',
-];
 
 type PendingSucursal = { name: string; sync: boolean };
 
@@ -555,6 +541,11 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   if (pais !== undefined && !VALID_PAISES.includes(pais)) {
     return res.status(400).json({ error: 'País inválido' });
   }
+  // El país queda fijo al crear la clínica: de él salen la moneda y los tipos
+  // de documento, y cambiarlo después NO convierte los montos ya cargados —
+  // los mismos números pasarían a leerse en otra moneda. Se deja como salida de
+  // emergencia solo para el super admin, para no tener que recrear una clínica
+  // entera por un país mal elegido en el alta.
   // Al editar, el tipo puede venir o no: si no viene se conserva el guardado,
   // porque cambiarlo en silencio dejaría el número validado contra otra regla.
   const rawEditType = (req.body as { documentType?: string }).documentType;

@@ -1,8 +1,9 @@
+import { formatMoney } from './paises';
 // Tipo de datos y formateo compartidos entre los dos generadores de informe
 // (PDF con pdfkit, DOCX con la librería docx) — evita mantener la misma
 // definición de "qué es un informe de presupuesto" dos veces.
 export type TreatmentPlanReportInput = {
-  clinica: { name: string; logoUrl: string | null };
+  clinica: { name: string; logoUrl: string | null; pais: string };
   patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null };
   plan: {
     number: number;
@@ -42,10 +43,9 @@ export const TREATMENT_STATUS_LABELS_ES: Record<string, string> = {
   alta: 'Alta',
 };
 
-export function formatCLP(amount: number): string {
-  return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(
-    amount
-  );
+/** Formatea con la moneda del país de la clínica (ver lib/paises.ts). */
+export function formatCLP(amount: number, pais: string): string {
+  return formatMoney(amount, pais);
 }
 
 export function formatReportDate(value: Date): string {
