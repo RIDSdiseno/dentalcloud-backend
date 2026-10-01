@@ -18,7 +18,9 @@ router.use(requireRolePermission('evoluciones'));
 router.get('/', list);
 router.post('/', create);
 router.patch('/:id', update);
-router.delete('/:id', remove);
+// Las evoluciones son registro clínico: el permiso viene apagado de fábrica
+// para todos los perfiles (ver DEFAULT_ROLE_PERMISSIONS).
+router.delete('/:id', requireRolePermission('eliminarEvoluciones'), remove);
 router.post('/:id/photos', uploadMiddleware.single('file'), uploadPhoto);
 router.delete('/photos/:photoId', removePhoto);
 

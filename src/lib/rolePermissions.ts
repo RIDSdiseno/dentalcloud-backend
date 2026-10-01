@@ -44,6 +44,7 @@ export const PERMISSION_KEYS = [
   ...(Object.keys(CLINICA_MODULE_LABELS) as ClinicaModuleKey[]),
   'rx',
   'crearPresupuestos',
+  'eliminarEvoluciones',
   ...GENERAL_PATIENT_PERMISSION_KEYS,
   ...PATIENT_TAB_PERMISSION_KEYS,
 ] as const;
@@ -53,22 +54,29 @@ export type RolePermissions = Record<PermissionedRole, Record<PermissionKey, boo
 
 const ALL_TRUE = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Record<PermissionKey, boolean>;
 
-// Por ahora los 3 perfiles parten con acceso completo (igual que hoy); la
-// idea es que cada clínica los ajuste desde el panel de permisos cuando lo
-// necesite, no que el sistema imponga restricciones de entrada. Única
-// excepción de fábrica: "operador" (recepción/secretaria) parte SIN acceso a
-// "Motivo de consulta" — pedido explícito del cliente. Odontólogo y
-// radiólogo (roles clínicos) parten con acceso, igual que el resto.
+// Los 3 perfiles parten con acceso completo: la idea es que cada clínica los
+// ajuste desde el panel cuando lo necesite, no que el sistema imponga
+// restricciones de entrada.
+//
+// Excepciones de fábrica (el resto parte en true):
+//  - "operador" (recepción) sin "Motivo de consulta": lo completa el profesional
+//    durante la atención, pedido explícito del cliente.
+//  - NADIE puede eliminar evoluciones. Es un registro clínico: en Chile no se
+//    pueden borrar y hacerlo sería fraude (reunión 30/09). Queda como permiso y
+//    no como bloqueo absoluto para que una clínica pueda concedérselo a alguien
+//    puntual si lo necesita, pero nunca por defecto. El administrador sí puede,
+//    como con el resto de los permisos.
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
-  odontologo: { ...ALL_TRUE },
-  radiologo: { ...ALL_TRUE },
-  operador: { ...ALL_TRUE, motivoConsulta: false },
+  odontologo: { ...ALL_TRUE, eliminarEvoluciones: false },
+  radiologo: { ...ALL_TRUE, eliminarEvoluciones: false },
+  operador: { ...ALL_TRUE, motivoConsulta: false, eliminarEvoluciones: false },
 };
 
 export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   ...CLINICA_MODULE_LABELS,
   rx: 'Módulo Rx',
   crearPresupuestos: 'Crear presupuestos',
+  eliminarEvoluciones: 'Eliminar evoluciones',
   datosPersonales: 'Datos personales',
   datosContacto: 'Datos de contacto',
   antecedentesMedicos: 'Antecedentes médicos',
