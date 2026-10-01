@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { isDocumentType, isValidDocument, normalizeDocument, PERSON_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import { syncProfessionalToDimageIfNeeded } from '../lib/dimageProfessionalSync';
 import { isDimageConfigured, fetchOdontologosByHolding, fetchRadiologosByHolding } from '../lib/dimageClient';
 import { parseClinicaModules } from '../lib/clinicaModules';
@@ -103,7 +104,13 @@ export async function create(req: Request, res: Response) {
   if (!role || !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: `El rol debe ser uno de: ${VALID_ROLES.join(', ')}` });
   }
-  if (rut?.trim() && !isValidRut(rut)) {
+  const documentType: DocumentType = isDocumentType((req.body as { documentType?: string }).documentType)
+    ? ((req.body as { documentType?: string }).documentType as DocumentType)
+    : 'RUT';
+  if (!PERSON_DOCUMENT_TYPES.includes(documentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para un profesional' });
+  }
+  if (rut?.trim() && !isValidDocument(documentType, rut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
   if (signatureDataUrl && !isPngDataUrl(signatureDataUrl)) {
@@ -131,7 +138,8 @@ export async function create(req: Request, res: Response) {
       email: normalizedEmail,
       passwordHash,
       role,
-      rut: rut?.trim() ? cleanRut(rut) : null,
+      rut: rut?.trim() ? normalizeDocument(documentType, rut) : null,
+      documentType,
       clinicaId,
       ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
@@ -147,21 +155,31 @@ export async function create(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { rut, active } = req.body as { rut?: string | null; active?: boolean };
+  const { rut, active, documentType: rawDocumentType } = req.body as {
+    rut?: string | null;
+    active?: boolean;
+    documentType?: string;
+  };
   const user = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!user || !belongsToRequesterClinica(user, req)) {
     return res.status(404).json({ error: 'Usuario no encontrado' });
   }
 
   let cleanedRut: string | null | undefined;
+  let editedDocumentType: DocumentType | undefined;
   if (rut !== undefined) {
     if (rut === null || rut.trim() === '') {
       cleanedRut = null;
     } else {
-      if (!isValidRut(rut)) {
+      const editType: DocumentType = isDocumentType(rawDocumentType) ? rawDocumentType : 'RUT';
+      if (!PERSON_DOCUMENT_TYPES.includes(editType)) {
+        return res.status(400).json({ error: 'Tipo de documento no válido para un profesional' });
+      }
+      editedDocumentType = editType;
+      if (!isValidDocument(editType, rut)) {
         return res.status(400).json({ error: 'El RUT ingresado no es válido' });
       }
-      cleanedRut = cleanRut(rut);
+      cleanedRut = normalizeDocument(editedDocumentType!, rut);
     }
   }
 
@@ -173,6 +191,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     where: { id: req.params.id },
     data: {
       ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
+      ...(editedDocumentType ? { documentType: editedDocumentType } : {}),
       ...(active !== undefined ? { active } : {}),
     },
   });

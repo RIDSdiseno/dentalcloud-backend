@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { isDocumentType, isValidDocument, normalizeDocument, PERSON_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 
 export async function list(req: Request, res: Response) {
   const clinicaId = req.user!.clinicaId!;
@@ -15,6 +16,7 @@ export async function list(req: Request, res: Response) {
 export async function create(req: Request, res: Response) {
   const clinicaId = req.user!.clinicaId!;
   const body = req.body as {
+    documentType?: string;
     rut?: string;
     firstName?: string;
     lastName?: string;
@@ -23,7 +25,11 @@ export async function create(req: Request, res: Response) {
     paymentMethod?: string;
   };
 
-  if (!body.rut || !isValidRut(body.rut)) {
+  const documentType: DocumentType = isDocumentType(body.documentType) ? body.documentType : 'RUT';
+  if (!PERSON_DOCUMENT_TYPES.includes(documentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido' });
+  }
+  if (!body.rut || !isValidDocument(documentType, body.rut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
   if (!body.firstName?.trim() || !body.lastName?.trim()) {
@@ -36,7 +42,8 @@ export async function create(req: Request, res: Response) {
   const payment = await prisma.consultationPayment.create({
     data: {
       clinicaId,
-      rut: cleanRut(body.rut),
+      rut: normalizeDocument(documentType, body.rut),
+      documentType,
       firstName: body.firstName.trim(),
       lastName: body.lastName.trim(),
       email: body.email?.trim() || null,

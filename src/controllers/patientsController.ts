@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { isDocumentType, isValidDocument, normalizeDocument, PERSON_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
@@ -50,6 +51,7 @@ const PATIENT_FIELD_GROUPS: Record<GeneralPatientPermissionKey, (keyof PatientIn
 };
 
 type PatientInput = {
+  documentType?: string;
   rut?: string;
   firstName?: string;
   lastName?: string;
@@ -294,21 +296,26 @@ export async function getOne(req: Request<{ id: string }>, res: Response) {
 export async function create(req: Request, res: Response) {
   const body = req.body as PatientInput;
 
-  if (!body.rut || !isValidRut(body.rut)) {
-    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  // El paciente es una persona: no se le admite un CIF, que identifica empresas.
+  const documentType: DocumentType = isDocumentType(body.documentType) ? body.documentType : 'RUT';
+  if (!PERSON_DOCUMENT_TYPES.includes(documentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para un paciente' });
+  }
+  if (!body.rut || !isValidDocument(documentType, body.rut)) {
+    return res.status(400).json({ error: `El ${documentType === 'PASAPORTE' ? 'pasaporte' : documentType} ingresado no es válido` });
   }
   if (!body.firstName?.trim() || !body.lastName?.trim()) {
     return res.status(400).json({ error: 'Nombre y apellido son requeridos' });
   }
 
   const clinicaId = req.user!.clinicaId!;
-  const rut = cleanRut(body.rut);
+  const rut = normalizeDocument(documentType, body.rut);
   const existing = await prisma.patient.findFirst({ where: { clinicaId, rut } });
   if (existing) {
     return res.status(409).json({ error: `Ya existe un paciente con el RUT ${rut}` });
   }
 
-  const patient = await prisma.patient.create({ data: { rut, clinicaId, ...toPatientData(body) } });
+  const patient = await prisma.patient.create({ data: { rut, documentType, clinicaId, ...toPatientData(body) } });
 
   const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { rxEnabled: true } });
   if (clinica?.rxEnabled) {
@@ -337,8 +344,16 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
-  if (body.rut && !isValidRut(body.rut)) {
-    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  // Al editar, el tipo puede venir o no: si no viene se conserva el guardado,
+  // porque cambiarlo en silencio dejaría el número validado contra otra regla.
+  const documentType: DocumentType = isDocumentType(body.documentType)
+    ? body.documentType
+    : ((patient.documentType as DocumentType) ?? 'RUT');
+  if (!PERSON_DOCUMENT_TYPES.includes(documentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para un paciente' });
+  }
+  if (body.rut && !isValidDocument(documentType, body.rut)) {
+    return res.status(400).json({ error: `El ${documentType === 'PASAPORTE' ? 'pasaporte' : documentType} ingresado no es válido` });
   }
 
   // "Permisos generales": a diferencia del resto de este endpoint (que solo
@@ -380,7 +395,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   const updated = await prisma.patient.update({
     where: { id: req.params.id },
     data: {
-      ...(body.rut ? { rut: cleanRut(body.rut) } : {}),
+      ...(body.rut ? { rut: normalizeDocument(documentType, body.rut), documentType } : {}),
       ...toPatientPatch(body),
       ...(invalidatesCorroboration ? { datosCorroboradosAt: null, datosCorroboradosPorId: null } : {}),
     },

@@ -24,6 +24,8 @@ model Clinica {
   tipo                       String                      @default("dental")
   logoUrl                    String?
   logoPublicId               String?
+  // Tipo del documento guardado en `rut`. La clínica es una EMPRESA: en España le corresponde CIF, no DNI.
+  documentType               String                      @default("RUT")
   rut                        String?                     @unique
   rolePermissions            Json                        @default("{}")
   pais                       String                      @default("Chile")
@@ -113,6 +115,8 @@ model User {
   role                           String                      @default("odontologo")
   createdAt                      DateTime                    @default(now())
   updatedAt                      DateTime                    @updatedAt
+  // Tipo del documento guardado en `rut` (del profesional).
+  documentType                   String                      @default("RUT")
   rut                            String?
   clinicaId                      String?
   // Baja de profesional (softlimit): false = no puede iniciar sesión con
@@ -186,6 +190,8 @@ model Chair {
 
 model Patient {
   id                           String                      @id @default(uuid())
+  // Tipo del documento guardado en `rut`: RUT | DNI | NIE | PASAPORTE.
+  documentType                 String                      @default("RUT")
   rut                          String
   firstName                    String
   lastName                     String
@@ -236,7 +242,7 @@ model Patient {
   // "la idea es meterle IA de manera que te entregue un resumen"). Null
   // hasta que se genera por primera vez; se puede regenerar cuando cambian
   // los datos de la anamnesis.
-  anamnesisSummary              String?
+  anamnesisSummary             String?
   // Conclusiones de anamnesis (Etapa 04 — juicio clínico y bifurcación).
   expectativasPaciente         String?
   optimoTratamiento            String?
@@ -244,7 +250,7 @@ model Patient {
   examSkinType                 String?
   // Texto libre (15/09) — mockup real de Urbina (Lámina 5) lo pedía aparte
   // de "Tipo de piel", que solo cubre Seca/Mixta/Grasa/Sensible.
-  examSkinQuality               String?
+  examSkinQuality              String?
   examFitzpatrick              String?
   examWrinkles                 String?
   examFlaccidity               String?
@@ -294,53 +300,55 @@ model Patient {
 }
 
 model ConsentType {
-  id          String    @id @default(uuid())
-  code        String
-  name        String
-  legalText   String
-  active      Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  clinicaId   String
-  pdfPublicId String?
-  pdfUrl      String?
+  id              String    @id @default(uuid())
+  code            String
+  name            String
+  legalText       String
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  clinicaId       String
+  pdfPublicId     String?
+  pdfUrl          String?
   // Etapa 09 (16/09): si viene lleno, este ConsentType es el consentimiento
   // específico de ESE producto del catálogo (uno por producto, nunca
   // genérico) — ver ensureProductConsentType en lib/consentTypes.ts. Null
   // para todos los tipos de siempre (protección de datos, anestesia, etc.).
   productoMarcaId String?   @unique
-  clinica     Clinica   @relation(fields: [clinicaId], references: [id])
-  consents    Consent[]
+  clinica         Clinica   @relation(fields: [clinicaId], references: [id])
+  consents        Consent[]
 
   @@unique([clinicaId, code])
   @@map("consent_types")
 }
 
 model Consent {
-  id                String      @id @default(uuid())
-  patientId         String
-  consentTypeId     String
-  status            String      @default("pendiente")
-  method            String?
-  token             String?     @unique
-  sentAt            DateTime?
-  expiresAt         DateTime?
-  respondedAt       DateTime?
-  signerName        String?
-  signerRut         String?
-  signerIp          String?
-  userAgent         String?
-  sentById          String?
-  contentSnapshot   String?
-  clinicaId         String
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-  pdfSnapshotUrl    String?
-  signaturePublicId String?
-  signatureUrl      String?
-  clinica           Clinica     @relation(fields: [clinicaId], references: [id])
-  consentType       ConsentType @relation(fields: [consentTypeId], references: [id])
-  patient           Patient     @relation(fields: [patientId], references: [id])
-  sentBy            User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
+  id                 String      @id @default(uuid())
+  patientId          String
+  consentTypeId      String
+  status             String      @default("pendiente")
+  method             String?
+  token              String?     @unique
+  sentAt             DateTime?
+  expiresAt          DateTime?
+  respondedAt        DateTime?
+  signerName         String?
+  // Tipo del documento guardado en `signerRut` (quien firma).
+  signerDocumentType String      @default("RUT")
+  signerRut          String?
+  signerIp           String?
+  userAgent          String?
+  sentById           String?
+  contentSnapshot    String?
+  clinicaId          String
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  pdfSnapshotUrl     String?
+  signaturePublicId  String?
+  signatureUrl       String?
+  clinica            Clinica     @relation(fields: [clinicaId], references: [id])
+  consentType        ConsentType @relation(fields: [consentTypeId], references: [id])
+  patient            Patient     @relation(fields: [patientId], references: [id])
+  sentBy             User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
 
   @@unique([patientId, consentTypeId])
   @@index([clinicaId])
@@ -611,27 +619,27 @@ model Prestacion {
 // Fórmula usada (Chile, 14/09): precioVenta = costo × (1 + margenPercent/100),
 // redondeado. España queda pendiente — puede usar otra convención de margen.
 model ProductoMarca {
-  id             String          @id @default(uuid())
-  clinicaId      String
-  nombreGenerico String
-  marca          String
-  unidad         String          @default("unidad")
-  costo          Int             @default(0)
+  id                   String          @id @default(uuid())
+  clinicaId            String
+  nombreGenerico       String
+  marca                String
+  unidad               String          @default("unidad")
+  costo                Int             @default(0)
   // Cuántas "unidad" rinde UN envase comprado (ej. 500 UI por vial) — el
   // costo se ingresa por ENVASE, no por unidad. 15/09: encontrado al
   // comparar contra el mockup real de Urbina ("ml/und por vial/jeringa"),
   // que esta versión no tenía — sin esto, costo/margen se aplicaban sobre
   // el envase completo en vez de por unidad real de aplicación.
-  rendimientoPorEnvase Int       @default(1)
-  margenPercent  Int             @default(0)
+  rendimientoPorEnvase Int             @default(1)
+  margenPercent        Int             @default(0)
   // Derivado — se recalcula en el backend cada vez que cambian costo,
   // rendimiento o margen, nunca se edita directo desde el frontend.
   // precioVenta = (costo / rendimientoPorEnvase) × (1 + margenPercent/100)
-  precioVenta    Int             @default(0)
-  active         Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  clinica        Clinica         @relation(fields: [clinicaId], references: [id])
-  items          TreatmentItem[]
+  precioVenta          Int             @default(0)
+  active               Boolean         @default(true)
+  createdAt            DateTime        @default(now())
+  clinica              Clinica         @relation(fields: [clinicaId], references: [id])
+  items                TreatmentItem[]
 
   @@unique([clinicaId, nombreGenerico, marca])
   @@map("productos_marca")
@@ -724,13 +732,13 @@ model AiTokenUsage {
 }
 
 model ExamPhoto {
-  id        String   @id @default(uuid())
+  id        String            @id @default(uuid())
   patientId String
   clinicaId String
   // 'facial' | 'corporal' (14/09, pedido explícito: switch para alternar el
   // registro fotográfico entre rostro y cuerpo) — default 'facial' para no
   // romper las fotos ya tomadas antes de este cambio.
-  area      String   @default("facial")
+  area      String            @default("facial")
   // Facial: 'frontal' | 'perfilDerecho' | '45derecha' | '45izquierda'.
   // Corporal: 'frontal' | 'espalda' | 'perfilIzquierdo' | 'perfilDerecho'.
   slot      String
@@ -739,12 +747,12 @@ model ExamPhoto {
   // Para 'antes' siempre 1. Para 'avance', 1 la primera ronda de avance, 2 la
   // segunda, etc. — permite más de un control en el tiempo sin tocar el
   // esquema de nuevo.
-  round     Int      @default(1)
+  round     Int               @default(1)
   url       String
   publicId  String
-  createdAt DateTime @default(now())
-  clinica   Clinica  @relation(fields: [clinicaId], references: [id])
-  patient   Patient  @relation(fields: [patientId], references: [id])
+  createdAt DateTime          @default(now())
+  clinica   Clinica           @relation(fields: [clinicaId], references: [id])
+  patient   Patient           @relation(fields: [patientId], references: [id])
   markups   ExamPhotoMarkup[]
 
   @@index([patientId, moment, round])
@@ -1050,6 +1058,8 @@ model DocumentFormat {
 model ConsultationPayment {
   id             String   @id @default(uuid())
   clinicaId      String
+  // Tipo del documento guardado en `rut` (del paciente que paga).
+  documentType   String   @default("RUT")
   rut            String
   firstName      String
   lastName       String

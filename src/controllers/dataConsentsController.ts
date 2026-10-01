@@ -8,6 +8,7 @@ import { DEFAULT_CONSENT_TYPES } from '../lib/consentTypes';
 import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildConsentPdf } from '../lib/consentPdf';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { isDocumentType, isValidDocument, normalizeDocument, PERSON_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 
 // El tipo de consentimiento puede tener un PDF propio de la clínica (reemplaza
 // el texto legal). Si el consentimiento tiene una copia congelada de ese PDF
@@ -333,7 +334,13 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
   if (!signerName?.trim()) {
     return res.status(400).json({ error: 'El nombre es requerido' });
   }
-  if (!signerRut || !isValidRut(signerRut)) {
+  const signerDocumentType: DocumentType = isDocumentType((req.body as { signerDocumentType?: string }).signerDocumentType)
+    ? ((req.body as { signerDocumentType?: string }).signerDocumentType as DocumentType)
+    : 'RUT';
+  if (!PERSON_DOCUMENT_TYPES.includes(signerDocumentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para quien firma' });
+  }
+  if (!signerRut || !isValidDocument(signerDocumentType, signerRut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
   // Obligatoria para aceptar; nunca se pide para rechazar (ver comentario en el schema).
@@ -358,7 +365,8 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
       status: decision,
       respondedAt,
       signerName: signerName.trim(),
-      signerRut: cleanRut(signerRut),
+      signerRut: normalizeDocument(signerDocumentType, signerRut),
+      signerDocumentType,
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
@@ -392,6 +400,14 @@ export async function respondInPerson(
     signatureDataUrl?: string;
   };
 
+  // Quien firma es una persona: RUT, DNI, NIE o pasaporte, nunca un CIF.
+  const signerDocumentType: DocumentType = isDocumentType((req.body as { signerDocumentType?: string }).signerDocumentType)
+    ? ((req.body as { signerDocumentType?: string }).signerDocumentType as DocumentType)
+    : 'RUT';
+  if (!PERSON_DOCUMENT_TYPES.includes(signerDocumentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para quien firma' });
+  }
+
   const patient = await prisma.patient.findUnique({ where: { id: req.params.patientId } });
   if (!patient || patient.clinicaId !== req.user!.clinicaId) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -417,7 +433,7 @@ export async function respondInPerson(
   if (!signerName?.trim()) {
     return res.status(400).json({ error: 'El nombre es requerido' });
   }
-  if (!signerRut || !isValidRut(signerRut)) {
+  if (!signerRut || !isValidDocument(signerDocumentType, signerRut)) {
     return res.status(400).json({ error: 'El RUT ingresado no es válido' });
   }
   // Obligatoria para aceptar; nunca se pide para rechazar (ver comentario en el schema).
@@ -446,7 +462,8 @@ export async function respondInPerson(
       respondedAt,
       method: 'presencial',
       signerName: signerName.trim(),
-      signerRut: cleanRut(signerRut),
+      signerRut: normalizeDocument(signerDocumentType, signerRut),
+      signerDocumentType,
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       contentSnapshot: consentType.legalText,
@@ -461,7 +478,8 @@ export async function respondInPerson(
       respondedAt,
       method: 'presencial',
       signerName: signerName.trim(),
-      signerRut: cleanRut(signerRut),
+      signerRut: normalizeDocument(signerDocumentType, signerRut),
+      signerDocumentType,
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       contentSnapshot: consentType.legalText,

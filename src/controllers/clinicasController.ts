@@ -7,6 +7,7 @@ import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModule
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
 import { cleanRut, isValidRut } from '../utils/rut';
+import { isDocumentType, isValidDocument, normalizeDocument, COMPANY_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import {
   fetchRemoteAppointments,
   fetchRemoteClinics,
@@ -187,8 +188,15 @@ export async function create(req: Request, res: Response) {
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la clínica es requerido' });
   }
-  if (rut?.trim() && !isValidRut(rut)) {
-    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  // La clínica es una EMPRESA: en España le corresponde CIF, no DNI.
+  const documentType: DocumentType = isDocumentType((req.body as { documentType?: string }).documentType)
+    ? ((req.body as { documentType?: string }).documentType as DocumentType)
+    : 'RUT';
+  if (!COMPANY_DOCUMENT_TYPES.includes(documentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para una clínica' });
+  }
+  if (rut?.trim() && !isValidDocument(documentType, rut)) {
+    return res.status(400).json({ error: `El ${documentType} ingresado no es válido` });
   }
   if (tipo !== undefined && !VALID_TIPOS.includes(tipo)) {
     return res.status(400).json({ error: 'Tipo de clínica inválido' });
@@ -209,7 +217,7 @@ export async function create(req: Request, res: Response) {
     return res.status(409).json({ error: `Ya existe un usuario con el email ${normalizedEmail}` });
   }
 
-  const cleanedRut = rut?.trim() ? cleanRut(rut) : null;
+  const cleanedRut = rut?.trim() ? normalizeDocument(documentType, rut) : null;
   if (cleanedRut) {
     const existingRut = await prisma.clinica.findFirst({ where: { rut: cleanedRut } });
     if (existingRut) {
@@ -238,6 +246,7 @@ export async function create(req: Request, res: Response) {
       data: {
         name: name.trim(),
         rut: cleanedRut,
+        documentType,
         tipo: tipo ?? 'dental',
         pais: pais ?? 'Chile',
         logoUrl: logo?.secure_url,
@@ -546,8 +555,15 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   if (pais !== undefined && !VALID_PAISES.includes(pais)) {
     return res.status(400).json({ error: 'País inválido' });
   }
-  if (rut !== undefined && rut.trim() && !isValidRut(rut)) {
-    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+  // Al editar, el tipo puede venir o no: si no viene se conserva el guardado,
+  // porque cambiarlo en silencio dejaría el número validado contra otra regla.
+  const rawEditType = (req.body as { documentType?: string }).documentType;
+  const editDocumentType: DocumentType | undefined = isDocumentType(rawEditType) ? rawEditType : undefined;
+  if (rawEditType !== undefined && !editDocumentType) {
+    return res.status(400).json({ error: 'Tipo de documento no válido' });
+  }
+  if (editDocumentType && !COMPANY_DOCUMENT_TYPES.includes(editDocumentType)) {
+    return res.status(400).json({ error: 'Tipo de documento no válido para una clínica' });
   }
   if (aiTokenLimitMonthly !== undefined && (!Number.isInteger(aiTokenLimitMonthly) || aiTokenLimitMonthly < 0)) {
     return res.status(400).json({ error: 'El límite de tokens de IA debe ser un entero mayor o igual a 0 (0 = sin límite)' });
@@ -567,7 +583,11 @@ export async function update(req: Request<{ id: string }>, res: Response) {
 
   let cleanedRut: string | null | undefined;
   if (rut !== undefined) {
-    cleanedRut = rut.trim() ? cleanRut(rut) : null;
+    const effectiveType: DocumentType = editDocumentType ?? ((clinica.documentType as DocumentType) ?? 'RUT');
+    if (rut.trim() && !isValidDocument(effectiveType, rut)) {
+      return res.status(400).json({ error: `El ${effectiveType} ingresado no es válido` });
+    }
+    cleanedRut = rut.trim() ? normalizeDocument(effectiveType, rut) : null;
     if (cleanedRut) {
       const existingRut = await prisma.clinica.findFirst({
         where: { rut: cleanedRut, id: { not: req.params.id } },
@@ -588,6 +608,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     data: {
       ...(name !== undefined ? { name: name.trim() } : {}),
       ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
+      ...(editDocumentType ? { documentType: editDocumentType } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(tipo !== undefined ? { tipo } : {}),
       ...(pais !== undefined ? { pais } : {}),
