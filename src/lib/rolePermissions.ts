@@ -45,6 +45,7 @@ export const PERMISSION_KEYS = [
   'rx',
   'crearPresupuestos',
   'eliminarEvoluciones',
+  'cartolaGeneral',
   ...GENERAL_PATIENT_PERMISSION_KEYS,
   ...PATIENT_TAB_PERMISSION_KEYS,
 ] as const;
@@ -61,6 +62,12 @@ const ALL_TRUE = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true])) as Re
 // Excepciones de fábrica (el resto parte en true):
 //  - "operador" (recepción) sin "Motivo de consulta": lo completa el profesional
 //    durante la atención, pedido explícito del cliente.
+//  - "cartolaGeneral" parte en true para no cambiarle la cartola a las
+//    clínicas que ya existen. Apagarlo deja al profesional viendo sólo sus
+//    propios presupuestos y abonos, nunca el ingreso total del paciente
+//    (rassul, 30/09: "que tú solamente puedas ver lo que tú vendiste y lo que
+//    tú ganaste... a mí como clínica no me interesa que veas el ingreso
+//    total"). Recepción normalmente lo necesita encendido para poder cobrar.
 //  - NADIE puede anular evoluciones. Es un registro clínico: en Chile no se
 //    puede borrar y hacerlo sería fraude (reunión 30/09) — por eso ni siquiera
 //    se borran, se anulan: quedan a la vista tachadas, con quién, cuándo y por
@@ -81,6 +88,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   rx: 'Módulo Rx',
   crearPresupuestos: 'Crear presupuestos',
   eliminarEvoluciones: 'Anular evoluciones',
+  cartolaGeneral: 'Ver la cartola completa',
   datosPersonales: 'Datos personales',
   datosContacto: 'Datos de contacto',
   antecedentesMedicos: 'Antecedentes médicos',

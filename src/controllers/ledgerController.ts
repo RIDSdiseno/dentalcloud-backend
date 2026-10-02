@@ -4,6 +4,7 @@ import { buildCartolaPdf } from '../lib/cartolaPdf';
 import { send as sendEmail } from '../lib/emailService';
 import { buildDebtReminderEmailHtml } from '../lib/emailTemplates/debtReminderEmail';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 
 const MOVEMENT_TYPES = ['abono', 'interes', 'ajuste'];
 const TYPE_LABELS: Record<string, string> = { abono: 'Abono', interes: 'Interés', ajuste: 'Ajuste' };
@@ -13,8 +14,18 @@ const movementInclude = {
   treatmentPlan: { select: { id: true, number: true, name: true } },
 } as const;
 
-async function computeSummaryData(patientId: string) {
-  const [plans, movements] = await Promise.all([
+// "Cartola propia" (reunión 30/09, tarea 8): con `cartolaGeneral` apagado, el
+// profesional ve únicamente sus propios presupuestos y los abonos/intereses/
+// ajustes que cuelgan de ellos. Los abonos libres (no atados a un
+// presupuesto) desaparecen solos al filtrar, que es lo correcto: son plata de
+// la clínica y no se pueden atribuir a nadie.
+//
+// Ojo: un presupuesto que nació en Dental-Demo-Back no tiene `professionalId`
+// real (sólo el nombre como texto, ver el schema), así que no le aparece a
+// nadie en la cartola propia. Es la misma brecha de la federación que ya
+// afecta a las liquidaciones (bug 4).
+async function computeSummaryData(patientId: string, onlyProfessionalId?: string | null) {
+  const [allPlans, allMovements] = await Promise.all([
     prisma.treatmentPlan.findMany({
       where: { patientId },
       include: {
@@ -32,6 +43,14 @@ async function computeSummaryData(patientId: string) {
       orderBy: { createdAt: 'asc' },
     }),
   ]);
+
+  const plans = onlyProfessionalId
+    ? allPlans.filter((plan) => plan.professionalId === onlyProfessionalId)
+    : allPlans;
+  const visiblePlanIds = new Set(plans.map((plan) => plan.id));
+  const movements = onlyProfessionalId
+    ? allMovements.filter((m) => m.treatmentPlanId && visiblePlanIds.has(m.treatmentPlanId))
+    : allMovements;
 
   const planRows = plans.map((plan) => {
     const planMovements = movements.filter((m) => m.treatmentPlanId === plan.id);
@@ -124,6 +143,13 @@ async function computeSummaryData(patientId: string) {
   };
 }
 
+// null = ve la cartola completa; un id = ve sólo lo suyo.
+async function cartolaScope(req: Request): Promise<string | null> {
+  const permissions = await resolveRequestPermissions(req);
+  if (permissions === 'full-access' || permissions === 'no-clinic') return null;
+  return permissions.cartolaGeneral ? null : req.user!.sub;
+}
+
 async function assertPatientAccess(req: Request, patientId: string) {
   const patient = await prisma.patient.findUnique({ where: { id: patientId } });
   if (!patient || (req.user!.role !== 'super_admin' && patient.clinicaId !== req.user!.clinicaId)) {
@@ -142,8 +168,9 @@ export async function summary(req: Request, res: Response) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
-  const data = await computeSummaryData(patientId);
-  return res.json(data);
+  const onlyMine = await cartolaScope(req);
+  const data = await computeSummaryData(patientId, onlyMine);
+  return res.json({ ...data, soloPropia: onlyMine !== null });
 }
 
 export async function summaryPdf(req: Request, res: Response) {
@@ -154,6 +181,12 @@ export async function summaryPdf(req: Request, res: Response) {
   const patient = await assertPatientAccess(req, patientId);
   if (!patient) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
+  }
+
+  if (await cartolaScope(req)) {
+    return res.status(403).json({
+      error: 'La cartola en PDF lleva el total del paciente; tu perfil sólo puede ver sus propios presupuestos',
+    });
   }
 
   const clinica = await prisma.clinica.findUnique({ where: { id: patient.clinicaId } });
@@ -183,7 +216,7 @@ export async function balance(req: Request, res: Response) {
     return res.status(404).json({ error: 'Paciente no encontrado' });
   }
 
-  const data = await computeSummaryData(patientId);
+  const data = await computeSummaryData(patientId, await cartolaScope(req));
   return res.json({ saldoTotal: data.saldoTotal });
 }
 
@@ -202,6 +235,11 @@ export async function sendCartolaEmail(req: Request, res: Response) {
   }
   if (!patient.email) {
     return res.status(400).json({ error: 'El paciente no tiene un correo registrado' });
+  }
+  if (await cartolaScope(req)) {
+    return res.status(403).json({
+      error: 'La cartola que se le envía al paciente lleva el total; tu perfil sólo puede ver sus propios presupuestos',
+    });
   }
 
   const data = await computeSummaryData(patientId);
@@ -322,6 +360,17 @@ export async function removeMovement(req: Request<{ id: string }>, res: Response
   const isOwnerOrAdmin = req.user!.role === 'admin' || movement.registeredById === req.user!.sub;
   if (!isOwnerOrAdmin) {
     return res.status(403).json({ error: 'Solo quien registró el movimiento o un administrador puede eliminarlo' });
+  }
+  // Con la cartola propia sólo se ven los movimientos de los presupuestos
+  // propios; borrar uno ajeno sería borrar algo que ni siquiera aparece.
+  const onlyMine = await cartolaScope(req);
+  if (onlyMine) {
+    const plan = movement.treatmentPlanId
+      ? await prisma.treatmentPlan.findUnique({ where: { id: movement.treatmentPlanId } })
+      : null;
+    if (!plan || plan.professionalId !== onlyMine) {
+      return res.status(403).json({ error: 'Este movimiento no pertenece a un presupuesto tuyo' });
+    }
   }
   await prisma.ledgerMovement.delete({ where: { id: req.params.id } });
   return res.status(204).send();
