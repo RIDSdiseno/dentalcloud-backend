@@ -17,7 +17,41 @@ const include = {
   anuladaPor: { select: { id: true, name: true } },
   treatmentItem: { select: { id: true, description: true, treatmentPlanId: true } },
   photos: { orderBy: { createdAt: 'asc' as const } },
+  examRounds: { orderBy: { createdAt: 'asc' as const } },
 } as const;
+
+// Avances del Examen Estético que la evolución muestra (tarea 18). Son una
+// referencia, no una copia: las fotos siguen viviendo en el Examen Estético.
+const EXAM_ROUND_SOURCES = ['facial', 'corporal', 'facialAvanzado', 'video'];
+const EXAM_ROUND_MOMENTS = ['antes', 'avance'];
+
+type ExamRoundInput = { source?: string; moment?: string; round?: number };
+
+// Devuelve el error de validación, o null y la lista ya limpia de duplicados
+// (el formulario puede mandar el mismo avance dos veces si se marca y
+// desmarca rápido; la restricción única de la tabla lo rechazaría).
+function parseExamRounds(raw: unknown): { error: string } | { rounds: Required<ExamRoundInput>[] } {
+  if (raw === undefined || raw === null) return { rounds: [] };
+  if (!Array.isArray(raw)) return { error: 'Los avances enlazados deben venir como lista' };
+  const seen = new Set<string>();
+  const rounds: Required<ExamRoundInput>[] = [];
+  for (const item of raw as ExamRoundInput[]) {
+    if (!item || !EXAM_ROUND_SOURCES.includes(item.source ?? '')) {
+      return { error: `El registro del avance debe ser uno de: ${EXAM_ROUND_SOURCES.join(', ')}` };
+    }
+    if (!EXAM_ROUND_MOMENTS.includes(item.moment ?? '')) {
+      return { error: `El momento del avance debe ser uno de: ${EXAM_ROUND_MOMENTS.join(', ')}` };
+    }
+    if (!Number.isInteger(item.round) || (item.round as number) < 1) {
+      return { error: 'El número del avance no es válido' };
+    }
+    const key = `${item.source}|${item.moment}|${item.round}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rounds.push({ source: item.source!, moment: item.moment!, round: item.round! });
+  }
+  return { rounds };
+}
 
 function hasText(html: string) {
   return html.replace(/<[^>]*>/g, '').trim().length > 0;
@@ -60,6 +94,7 @@ export async function create(req: Request, res: Response) {
     productLot?: string;
     productExpiresAt?: string;
     productQuantity?: string;
+    examRounds?: ExamRoundInput[];
   };
   if (!body.patientId) {
     return res.status(400).json({ error: 'patientId es requerido' });
@@ -121,6 +156,11 @@ export async function create(req: Request, res: Response) {
     treatmentItem = item;
   }
 
+  const parsedRounds = parseExamRounds(body.examRounds);
+  if ('error' in parsedRounds) {
+    return res.status(400).json({ error: parsedRounds.error });
+  }
+
   const productName = body.productName?.trim() || null;
   const productLot = body.productLot?.trim() || null;
   const productExpiresAt = body.productExpiresAt ? new Date(body.productExpiresAt) : null;
@@ -137,6 +177,9 @@ export async function create(req: Request, res: Response) {
       productExpiresAt,
       productQuantity,
       clinicaId: req.user!.clinicaId!,
+      examRounds: {
+        create: parsedRounds.rounds.map((r) => ({ ...r, clinicaId: req.user!.clinicaId! })),
+      },
     },
     include,
   });
@@ -173,7 +216,7 @@ export async function create(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const body = req.body as { content?: string; enabled?: boolean };
+  const body = req.body as { content?: string; enabled?: boolean; examRounds?: ExamRoundInput[] };
   const evolution = await prisma.evolution.findUnique({ where: { id: req.params.id } });
   if (!evolution || !belongsToRequesterClinica(evolution, req)) {
     return res.status(404).json({ error: 'Evolución no encontrada' });
@@ -194,11 +237,28 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     return res.status(400).json({ error: 'El contenido de la evolución es requerido' });
   }
 
+  // Los avances se reemplazan por completo: el formulario manda la selección
+  // final, no un diff.
+  let roundsData: Required<ExamRoundInput>[] | null = null;
+  if (body.examRounds !== undefined) {
+    const parsed = parseExamRounds(body.examRounds);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    roundsData = parsed.rounds;
+  }
+
   const updated = await prisma.evolution.update({
     where: { id: req.params.id },
     data: {
       ...(body.content !== undefined ? { content: sanitizeHtml(body.content) } : {}),
       ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+      ...(roundsData
+        ? {
+            examRounds: {
+              deleteMany: {},
+              create: roundsData.map((r) => ({ ...r, clinicaId: evolution.clinicaId })),
+            },
+          }
+        : {}),
     },
     include,
   });

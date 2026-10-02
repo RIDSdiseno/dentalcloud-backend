@@ -88,6 +88,7 @@ model Clinica {
   evolutionTemplates         EvolutionTemplate[]
   evolutions                 Evolution[]
   evolutionPhotos            EvolutionPhoto[]
+  evolutionExamRounds        EvolutionExamRound[]
   evolutionDeletions         EvolutionDeletion[]
   ledgerMovements            LedgerMovement[]
   patients                   Patient[]
@@ -840,13 +841,13 @@ model ClinicalDocument {
 }
 
 model Evolution {
-  id               String           @id @default(uuid())
+  id               String               @id @default(uuid())
   patientId        String
   professionalId   String
   content          String
-  enabled          Boolean          @default(true)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  enabled          Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
   clinicaId        String
   // Procedimiento del presupuesto que esta evolución documenta (opcional —
   // una evolución también puede ser una nota clínica general, sin ítem
@@ -871,12 +872,13 @@ model Evolution {
   anuladaAt        DateTime?
   anuladaPorId     String?
   anulacionMotivo  String?
-  clinica          Clinica          @relation(fields: [clinicaId], references: [id])
-  patient          Patient          @relation(fields: [patientId], references: [id])
-  professional     User             @relation("EvolutionProfessional", fields: [professionalId], references: [id])
-  anuladaPor       User?            @relation("EvolutionAnuladaPor", fields: [anuladaPorId], references: [id])
-  treatmentItem    TreatmentItem?   @relation(fields: [treatmentItemId], references: [id])
+  clinica          Clinica              @relation(fields: [clinicaId], references: [id])
+  patient          Patient              @relation(fields: [patientId], references: [id])
+  professional     User                 @relation("EvolutionProfessional", fields: [professionalId], references: [id])
+  anuladaPor       User?                @relation("EvolutionAnuladaPor", fields: [anuladaPorId], references: [id])
+  treatmentItem    TreatmentItem?       @relation(fields: [treatmentItemId], references: [id])
   photos           EvolutionPhoto[]
+  examRounds       EvolutionExamRound[]
 
   @@index([patientId, createdAt])
   @@index([clinicaId])
@@ -887,6 +889,35 @@ model Evolution {
 // Fotos (antes/después, sticker de lote) tomadas al evolucionar — mismo
 // patrón que TreatmentItemPhoto, pero la Evolución es ahora el lugar
 // "oficial" donde documentar lo que realmente se hizo.
+// Avances del Examen Estetico enlazados a una evolucion (reunion 30/09,
+// tarea 18). El profesional ya saco las fotos en Examen Estetico; desde la
+// evolucion solo elige que avances mostrar, sin volver a subir nada.
+//
+// Se guarda la REFERENCIA al avance (registro + antes/avance + numero), no
+// una copia de las fotos: si despues completan una foto que faltaba en ese
+// avance, aparece sola en la evolucion.
+//
+// `source` separa los cuatro origenes que el profesional elige en pantalla:
+// 'facial' y 'corporal' (Registro fotografico), 'facialAvanzado'
+// (Fotografico avanzado) y 'video' (Registro de video). Los tres primeros
+// coinciden con ExamPhoto.area; 'video' apunta a ExamVideo, que no tiene
+// area propia.
+model EvolutionExamRound {
+  id          String    @id @default(uuid())
+  evolutionId String
+  source      String
+  moment      String
+  round       Int
+  createdAt   DateTime  @default(now())
+  clinicaId   String
+  evolution   Evolution @relation(fields: [evolutionId], references: [id], onDelete: Cascade)
+  clinica     Clinica   @relation(fields: [clinicaId], references: [id])
+
+  @@unique([evolutionId, source, moment, round])
+  @@index([clinicaId])
+  @@map("evolution_exam_rounds")
+}
+
 model EvolutionPhoto {
   id          String    @id @default(uuid())
   evolutionId String
