@@ -19,10 +19,15 @@ export async function getUnsignedProductConsentError(
   const consentType = await prisma.consentType.findUnique({ where: { productoMarcaId } });
   if (!consentType) return null;
 
-  const consent = await prisma.consent.findUnique({
-    where: { patientId_consentTypeId: { patientId, consentTypeId: consentType.id } },
+  // Desde la tarea 16 puede haber un consentimiento por doctor, así que
+  // basta con que ALGUNO esté firmado para dejar pasar el procedimiento: el
+  // candado existe para que no se trate sin consentimiento, no para auditar
+  // cuál doctor lo firmó.
+  const firmado = await prisma.consent.findFirst({
+    where: { patientId, consentTypeId: consentType.id, status: 'firmado' },
+    select: { id: true },
   });
-  if (consent?.status === 'firmado') return null;
+  if (firmado) return null;
 
   return `Falta firmar el consentimiento "${consentType.name}" antes de registrar este tratamiento.`;
 }

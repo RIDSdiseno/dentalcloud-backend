@@ -153,6 +153,7 @@ model User {
   appointmentsCancelled          Appointment[]               @relation("AppointmentCancelledBy")
   clinicalDocuments              ClinicalDocument[]
   consentsSent                   Consent[]                   @relation("ConsentsSentBy")
+  consentsAsProfessional         Consent[]                   @relation("ConsentProfessional")
   consultationPaymentsRegistered ConsultationPayment[]
   evolutions                     Evolution[]                 @relation("EvolutionProfessional")
   evolucionesAnuladas            Evolution[]                 @relation("EvolutionAnuladaPor")
@@ -322,6 +323,12 @@ model ConsentType {
   // genérico) — ver ensureProductConsentType en lib/consentTypes.ts. Null
   // para todos los tipos de siempre (protección de datos, anestesia, etc.).
   productoMarcaId String?   @unique
+  // Los consentimientos CLINICOS son por doctor: el paciente no consiente un
+  // tratamiento en abstracto, consiente que se lo haga ESE profesional. Si lo
+  // atiende otro, hay que firmar uno nuevo (reunion 30/09, tarea 16: "si no,
+  // hay riesgo de demanda"). Los de proteccion de datos, imagenes y grabacion
+  // son de la clinica entera y se firman una sola vez.
+  porProfesional  Boolean   @default(false)
   clinica         Clinica   @relation(fields: [clinicaId], references: [id])
   consents        Consent[]
 
@@ -330,35 +337,48 @@ model ConsentType {
 }
 
 model Consent {
-  id                 String      @id @default(uuid())
-  patientId          String
-  consentTypeId      String
-  status             String      @default("pendiente")
-  method             String?
-  token              String?     @unique
-  sentAt             DateTime?
-  expiresAt          DateTime?
-  respondedAt        DateTime?
-  signerName         String?
+  id                       String      @id @default(uuid())
+  patientId                String
+  consentTypeId            String
+  status                   String      @default("pendiente")
+  method                   String?
+  token                    String?     @unique
+  sentAt                   DateTime?
+  expiresAt                DateTime?
+  respondedAt              DateTime?
+  signerName               String?
   // Tipo del documento guardado en `signerRut` (quien firma).
-  signerDocumentType String      @default("RUT")
-  signerRut          String?
-  signerIp           String?
-  userAgent          String?
-  sentById           String?
-  contentSnapshot    String?
-  clinicaId          String
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
-  pdfSnapshotUrl     String?
-  signaturePublicId  String?
-  signatureUrl       String?
-  clinica            Clinica     @relation(fields: [clinicaId], references: [id])
-  consentType        ConsentType @relation(fields: [consentTypeId], references: [id])
-  patient            Patient     @relation(fields: [patientId], references: [id])
-  sentBy             User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
+  signerDocumentType       String      @default("RUT")
+  signerRut                String?
+  signerIp                 String?
+  userAgent                String?
+  sentById                 String?
+  contentSnapshot          String?
+  clinicaId                String
+  createdAt                DateTime    @default(now())
+  updatedAt                DateTime    @updatedAt
+  pdfSnapshotUrl           String?
+  signaturePublicId        String?
+  signatureUrl             String?
+  // Doctor al que corresponde este consentimiento, cuando el tipo es "por
+  // profesional". Null en los de la clinica (proteccion de datos, imagenes,
+  // grabacion) y en todos los firmados antes de este cambio, que siguen
+  // valiendo tal como se firmaron.
+  professionalId           String?
+  // Firma del doctor en el momento de firmar, copiada de su perfil. Se guarda
+  // aqui y no se lee de User en cada impresion: si el doctor cambia su firma
+  // despues, el documento ya firmado no puede cambiar.
+  professionalSignatureUrl String?
+  clinica                  Clinica     @relation(fields: [clinicaId], references: [id])
+  consentType              ConsentType @relation(fields: [consentTypeId], references: [id])
+  patient                  Patient     @relation(fields: [patientId], references: [id])
+  sentBy                   User?       @relation("ConsentsSentBy", fields: [sentById], references: [id])
+  professional             User?       @relation("ConsentProfessional", fields: [professionalId], references: [id])
 
-  @@unique([patientId, consentTypeId])
+  // Un consentimiento por paciente, tipo y doctor. Postgres considera
+  // distintos los NULL, asi que esto NO impide dos filas sin doctor del mismo
+  // tipo: eso lo cuida el controlador, que busca antes de crear.
+  @@unique([patientId, consentTypeId, professionalId])
   @@index([clinicaId])
   @@map("consents")
 }

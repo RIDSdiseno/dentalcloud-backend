@@ -70,6 +70,14 @@ async function uploadConsentSignature(
   }
 }
 
+async function loadConsentProfessional(professionalId: string | null | undefined) {
+  if (!professionalId) return null;
+  return prisma.user.findUnique({
+    where: { id: professionalId },
+    select: { name: true, rut: true, documentType: true },
+  });
+}
+
 // Envío best-effort del PDF formal al paciente tras firmar — si falla (correo
 // caído, logo inalcanzable, etc.) se registra el error pero no se revierte ni
 // se falla la respuesta HTTP: el consentimiento ya quedó registrado igual.
@@ -78,6 +86,7 @@ async function sendSignedConsentPdf(params: {
   clinica: { name: string; logoUrl: string | null; timbreUrl?: string | null };
   patient: { firstName: string; lastName: string; rut: string; email: string | null };
   consentType: { name: string };
+  professional?: Parameters<typeof buildConsentPdf>[0]['professional'];
   consent: Parameters<typeof buildConsentPdf>[0]['consent'] & { pdfSnapshotUrl?: string | null };
 }) {
   if (!params.patient.email) return;
@@ -87,6 +96,7 @@ async function sendSignedConsentPdf(params: {
       clinica: params.clinica,
       patient: params.patient,
       consentType: params.consentType,
+      professional: params.professional,
       consent: params.consent,
     });
     await sendEmail({
@@ -138,6 +148,37 @@ async function ensureDefaultConsentTypes(clinicaId: string) {
   });
 }
 
+// El doctor que corresponde a un consentimiento, validado contra el tipo.
+// Devuelve `{ error }` para cortar, o `{ professional }` (null en los tipos de
+// la clínica, que no llevan doctor).
+async function resolveConsentProfessional(
+  req: Request,
+  consentType: { porProfesional: boolean; name: string },
+  professionalId: unknown
+): Promise<{ error: string } | { professional: { id: string; name: string; signatureUrl: string | null } | null }> {
+  if (!consentType.porProfesional) {
+    // Un consentimiento de la clínica (protección de datos, imágenes,
+    // grabación) no se ata a nadie: vale igual lo atienda quien lo atienda.
+    return { professional: null };
+  }
+  const id = typeof professionalId === 'string' && professionalId.trim() ? professionalId.trim() : req.user!.sub;
+  const professional = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, name: true, signatureUrl: true, clinicaId: true },
+  });
+  if (!professional || professional.clinicaId !== req.user!.clinicaId) {
+    return { error: 'El profesional seleccionado no existe' };
+  }
+  return { professional };
+}
+
+// Busca el consentimiento de ese paciente, tipo y doctor. No se usa el índice
+// único de Prisma porque éste no acepta null en una llave compuesta, y los
+// consentimientos de la clínica justamente no tienen doctor.
+function findConsent(patientId: string, consentTypeId: string, professionalId: string | null) {
+  return prisma.consent.findFirst({ where: { patientId, consentTypeId, professionalId } });
+}
+
 export async function getTypes(req: Request, res: Response) {
   const clinicaId = req.user!.clinicaId!;
   await ensureDefaultConsentTypes(clinicaId);
@@ -166,6 +207,8 @@ export async function listForPatient(req: Request<{ patientId: string }>, res: R
       respondedAt: true,
       signerName: true,
       signerRut: true,
+      professionalId: true,
+      professional: { select: { id: true, name: true } },
     },
   });
   return res.json({ consents });
@@ -180,7 +223,11 @@ export async function getText(req: Request<{ consentTypeId: string }>, res: Resp
 }
 
 export async function send(req: Request, res: Response) {
-  const { patientId, consentTypeId } = req.body as { patientId?: string; consentTypeId?: string };
+  const { patientId, consentTypeId, professionalId } = req.body as {
+    patientId?: string;
+    consentTypeId?: string;
+    professionalId?: string;
+  };
   if (!patientId || !consentTypeId) {
     return res.status(400).json({ error: 'patientId y consentTypeId son requeridos' });
   }
@@ -196,6 +243,12 @@ export async function send(req: Request, res: Response) {
   if (!consentType || consentType.clinicaId !== patient.clinicaId) {
     return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
   }
+  const resolved = await resolveConsentProfessional(req, consentType, professionalId);
+  if ('error' in resolved) {
+    return res.status(400).json({ error: resolved.error });
+  }
+  const professional = resolved.professional;
+
   const clinica = await prisma.clinica.findUnique({ where: { id: patient.clinicaId } });
 
   const token = crypto.randomBytes(32).toString('hex');
@@ -223,35 +276,26 @@ export async function send(req: Request, res: Response) {
     return res.status(502).json({ error: 'No se pudo enviar el correo. Intenta nuevamente.' });
   }
 
-  const consent = await prisma.consent.upsert({
-    where: { patientId_consentTypeId: { patientId, consentTypeId } },
-    update: {
-      status: 'pendiente',
-      token,
-      sentAt,
-      expiresAt,
-      method: 'email',
-      sentById: req.user!.sub,
-      respondedAt: null,
-      signerName: null,
-      signerRut: null,
-      signerIp: null,
-      userAgent: null,
-      contentSnapshot: consentType.legalText,
-    },
-    create: {
-      patientId,
-      consentTypeId,
-      clinicaId: patient.clinicaId,
-      status: 'pendiente',
-      token,
-      sentAt,
-      expiresAt,
-      method: 'email',
-      sentById: req.user!.sub,
-      contentSnapshot: consentType.legalText,
-    },
-  });
+  const previo = await findConsent(patientId, consentTypeId, professional?.id ?? null);
+  const datos = {
+    status: 'pendiente',
+    token,
+    sentAt,
+    expiresAt,
+    method: 'email',
+    sentById: req.user!.sub,
+    contentSnapshot: consentType.legalText,
+    professionalId: professional?.id ?? null,
+    // La firma del doctor se copia al firmar, no al enviar: si la cambia
+    // mientras tanto, vale la que tenga en ese momento.
+    professionalSignatureUrl: null,
+  };
+  const consent = previo
+    ? await prisma.consent.update({
+        where: { id: previo.id },
+        data: { ...datos, respondedAt: null, signerName: null, signerRut: null, signerIp: null, userAgent: null },
+      })
+    : await prisma.consent.create({ data: { ...datos, patientId, consentTypeId, clinicaId: patient.clinicaId } });
 
   if (consentType.pdfUrl) {
     const pdfSnapshotUrl = await snapshotConsentTypePdf(consentType.pdfUrl, patient.clinicaId, consent.id);
@@ -358,6 +402,17 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
     }
   }
 
+  // La firma del doctor se congela recién ahora, con el consentimiento ya
+  // aceptado: si la cambia después, el documento firmado no cambia con ella.
+  let professionalSignatureUrl: string | null = null;
+  if (decision === 'firmado' && consent.professionalId) {
+    const professional = await prisma.user.findUnique({
+      where: { id: consent.professionalId },
+      select: { signatureUrl: true },
+    });
+    professionalSignatureUrl = professional?.signatureUrl ?? null;
+  }
+
   const respondedAt = new Date();
   const updated = await prisma.consent.update({
     where: { id: consent.id },
@@ -369,6 +424,7 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
       signerDocumentType,
       signerIp: req.ip ?? null,
       userAgent: req.headers['user-agent'] ?? null,
+      professionalSignatureUrl,
       ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
   });
@@ -376,6 +432,7 @@ export async function respond(req: Request<{ token: string }>, res: Response) {
   if (updated.status === 'firmado') {
     await sendSignedConsentPdf({
       clinicaId: consent.clinicaId,
+      professional: await loadConsentProfessional(updated.professionalId),
       clinica: consent.clinica,
       patient: consent.patient,
       consentType: consent.consentType,
@@ -392,12 +449,13 @@ export async function respondInPerson(
   req: Request<{ patientId: string; consentTypeId: string }>,
   res: Response
 ) {
-  const { decision, signerName, signerRut, readConfirmed, signatureDataUrl } = req.body as {
+  const { decision, signerName, signerRut, readConfirmed, signatureDataUrl, professionalId } = req.body as {
     decision?: string;
     signerName?: string;
     signerRut?: string;
     readConfirmed?: boolean;
     signatureDataUrl?: string;
+    professionalId?: string;
   };
 
   // Quien firma es una persona: RUT, DNI, NIE o pasaporte, nunca un CIF.
@@ -417,9 +475,20 @@ export async function respondInPerson(
     return res.status(404).json({ error: 'Tipo de consentimiento no encontrado' });
   }
 
-  const existing = await prisma.consent.findUnique({
-    where: { patientId_consentTypeId: { patientId: patient.id, consentTypeId: consentType.id } },
-  });
+  const resolved = await resolveConsentProfessional(req, consentType, professionalId);
+  if ('error' in resolved) {
+    return res.status(400).json({ error: resolved.error });
+  }
+  const professional = resolved.professional;
+  // Un consentimiento clínico sin la firma del doctor no sirve como respaldo:
+  // es justamente lo que acredita quién se comprometió a hacer el tratamiento.
+  if (professional && !professional.signatureUrl) {
+    return res.status(400).json({
+      error: `${professional.name} todavía no tiene su firma guardada. Debe guardarla en su perfil antes de firmar un consentimiento.`,
+    });
+  }
+
+  const existing = await findConsent(patient.id, consentType.id, professional?.id ?? null);
   if (existing && (existing.status === 'firmado' || existing.status === 'rechazado')) {
     return res.status(409).json({ error: 'Este consentimiento ya fue respondido', status: existing.status });
   }
@@ -455,37 +524,33 @@ export async function respondInPerson(
   }
 
   const respondedAt = new Date();
-  const updated = await prisma.consent.upsert({
-    where: { patientId_consentTypeId: { patientId: patient.id, consentTypeId: consentType.id } },
-    update: {
-      status: decision,
-      respondedAt,
-      method: 'presencial',
-      signerName: signerName.trim(),
-      signerRut: normalizeDocument(signerDocumentType, signerRut),
-      signerDocumentType,
-      signerIp: req.ip ?? null,
-      userAgent: req.headers['user-agent'] ?? null,
-      contentSnapshot: consentType.legalText,
-      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
-    },
-    create: {
-      id: consentId,
-      patientId: patient.id,
-      consentTypeId: consentType.id,
-      clinicaId: patient.clinicaId,
-      status: decision,
-      respondedAt,
-      method: 'presencial',
-      signerName: signerName.trim(),
-      signerRut: normalizeDocument(signerDocumentType, signerRut),
-      signerDocumentType,
-      signerIp: req.ip ?? null,
-      userAgent: req.headers['user-agent'] ?? null,
-      contentSnapshot: consentType.legalText,
-      ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
-    },
-  });
+  const datos = {
+    status: decision,
+    respondedAt,
+    method: 'presencial',
+    signerName: signerName.trim(),
+    signerRut: normalizeDocument(signerDocumentType, signerRut),
+    signerDocumentType,
+    signerIp: req.ip ?? null,
+    userAgent: req.headers['user-agent'] ?? null,
+    contentSnapshot: consentType.legalText,
+    professionalId: professional?.id ?? null,
+    // Se congela la firma que el doctor tiene AHORA: si después la cambia, el
+    // documento ya firmado no puede cambiar con ella.
+    professionalSignatureUrl: decision === 'firmado' ? (professional?.signatureUrl ?? null) : null,
+    ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
+  };
+  const updated = existing
+    ? await prisma.consent.update({ where: { id: existing.id }, data: datos })
+    : await prisma.consent.create({
+        data: {
+          ...datos,
+          id: consentId,
+          patientId: patient.id,
+          consentTypeId: consentType.id,
+          clinicaId: patient.clinicaId,
+        },
+      });
 
   let finalConsent = updated;
   if (consentType.pdfUrl && !existing?.pdfSnapshotUrl) {
@@ -498,7 +563,14 @@ export async function respondInPerson(
   if (finalConsent.status === 'firmado') {
     const clinica = await prisma.clinica.findUnique({ where: { id: patient.clinicaId } });
     if (clinica) {
-      await sendSignedConsentPdf({ clinicaId: patient.clinicaId, clinica, patient, consentType, consent: finalConsent });
+      await sendSignedConsentPdf({
+        clinicaId: patient.clinicaId,
+        clinica,
+        patient,
+        consentType,
+        professional: professional ? await loadConsentProfessional(professional.id) : null,
+        consent: finalConsent,
+      });
     }
   }
 
@@ -524,6 +596,7 @@ export async function getPdf(req: Request<{ id: string }>, res: Response) {
     clinica: consent.clinica,
     patient: consent.patient,
     consentType: consent.consentType,
+    professional: await loadConsentProfessional(consent.professionalId),
     consent,
   });
 

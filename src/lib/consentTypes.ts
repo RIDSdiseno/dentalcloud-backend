@@ -5,30 +5,40 @@ import { CONSENT_LEGAL_TEXT } from './consentText';
 // clínica recibe su propia copia (una fila de ConsentType por clínica) para
 // poder editar su texto legal de forma independiente. `code` es estable y no
 // debe cambiar una vez sembrado — se usa como clave de negocio.
-export const DEFAULT_CONSENT_TYPES: Array<{ code: string; name: string; legalText: string }> = [
+// `porProfesional`: los consentimientos CLINICOS son por doctor — el paciente
+// consiente que se lo haga ESE profesional, y si lo atiende otro hay que
+// firmar uno nuevo (reunion 30/09, tarea 16). Los de proteccion de datos, uso
+// de imagenes, grabacion y autorizacion de representante son de la clinica
+// entera: se firman una sola vez y valen con cualquier doctor.
+export const DEFAULT_CONSENT_TYPES: Array<{
+  code: string;
+  name: string;
+  legalText: string;
+  porProfesional?: boolean;
+}> = [
   { code: 'proteccion_datos', name: 'Protección de datos personales', legalText: CONSENT_LEGAL_TEXT },
   {
-    code: 'tratamiento_general',
+    porProfesional: true, code: 'tratamiento_general',
     name: 'Tratamiento odontológico general',
     legalText: placeholderText('TRATAMIENTO ODONTOLÓGICO GENERAL'),
   },
-  { code: 'anestesia', name: 'Uso de anestesia local', legalText: placeholderText('USO DE ANESTESIA LOCAL') },
+  { porProfesional: true, code: 'anestesia', name: 'Uso de anestesia local', legalText: placeholderText('USO DE ANESTESIA LOCAL') },
   {
-    code: 'cirugia_procedimiento_invasivo',
+    porProfesional: true, code: 'cirugia_procedimiento_invasivo',
     name: 'Cirugía / procedimiento invasivo',
     legalText: placeholderText('CIRUGÍA O PROCEDIMIENTO INVASIVO'),
   },
-  { code: 'endodoncia', name: 'Endodoncia (tratamiento de conducto)', legalText: placeholderText('ENDODONCIA') },
-  { code: 'protesis', name: 'Prótesis fija o removible', legalText: placeholderText('TRATAMIENTO PROTÉSICO') },
-  { code: 'ortodoncia', name: 'Tratamiento de ortodoncia', legalText: placeholderText('TRATAMIENTO DE ORTODONCIA') },
-  { code: 'implantes', name: 'Implantes dentales', legalText: placeholderText('COLOCACIÓN DE IMPLANTES DENTALES') },
-  { code: 'blanqueamiento', name: 'Blanqueamiento dental', legalText: placeholderText('BLANQUEAMIENTO DENTAL') },
+  { porProfesional: true, code: 'endodoncia', name: 'Endodoncia (tratamiento de conducto)', legalText: placeholderText('ENDODONCIA') },
+  { porProfesional: true, code: 'protesis', name: 'Prótesis fija o removible', legalText: placeholderText('TRATAMIENTO PROTÉSICO') },
+  { porProfesional: true, code: 'ortodoncia', name: 'Tratamiento de ortodoncia', legalText: placeholderText('TRATAMIENTO DE ORTODONCIA') },
+  { porProfesional: true, code: 'implantes', name: 'Implantes dentales', legalText: placeholderText('COLOCACIÓN DE IMPLANTES DENTALES') },
+  { porProfesional: true, code: 'blanqueamiento', name: 'Blanqueamiento dental', legalText: placeholderText('BLANQUEAMIENTO DENTAL') },
   {
     code: 'uso_imagenes',
     name: 'Uso de fotografías y registros clínicos',
     legalText: placeholderText('USO DE FOTOGRAFÍAS Y REGISTROS CLÍNICOS'),
   },
-  { code: 'sedacion', name: 'Sedación', legalText: placeholderText('SEDACIÓN') },
+  { porProfesional: true, code: 'sedacion', name: 'Sedación', legalText: placeholderText('SEDACIÓN') },
   {
     code: 'autorizacion_representante_menor',
     name: 'Autorización de representante legal (paciente menor de edad)',
@@ -88,6 +98,9 @@ export async function ensureProductConsentType(producto: {
       name,
       legalText: placeholderText(`APLICACIÓN DE ${producto.nombreGenerico.toUpperCase()} (${producto.marca.toUpperCase()})`),
       productoMarcaId: producto.id,
+      // Aplicar un producto es un acto clínico: el consentimiento es por
+      // doctor, igual que el resto de los tratamientos.
+      porProfesional: true,
       active: true,
     },
   });

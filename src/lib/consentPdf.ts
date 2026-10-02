@@ -1,20 +1,26 @@
 import axios from 'axios';
 import PDFDocument from 'pdfkit';
-import { drawTimbreWatermark } from './pdfClinicHeader';
+import { drawTimbreWatermark, documentLabel, formatDocument } from './pdfClinicHeader';
 
 type ConsentPdfInput = {
   clinica: { name: string; logoUrl: string | null; timbreUrl?: string | null };
-  patient: { firstName: string; lastName: string; rut: string };
+  patient: { firstName: string; lastName: string; rut: string; documentType?: string | null };
   consentType: { name: string };
+  // Doctor al que corresponde el consentimiento. Null en los de la clínica
+  // (protección de datos, imágenes, grabación) y en los firmados antes de la
+  // tarea 16.
+  professional?: { name: string; rut: string | null; documentType?: string | null } | null;
   consent: {
     contentSnapshot: string | null;
     status: string;
     method: string | null;
     signerName: string | null;
     signerRut: string | null;
+    signerDocumentType?: string | null;
     signerIp: string | null;
     respondedAt: Date | null;
     signatureUrl?: string | null;
+    professionalSignatureUrl?: string | null;
   };
 };
 
@@ -40,9 +46,18 @@ async function downloadLogo(logoUrl: string): Promise<Buffer | null> {
   }
 }
 
-export async function buildConsentPdf({ clinica, patient, consentType, consent }: ConsentPdfInput): Promise<Buffer> {
+export async function buildConsentPdf({
+  clinica,
+  patient,
+  consentType,
+  professional,
+  consent,
+}: ConsentPdfInput): Promise<Buffer> {
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
   const signatureBuffer = consent.signatureUrl ? await downloadLogo(consent.signatureUrl) : null;
+  const professionalSignatureBuffer = consent.professionalSignatureUrl
+    ? await downloadLogo(consent.professionalSignatureUrl)
+    : null;
 
   const timbreBuffer = clinica.timbreUrl ? await downloadLogo(clinica.timbreUrl) : null;
 
@@ -71,7 +86,27 @@ export async function buildConsentPdf({ clinica, patient, consentType, consent }
 
   doc.moveDown(1.5);
   doc.fontSize(10).font('Helvetica-Bold').text('Paciente');
-  doc.font('Helvetica').text(`${patient.firstName} ${patient.lastName} — RUT ${patient.rut}`);
+  doc.font('Helvetica').text(
+    `${patient.firstName} ${patient.lastName} — ${documentLabel(patient.documentType)} ${formatDocument(
+      patient.rut,
+      patient.documentType
+    )}`
+  );
+
+  // El doctor que atendió: es lo que convierte esto en un consentimiento
+  // clínico y no en un papel genérico de la clínica (reunión 30/09).
+  if (professional) {
+    doc.moveDown(0.6);
+    doc.font('Helvetica-Bold').text('Profesional tratante');
+    doc.font('Helvetica').text(
+      professional.rut
+        ? `${professional.name} — ${documentLabel(professional.documentType)} ${formatDocument(
+            professional.rut,
+            professional.documentType
+          )}`
+        : professional.name
+    );
+  }
 
   doc.moveDown(1);
   doc.font('Helvetica-Bold').text('Texto del consentimiento');
@@ -83,7 +118,10 @@ export async function buildConsentPdf({ clinica, patient, consentType, consent }
   doc.font('Helvetica');
   doc.text(`Estado: ${STATUS_LABELS[consent.status] ?? consent.status}`);
   if (consent.signerName) {
-    doc.text(`Firmado por: ${consent.signerName}${consent.signerRut ? ` — RUT ${consent.signerRut}` : ''}`);
+    const documento = consent.signerRut
+      ? ` — ${documentLabel(consent.signerDocumentType)} ${formatDocument(consent.signerRut, consent.signerDocumentType)}`
+      : '';
+    doc.text(`Firmado por: ${consent.signerName}${documento}`);
   }
   if (consent.respondedAt) {
     doc.text(`Fecha: ${consent.respondedAt.toLocaleString('es-CL')}`);
@@ -95,14 +133,33 @@ export async function buildConsentPdf({ clinica, patient, consentType, consent }
     doc.text(`IP de origen: ${consent.signerIp}`);
   }
 
-  if (signatureBuffer) {
+  // Firma del paciente y, cuando el consentimiento es por doctor, también la
+  // del profesional: las dos juntas son lo que le da peso al documento.
+  if (signatureBuffer || professionalSignatureBuffer) {
     doc.moveDown(0.8);
-    doc.font('Helvetica-Bold').fontSize(9).text('Firma:');
-    try {
-      doc.image(signatureBuffer, { fit: [220, 90] });
-    } catch {
-      // Formato de imagen no soportado por pdfkit — el resto del PDF sigue igual.
+    const left = doc.page.margins.left;
+    const columnWidth = (doc.page.width - doc.page.margins.left - doc.page.margins.right - 24) / 2;
+    const right = left + columnWidth + 24;
+    const top = doc.y;
+
+    const drawSignature = (buffer: Buffer | null, x: number, titulo: string, pie: string) => {
+      doc.font('Helvetica-Bold').fontSize(9).fillColor('#000000').text(titulo, x, top, { width: columnWidth });
+      if (buffer) {
+        try {
+          doc.image(buffer, x, top + 14, { fit: [columnWidth, 70] });
+        } catch {
+          // Formato no soportado por pdfkit — el resto del PDF sigue igual.
+        }
+      }
+      doc.font('Helvetica').fontSize(8).fillColor('#64748b').text(pie, x, top + 90, { width: columnWidth });
+      doc.fillColor('#000000');
+    };
+
+    drawSignature(signatureBuffer, left, 'Firma del paciente', consent.signerName ?? '');
+    if (professional) {
+      drawSignature(professionalSignatureBuffer, right, 'Firma del profesional', professional.name);
     }
+    doc.y = top + 110;
   }
 
   doc.moveDown(2);
