@@ -1,10 +1,22 @@
 import PDFDocument from 'pdfkit';
-import { drawClinicHeader, type ClinicaPdfInfo } from './pdfClinicHeader';
+import {
+  drawClinicHeader,
+  drawLegalFooter,
+  documentLabel,
+  formatDocument,
+  type ClinicaPdfInfo,
+} from './pdfClinicHeader';
 import { formatRut } from '../utils/rut';
 
 type ExamRequestPdfInput = {
   clinica: ClinicaPdfInfo;
-  patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null };
+  patient: {
+    firstName: string;
+    lastName: string;
+    rut: string;
+    documentType?: string | null;
+    birthDate: Date | null;
+  };
   professional: { name: string } | null;
   exams: string;
   notes: string | null;
@@ -53,7 +65,10 @@ export async function buildExamRequestPdf({
     .font('Helvetica')
     .fontSize(10.5)
     .fillColor(INK)
-    .text(`${patient.firstName} ${patient.lastName}${formatAge(patient.birthDate)} — RUT ${formatRut(patient.rut)}`);
+    .text(
+      `${patient.firstName} ${patient.lastName}${formatAge(patient.birthDate)} — ` +
+        `${documentLabel(patient.documentType)} ${formatDocument(patient.rut, patient.documentType)}`
+    );
   doc.moveDown(0.5);
 
   doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('FECHA', { characterSpacing: 0.4 });
@@ -95,6 +110,8 @@ export async function buildExamRequestPdf({
     .fontSize(7.5)
     .fillColor('#94a3b8')
     .text('Documento generado automáticamente por fordentcloud.', { align: 'center' });
+
+  drawLegalFooter(doc, clinica);
 
   doc.end();
   return finished;

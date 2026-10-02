@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { formatRut } from '../utils/rut';
+import { DOCUMENT_LABELS, isDocumentType } from '../utils/documento';
 
 export type ClinicaPdfInfo = {
   name: string;
@@ -7,8 +8,63 @@ export type ClinicaPdfInfo = {
   address?: string | null;
   phone?: string | null;
   email?: string | null;
+  website?: string | null;
   rut?: string | null;
+  // Tipo del documento guardado en `rut`: una clínica española lleva CIF, no
+  // RUT, y rotularlo mal en un documento clínico no es un detalle.
+  documentType?: string | null;
+  // "Información legal": razón social y datos tributarios, cuando difieren de
+  // los comerciales. Van al pie, no al encabezado — el encabezado es la cara
+  // visible de la clínica, esto es la letra chica.
+  legalName?: string | null;
+  legalAddress?: string | null;
+  legalEmail?: string | null;
+  legalPhone?: string | null;
+  legalWebsite?: string | null;
 };
+
+// "RUT 12.345.678-9" en Chile, "CIF B82480666" en España. `formatRut` sólo
+// sabe de RUT chileno: aplicarlo a un DNI español lo deja irreconocible
+// (12345678Z salía impreso como "1.234.567-8"), y en un documento clínico eso
+// es la identidad equivocada del paciente, no un detalle de formato.
+export function documentLabel(documentType?: string | null): string {
+  return DOCUMENT_LABELS[isDocumentType(documentType) ? documentType : 'RUT'];
+}
+
+export function formatDocument(value: string, documentType?: string | null): string {
+  const type = isDocumentType(documentType) ? documentType : 'RUT';
+  return type === 'RUT' ? formatRut(value) : value;
+}
+
+function documentLine(clinica: ClinicaPdfInfo): string | null {
+  if (!clinica.rut) return null;
+  return `${documentLabel(clinica.documentType)} ${formatDocument(clinica.rut, clinica.documentType)}`;
+}
+
+// Pie con la información legal, sólo si la clínica la cargó. Se dibuja en el
+// flujo normal del documento, al final del contenido: posicionarlo por debajo
+// del margen inferior hacía que PDFKit simplemente no lo pintara.
+export function drawLegalFooter(doc: PDFKit.PDFDocument, clinica: ClinicaPdfInfo): void {
+  const partes = [
+    clinica.legalName,
+    clinica.legalAddress,
+    clinica.legalPhone,
+    clinica.legalEmail,
+    clinica.legalWebsite,
+  ].filter(Boolean);
+  if (partes.length === 0) return;
+
+  doc.moveDown(0.6);
+  doc
+    .font('Helvetica')
+    .fontSize(7)
+    .fillColor(MUTED)
+    .text(partes.join('   ·   '), doc.page.margins.left, doc.y, {
+      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+      align: 'center',
+    });
+  doc.fillColor(INK);
+}
 
 const INK = '#0f172a';
 const MUTED = '#64748b';
@@ -72,13 +128,16 @@ export async function drawClinicHeader(
   doc.font('Helvetica-Bold').fontSize(16).fillColor(INK).text(clinica.name, doc.page.margins.left, logoY, { width: textWidth, lineBreak: false });
 
   let lineY = logoY + 20;
-  const contactLine = [clinica.address, clinica.phone, clinica.email].filter(Boolean).join('   ·   ');
+  const contactLine = [clinica.address, clinica.phone, clinica.email, clinica.website]
+    .filter(Boolean)
+    .join('   ·   ');
   if (contactLine) {
     doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text(contactLine, doc.page.margins.left, lineY, { width: textWidth, lineBreak: false });
     lineY += 13;
   }
-  if (clinica.rut) {
-    doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text(`RUT ${formatRut(clinica.rut)}`, doc.page.margins.left, lineY, { width: textWidth, lineBreak: false });
+  const docLine = documentLine(clinica);
+  if (docLine) {
+    doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text(docLine, doc.page.margins.left, lineY, { width: textWidth, lineBreak: false });
     lineY += 13;
   }
 

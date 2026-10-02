@@ -1,13 +1,33 @@
 import PDFDocument from 'pdfkit';
-import { drawClinicHeader, downloadPdfImage, type ClinicaPdfInfo } from './pdfClinicHeader';
-import { formatRut } from '../utils/rut';
+import {
+  drawClinicHeader,
+  drawLegalFooter,
+  downloadPdfImage,
+  documentLabel,
+  formatDocument,
+  type ClinicaPdfInfo,
+} from './pdfClinicHeader';
 
 type Medicamento = { medicamento: string; indicaciones: string };
 
 type RecetaManualPdfInput = {
   clinica: ClinicaPdfInfo;
-  patient: { firstName: string; lastName: string; rut: string; birthDate: Date | null; address: string | null };
-  professional: { name: string; rut: string | null; signatureUrl: string | null } | null;
+  patient: {
+    firstName: string;
+    lastName: string;
+    rut: string;
+    documentType?: string | null;
+    birthDate: Date | null;
+    address: string | null;
+  };
+  professional: {
+    name: string;
+    rut: string | null;
+    // Una doctora española lleva DNI, no RUT: rotularlo mal en una receta
+    // tampoco es un detalle (mismo criterio que la cabecera de la clínica).
+    documentType?: string | null;
+    signatureUrl: string | null;
+  } | null;
   medicamentos: Medicamento[];
   observaciones: string | null;
   createdAt: Date;
@@ -15,6 +35,11 @@ type RecetaManualPdfInput = {
 
 const INK = '#0f172a';
 const MUTED = '#64748b';
+
+function professionalLine(professional: { name: string; rut: string | null; documentType?: string | null }): string {
+  if (!professional.rut) return professional.name;
+  return `${professional.name} — ${documentLabel(professional.documentType)} ${formatDocument(professional.rut, professional.documentType)}`;
+}
 
 function formatAge(birthDate: Date | null): string {
   if (!birthDate) return '';
@@ -74,12 +99,17 @@ export async function buildRecetaManualPdf({
   const patientName = `${patient.firstName} ${patient.lastName}`.trim();
   const ageSuffix = formatAge(patient.birthDate);
   let leftY = fieldAt(0, rowTop, 'Paciente', ageSuffix ? `${patientName} (${ageSuffix})` : patientName);
-  leftY = fieldAt(0, leftY, 'RUT paciente', formatRut(patient.rut));
+  leftY = fieldAt(
+    0,
+    leftY,
+    `${documentLabel(patient.documentType)} paciente`,
+    formatDocument(patient.rut, patient.documentType)
+  );
   if (patient.address) leftY = fieldAt(0, leftY, 'Dirección', patient.address);
 
   let rightY = fieldAt(1, rowTop, 'Fecha', createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
   if (professional) {
-    rightY = fieldAt(1, rightY, 'Prescrito por', professional.rut ? `${professional.name} — RUT ${formatRut(professional.rut)}` : professional.name);
+    rightY = fieldAt(1, rightY, 'Prescrito por', professionalLine(professional));
   }
 
   doc.x = doc.page.margins.left;
@@ -146,6 +176,8 @@ export async function buildRecetaManualPdf({
       align: 'center',
       lineBreak: false,
     });
+
+  drawLegalFooter(doc, clinica);
 
   doc.end();
   return finished;

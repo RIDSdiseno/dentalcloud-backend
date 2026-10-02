@@ -118,7 +118,11 @@ export async function createExamRequest(req: Request<{ id: string }>, res: Respo
   const [clinica, professional] = await Promise.all([
     prisma.clinica.findUnique({
       where: { id: req.user!.clinicaId! },
-      select: { name: true, logoUrl: true, address: true, phone: true, email: true, rut: true },
+      select: {
+        name: true, logoUrl: true, address: true, phone: true, email: true, website: true,
+        rut: true, documentType: true,
+        legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
+      },
     }),
     prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true } }),
   ]);
@@ -129,7 +133,13 @@ export async function createExamRequest(req: Request<{ id: string }>, res: Respo
   const createdAt = new Date();
   const pdfBuffer = await buildExamRequestPdf({
     clinica,
-    patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut, birthDate: patient.birthDate },
+    patient: {
+      firstName: patient.firstName,
+      lastName: patient.lastName,
+      rut: patient.rut,
+      documentType: patient.documentType,
+      birthDate: patient.birthDate,
+    },
     professional,
     exams: body.exams.trim(),
     notes: body.notes?.trim() || null,
@@ -192,9 +202,13 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
   const [clinica, professional] = await Promise.all([
     prisma.clinica.findUnique({
       where: { id: req.user!.clinicaId! },
-      select: { name: true, logoUrl: true, address: true, phone: true, email: true, rut: true },
+      select: {
+        name: true, logoUrl: true, address: true, phone: true, email: true, website: true,
+        rut: true, documentType: true,
+        legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
+      },
     }),
-    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true, rut: true, signatureUrl: true } }),
+    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true, rut: true, documentType: true, signatureUrl: true } }),
   ]);
   if (!clinica) {
     return res.status(404).json({ error: 'Clínica no encontrada' });
@@ -213,6 +227,7 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
       firstName: patient.firstName,
       lastName: patient.lastName,
       rut: patient.rut,
+      documentType: patient.documentType,
       birthDate: patient.birthDate,
       address: patient.address,
     },
