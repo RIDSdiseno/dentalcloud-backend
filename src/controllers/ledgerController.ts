@@ -193,7 +193,12 @@ export async function summaryPdf(req: Request, res: Response) {
   const data = await computeSummaryData(patientId);
 
   const pdfBuffer = await buildCartolaPdf({
-    clinica: { name: clinica?.name ?? '', logoUrl: clinica?.logoUrl ?? null, pais: clinica?.pais ?? 'Chile' },
+    clinica: {
+      name: clinica?.name ?? '',
+      logoUrl: clinica?.logoUrl ?? null,
+      timbreUrl: clinica?.timbreUrl ?? null,
+      pais: clinica?.pais ?? 'Chile',
+    },
     patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut },
     ...data,
   });
@@ -254,7 +259,12 @@ export async function sendCartolaEmail(req: Request, res: Response) {
   });
 
   const pdfBuffer = await buildCartolaPdf({
-    clinica: { name: clinica?.name ?? '', logoUrl: clinica?.logoUrl ?? null, pais: clinica?.pais ?? 'Chile' },
+    clinica: {
+      name: clinica?.name ?? '',
+      logoUrl: clinica?.logoUrl ?? null,
+      timbreUrl: clinica?.timbreUrl ?? null,
+      pais: clinica?.pais ?? 'Chile',
+    },
     patient: { firstName: patient.firstName, lastName: patient.lastName, rut: patient.rut },
     ...data,
   });

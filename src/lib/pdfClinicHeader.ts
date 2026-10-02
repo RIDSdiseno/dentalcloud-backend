@@ -9,6 +9,9 @@ export type ClinicaPdfInfo = {
   phone?: string | null;
   email?: string | null;
   website?: string | null;
+  // Timbre/sello de la clínica, que se imprime como marca de agua detrás del
+  // contenido (tarea 15). Distinto del logo, que encabeza el documento.
+  timbreUrl?: string | null;
   rut?: string | null;
   // Tipo del documento guardado en `rut`: una clínica española lleva CIF, no
   // RUT, y rotularlo mal en un documento clínico no es un detalle.
@@ -104,6 +107,32 @@ function drawMonogram(doc: PDFKit.PDFDocument, x: number, y: number, size: numbe
 // título del documento. Antes cada PDF dibujaba su propio encabezado por
 // separado y solo mostraba nombre+logo, sin el resto de los datos de la
 // clínica que Configuración > Compañía ya permite cargar.
+// Marca de agua con el timbre de la clínica: grande, centrada y muy tenue,
+// POR DETRÁS del contenido — por eso hay que llamarla antes de escribir nada
+// en la página, no al final (en PDF lo que se dibuja después tapa lo anterior).
+//
+// `pageAdded` no sirve para automatizarlo: se dispara también al crear la
+// primera página, antes de que el buffer del timbre esté descargado. Cada PDF
+// la llama donde corresponde.
+const TIMBRE_OPACITY = 0.07;
+
+export function drawTimbreWatermark(doc: PDFKit.PDFDocument, timbre: Buffer | null): void {
+  if (!timbre) return;
+  const size = Math.min(doc.page.width, doc.page.height) * 0.55;
+  const x = (doc.page.width - size) / 2;
+  const y = (doc.page.height - size) / 2;
+  doc.save();
+  doc.opacity(TIMBRE_OPACITY);
+  try {
+    doc.image(timbre, x, y, { fit: [size, size], align: 'center', valign: 'center' });
+  } catch {
+    // Un timbre ilegible (formato raro, archivo corrupto) no puede romper la
+    // generación del documento: se omite y el PDF sale sin marca de agua.
+  }
+  doc.restore();
+  doc.opacity(1);
+}
+
 export async function drawClinicHeader(
   doc: PDFKit.PDFDocument,
   clinica: ClinicaPdfInfo,

@@ -75,7 +75,7 @@ async function uploadConsentSignature(
 // se falla la respuesta HTTP: el consentimiento ya quedó registrado igual.
 async function sendSignedConsentPdf(params: {
   clinicaId: string;
-  clinica: { name: string; logoUrl: string | null };
+  clinica: { name: string; logoUrl: string | null; timbreUrl?: string | null };
   patient: { firstName: string; lastName: string; rut: string; email: string | null };
   consentType: { name: string };
   consent: Parameters<typeof buildConsentPdf>[0]['consent'] & { pdfSnapshotUrl?: string | null };

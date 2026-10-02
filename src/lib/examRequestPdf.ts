@@ -2,6 +2,8 @@ import PDFDocument from 'pdfkit';
 import {
   drawClinicHeader,
   drawLegalFooter,
+  drawTimbreWatermark,
+  downloadPdfImage,
   documentLabel,
   formatDocument,
   type ClinicaPdfInfo,
@@ -58,6 +60,7 @@ export async function buildExamRequestPdf({
     doc.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
+  drawTimbreWatermark(doc, clinica.timbreUrl ? await downloadPdfImage(clinica.timbreUrl) : null);
   await drawClinicHeader(doc, clinica, 'Solicitud de exámenes previos');
 
   doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('PACIENTE', { characterSpacing: 0.4 });

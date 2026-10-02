@@ -1,6 +1,7 @@
 import { formatMoney } from './paises';
 import axios from 'axios';
 import PDFDocument from 'pdfkit';
+import { drawTimbreWatermark } from './pdfClinicHeader';
 
 type PlanRow = {
   number: number;
@@ -48,7 +49,7 @@ type LedgerRow = {
 };
 
 type CartolaPdfInput = {
-  clinica: { name: string; logoUrl: string | null; pais: string };
+  clinica: { name: string; logoUrl: string | null; timbreUrl?: string | null; pais: string };
   patient: { firstName: string; lastName: string; rut: string };
   plans: PlanRow[];
   totals: Totals;
@@ -203,8 +204,15 @@ export async function buildCartolaPdf({
 }: CartolaPdfInput): Promise<Buffer> {
   const money = (amount: number) => formatMoney(amount, clinica.pais);
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
+  const timbreBuffer = clinica.timbreUrl ? await downloadLogo(clinica.timbreUrl) : null;
 
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 40, bufferPages: true });
+  // La cartola puede tener varias páginas y la marca de agua va DEBAJO del
+  // contenido, así que hay que pintarla al abrir cada una, no al final: en un
+  // PDF lo que se dibuja después tapa lo anterior. La primera página la crea
+  // el constructor, antes de que exista este handler, por eso se pinta a mano.
+  doc.on('pageAdded', () => drawTimbreWatermark(doc, timbreBuffer));
+  drawTimbreWatermark(doc, timbreBuffer);
   const chunks: Buffer[] = [];
   doc.on('data', (chunk) => chunks.push(chunk));
   const finished = new Promise<Buffer>((resolve) => {

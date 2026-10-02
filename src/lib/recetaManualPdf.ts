@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import {
   drawClinicHeader,
   drawLegalFooter,
+  drawTimbreWatermark,
   downloadPdfImage,
   documentLabel,
   formatDocument,
@@ -81,6 +82,9 @@ export async function buildRecetaManualPdf({
     doc.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
+  // El timbre va primero: en PDF lo que se dibuja después tapa lo anterior,
+  // así que la marca de agua tiene que quedar debajo de todo el contenido.
+  drawTimbreWatermark(doc, clinica.timbreUrl ? await downloadPdfImage(clinica.timbreUrl) : null);
   await drawClinicHeader(doc, clinica, 'Receta médica');
 
   const signatureBuffer = professional?.signatureUrl ? await downloadPdfImage(professional.signatureUrl) : null;

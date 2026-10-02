@@ -17,6 +17,7 @@ const COMPANY_SELECT = {
   rut: true,
   pais: true,
   logoUrl: true,
+  timbreUrl: true,
   address: true,
   email: true,
   phone: true,
@@ -134,6 +135,62 @@ export async function updateMyLogo(req: Request, res: Response) {
   const updated = await prisma.clinica.update({
     where: { id: clinicaId },
     data: { logoUrl: logo.secure_url, logoPublicId: logo.public_id },
+    select: COMPANY_SELECT,
+  });
+  return res.json({ company: updated });
+}
+
+// El timbre sigue el mismo camino que el logo, pero en su propia carpeta y
+// con su propio campo: son dos imagenes con usos distintos (el logo encabeza,
+// el timbre sella de fondo).
+export async function updateMyTimbre(req: Request, res: Response) {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'Se requiere un archivo de timbre' });
+  }
+  const clinicaId = req.user!.clinicaId!;
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId } });
+  if (!clinica) return res.status(404).json({ error: 'Clínica no encontrada' });
+
+  const timbre = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: 'image', folder: 'dentalcloud/clinicas/timbres' },
+      (error, result) => {
+        if (error || !result) return reject(error);
+        resolve({ secure_url: result.secure_url, public_id: result.public_id });
+      }
+    );
+    stream.end(file.buffer);
+  });
+
+  if (clinica.timbrePublicId) {
+    await cloudinary.uploader.destroy(clinica.timbrePublicId).catch(() => {
+      // Best-effort, mismo criterio que el logo: que falle el borrado del
+      // anterior no puede bloquear la subida del nuevo.
+    });
+  }
+
+  const updated = await prisma.clinica.update({
+    where: { id: clinicaId },
+    data: { timbreUrl: timbre.secure_url, timbrePublicId: timbre.public_id },
+    select: COMPANY_SELECT,
+  });
+  return res.json({ company: updated });
+}
+
+// Quitar el timbre: sin él, los PDF vuelven a salir limpios.
+export async function removeMyTimbre(req: Request, res: Response) {
+  const clinicaId = req.user!.clinicaId!;
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId } });
+  if (!clinica) return res.status(404).json({ error: 'Clínica no encontrada' });
+
+  if (clinica.timbrePublicId) {
+    await cloudinary.uploader.destroy(clinica.timbrePublicId).catch(() => {});
+  }
+
+  const updated = await prisma.clinica.update({
+    where: { id: clinicaId },
+    data: { timbreUrl: null, timbrePublicId: null },
     select: COMPANY_SELECT,
   });
   return res.json({ company: updated });

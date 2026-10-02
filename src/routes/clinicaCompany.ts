@@ -2,7 +2,13 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { requireAdmin } from '../middleware/requireAdmin';
-import { getCompanyInfo, updateCompanyInfo, updateMyLogo } from '../controllers/clinicaSettingsController';
+import {
+  getCompanyInfo,
+  updateCompanyInfo,
+  updateMyLogo,
+  updateMyTimbre,
+  removeMyTimbre,
+} from '../controllers/clinicaSettingsController';
 
 const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
@@ -16,5 +22,7 @@ router.use(requireAdmin);
 router.get('/', getCompanyInfo);
 router.patch('/', updateCompanyInfo);
 router.patch('/logo', uploadMiddleware.single('logo'), updateMyLogo);
+router.patch('/timbre', uploadMiddleware.single('timbre'), updateMyTimbre);
+router.delete('/timbre', removeMyTimbre);
 
 export default router;

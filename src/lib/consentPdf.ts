@@ -1,8 +1,9 @@
 import axios from 'axios';
 import PDFDocument from 'pdfkit';
+import { drawTimbreWatermark } from './pdfClinicHeader';
 
 type ConsentPdfInput = {
-  clinica: { name: string; logoUrl: string | null };
+  clinica: { name: string; logoUrl: string | null; timbreUrl?: string | null };
   patient: { firstName: string; lastName: string; rut: string };
   consentType: { name: string };
   consent: {
@@ -43,7 +44,11 @@ export async function buildConsentPdf({ clinica, patient, consentType, consent }
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
   const signatureBuffer = consent.signatureUrl ? await downloadLogo(consent.signatureUrl) : null;
 
+  const timbreBuffer = clinica.timbreUrl ? await downloadLogo(clinica.timbreUrl) : null;
+
   const doc = new PDFDocument({ size: 'A4', margin: 56 });
+  doc.on('pageAdded', () => drawTimbreWatermark(doc, timbreBuffer));
+  drawTimbreWatermark(doc, timbreBuffer);
   const chunks: Buffer[] = [];
   doc.on('data', (chunk) => chunks.push(chunk));
   const finished = new Promise<Buffer>((resolve) => {

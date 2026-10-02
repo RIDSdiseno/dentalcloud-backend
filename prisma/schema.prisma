@@ -24,6 +24,11 @@ model Clinica {
   tipo                       String                      @default("dental")
   logoUrl                    String?
   logoPublicId               String?
+  // Timbre/sello de la clinica: se imprime como marca de agua grande y tenue
+  // detras del contenido de la cartola, la receta y el consentimiento
+  // (reunion 30/09, tarea 15). Es distinto del logo, que va en el encabezado.
+  timbreUrl                  String?
+  timbrePublicId             String?
   // Tipo del documento guardado en `rut`. La clínica es una EMPRESA: en España le corresponde CIF, no DNI.
   documentType               String                      @default("RUT")
   rut                        String?                     @unique
