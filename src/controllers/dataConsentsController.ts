@@ -480,13 +480,12 @@ export async function respondInPerson(
     return res.status(400).json({ error: resolved.error });
   }
   const professional = resolved.professional;
-  // Un consentimiento clínico sin la firma del doctor no sirve como respaldo:
-  // es justamente lo que acredita quién se comprometió a hacer el tratamiento.
-  if (professional && !professional.signatureUrl) {
-    return res.status(400).json({
-      error: `${professional.name} todavía no tiene su firma guardada. Debe guardarla en su perfil antes de firmar un consentimiento.`,
-    });
-  }
+  // Antes esto bloqueaba el firmado cuando el doctor no tenía firma guardada.
+  // Se quitó: 223 de 530 profesionales activos no la tienen, así que el
+  // bloqueo habría dejado a casi la mitad sin poder firmar de un día para
+  // otro. Lo que de verdad importa legalmente es que quede registrado QUIÉN
+  // es el doctor, y eso se guarda igual; la firma dibujada es un plus. El
+  // documento dice explícitamente cuando falta, y la pantalla avisa antes.
 
   const existing = await findConsent(patient.id, consentType.id, professional?.id ?? null);
   if (existing && (existing.status === 'firmado' || existing.status === 'rechazado')) {

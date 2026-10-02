@@ -157,7 +157,14 @@ export async function buildConsentPdf({
 
     drawSignature(signatureBuffer, left, 'Firma del paciente', consent.signerName ?? '');
     if (professional) {
-      drawSignature(professionalSignatureBuffer, right, 'Firma del profesional', professional.name);
+      // Si el doctor no tenía firma guardada, el documento lo dice en vez de
+      // dejar un hueco mudo: quien lo lea sabe que falta y por qué.
+      drawSignature(
+        professionalSignatureBuffer,
+        right,
+        'Firma del profesional',
+        professionalSignatureBuffer ? professional.name : `${professional.name} (firma no registrada)`
+      );
     }
     doc.y = top + 110;
   }
