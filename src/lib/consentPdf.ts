@@ -22,6 +22,10 @@ type ConsentPdfInput = {
     signatureUrl?: string | null;
     professionalSignatureUrl?: string | null;
   };
+  /** Quién del equipo registró el consentimiento: lo envió por correo o tomó
+   *  la firma presencial. Es el único rastro del personal en los
+   *  consentimientos de la clínica, que no llevan doctor tratante. */
+  registeredBy?: { name: string } | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -51,6 +55,7 @@ export async function buildConsentPdf({
   patient,
   consentType,
   professional,
+  registeredBy,
   consent,
 }: ConsentPdfInput): Promise<Buffer> {
   const logoBuffer = clinica.logoUrl ? await downloadLogo(clinica.logoUrl) : null;
@@ -131,6 +136,13 @@ export async function buildConsentPdf({
   }
   if (consent.signerIp) {
     doc.text(`IP de origen: ${consent.signerIp}`);
+  }
+  if (registeredBy) {
+    doc.text(
+      consent.method === 'presencial'
+        ? `Registrado por: ${registeredBy.name}`
+        : `Enviado por: ${registeredBy.name}`
+    );
   }
 
   // Firma del paciente y, cuando el consentimiento es por doctor, también la

@@ -70,6 +70,11 @@ async function uploadConsentSignature(
   }
 }
 
+function loadConsentRegisteredBy(userId: string | null | undefined) {
+  if (!userId) return Promise.resolve(null);
+  return prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+}
+
 async function loadConsentProfessional(professionalId: string | null | undefined) {
   if (!professionalId) return null;
   return prisma.user.findUnique({
@@ -87,7 +92,8 @@ async function sendSignedConsentPdf(params: {
   patient: { firstName: string; lastName: string; rut: string; email: string | null };
   consentType: { name: string };
   professional?: Parameters<typeof buildConsentPdf>[0]['professional'];
-  consent: Parameters<typeof buildConsentPdf>[0]['consent'] & { pdfSnapshotUrl?: string | null };
+  registeredBy?: Parameters<typeof buildConsentPdf>[0]['registeredBy'];
+  consent: Parameters<typeof buildConsentPdf>[0]['consent'] & { pdfSnapshotUrl?: string | null; sentById?: string | null };
 }) {
   if (!params.patient.email) return;
   try {
@@ -97,6 +103,7 @@ async function sendSignedConsentPdf(params: {
       patient: params.patient,
       consentType: params.consentType,
       professional: params.professional,
+      registeredBy: params.registeredBy ?? (await loadConsentRegisteredBy(params.consent.sentById)),
       consent: params.consent,
     });
     await sendEmail({
@@ -527,6 +534,12 @@ export async function respondInPerson(
     status: decision,
     respondedAt,
     method: 'presencial',
+    // Quién del equipo tomó la firma. Antes sólo se guardaba al enviar por
+    // correo, así que de una firma presencial no quedaba rastro de quién
+    // estuvo presente — ni siquiera en los consentimientos de la clínica, que
+    // no llevan doctor asignado. `sentBy` es el responsable del registro: al
+    // enviar es quien lo mandó, al firmar presencial es quien lo tomó.
+    sentById: req.user!.sub,
     signerName: signerName.trim(),
     signerRut: normalizeDocument(signerDocumentType, signerRut),
     signerDocumentType,
@@ -596,6 +609,7 @@ export async function getPdf(req: Request<{ id: string }>, res: Response) {
     patient: consent.patient,
     consentType: consent.consentType,
     professional: await loadConsentProfessional(consent.professionalId),
+    registeredBy: await loadConsentRegisteredBy(consent.sentById),
     consent,
   });
 
