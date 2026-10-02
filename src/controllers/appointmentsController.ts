@@ -99,6 +99,11 @@ export async function list(req: Request, res: Response) {
   const chairId = typeof req.query.chairId === 'string' ? req.query.chairId : undefined;
   const patientId = typeof req.query.patientId === 'string' ? req.query.patientId : undefined;
   const mineOnly = req.query.mine === 'true';
+  // Por defecto la agenda NO trae las canceladas: esa hora volvió a estar
+  // libre y mostrarlas en la parrilla haría parecer el sillón ocupado. Con
+  // `status=cancelada` se piden justamente esas, para listarlas aparte
+  // (reunión 30/09: "que quede registrada en segundo plano").
+  const onlyCancelled = req.query.status === 'cancelada';
 
   let rangeStart: Date | undefined;
   let rangeEnd: Date | undefined;
@@ -123,7 +128,11 @@ export async function list(req: Request, res: Response) {
     where: {
       clinicaId: req.user!.clinicaId!,
       ...(rangeStart ? { startAt: { gte: rangeStart, lte: rangeEnd } } : {}),
-      ...(patientId ? { patientId } : { status: { not: 'cancelada' } }),
+      ...(patientId
+        ? { patientId }
+        : onlyCancelled
+          ? { status: 'cancelada' }
+          : { status: { not: 'cancelada' } }),
       ...(chairId ? { chairId } : {}),
       ...(restrictToOwn ? { professionalId: req.user!.sub } : {}),
     },
