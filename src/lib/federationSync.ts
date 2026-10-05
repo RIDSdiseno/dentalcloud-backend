@@ -219,7 +219,10 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
     }),
     prisma.patient.findUnique({ where: { id: appointment.patientId }, select: { federatedPatientId: true } }),
     appointment.professionalId
-      ? prisma.user.findUnique({ where: { id: appointment.professionalId }, select: { name: true } })
+      ? prisma.user.findUnique({
+          where: { id: appointment.professionalId },
+          select: { name: true, federatedUserId: true },
+        })
       : Promise.resolve(null),
     prisma.chair.findUnique({ where: { id: appointment.chairId }, select: { name: true, number: true } }),
   ]);
@@ -248,6 +251,9 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
     status: appointment.status,
     notes: appointment.notes,
     professionalName: professional?.name ?? undefined,
+    // Sin esto la cita espejada llega sin profesional y la liquidación de
+    // Gestión no la puede atribuir (bug 4 de la reunión del 30/09).
+    professionalExternalId: professional?.federatedUserId ?? undefined,
     box: chair ? chair.name || `Sillón ${chair.number}` : undefined,
   };
 
@@ -276,7 +282,9 @@ export async function syncTreatmentPlanToFederation(plan: TreatmentPlan): Promis
   const [convenio, prevision, professional] = await Promise.all([
     plan.convenioId ? prisma.convenio.findUnique({ where: { id: plan.convenioId }, select: { federatedConvenioId: true } }) : null,
     plan.previsionId ? prisma.prevision.findUnique({ where: { id: plan.previsionId }, select: { federatedPrevisionId: true } }) : null,
-    plan.professionalId ? prisma.user.findUnique({ where: { id: plan.professionalId }, select: { name: true } }) : null,
+    plan.professionalId
+      ? prisma.user.findUnique({ where: { id: plan.professionalId }, select: { name: true, federatedUserId: true } })
+      : null,
   ]);
 
   const payload = {
@@ -289,9 +297,12 @@ export async function syncTreatmentPlanToFederation(plan: TreatmentPlan): Promis
     // (catálogo federado) — si no, se omiten en vez de bloquear el sync del plan.
     agreementId: convenio?.federatedConvenioId ?? undefined,
     previsionId: prevision?.federatedPrevisionId ?? undefined,
-    // Dental-Demo-Back no tiene la cuenta de este profesional (no hay
-    // federación de staff) — se manda sólo el nombre, como dato informativo.
     professionalName: professional?.name ?? undefined,
+    // El id del profesional del otro lado: es lo que permite que Gestión
+    // atribuya el plan (y después sus abonos) a alguien en la liquidación.
+    // Si el profesional todavía no tiene espejo, viaja sólo el nombre y el
+    // plan queda sin atribuir, igual que antes.
+    professionalExternalId: professional?.federatedUserId ?? undefined,
     planType: plan.diagramType === 'estetica' ? ('ESTHETIC' as const) : ('DENTAL' as const),
     facialGender: plan.facialGender ?? undefined,
     facialAnnotations: plan.facialAnnotations ?? undefined,

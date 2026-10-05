@@ -111,10 +111,14 @@ export type MirrorAppointmentInput = {
   endAt: string;
   status: string;
   notes?: string | null;
-  // Dental-Demo-Back no federa cuentas de profesional (no hay User real del
-  // otro lado) — se manda solo el nombre, como dato informativo, igual que
-  // ya se hace para TreatmentPlan.
+  // El nombre del profesional, como dato informativo de respaldo.
   professionalName?: string | null;
+  // Id del profesional EN Dental-Demo-Back (`User.federatedUserId`). Las
+  // cuentas de staff sí se federan — el comentario que decía lo contrario
+  // quedó viejo. Sin este id, la cita espejada llega sin profesional y la
+  // liquidación de Gestión no la puede atribuir a nadie: ése era el bug 4 de
+  // la reunión del 30/09 ("las liquidaciones no reciben las atenciones").
+  professionalExternalId?: string | null;
   // Sillón/box asignado en DentalCloud (no hay federación de recursos
   // físicos), viaja como texto ("Sillón 2", o el nombre propio del sillón).
   box?: string | null;
@@ -145,6 +149,9 @@ export type MirrorTreatmentPlanInput =
       agreementId?: string;
       previsionId?: string;
       professionalName?: string;
+      // Mismo motivo que en la cita: sin el id, el plan espejado queda sin
+      // profesional y sus abonos no se pueden liquidar.
+      professionalExternalId?: string | null;
       // 'DENTAL' | 'ESTHETIC' — mismo vocabulario que Dental-Demo-Back's
       // TreatmentPlanType enum, derivado de TreatmentPlan.diagramType
       // ('dental'|'estetica') del lado de DentalCloud.
