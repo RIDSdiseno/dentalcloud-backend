@@ -4,6 +4,8 @@ import cloudinary from '../lib/cloudinary';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
 import { buildRecetaManualPdf } from '../lib/recetaManualPdf';
+import { send as sendEmail } from '../lib/emailService';
+import { buildRecetaEmailHtml } from '../lib/emailTemplates/recetaEmail';
 
 export const DOCUMENT_CATEGORIES = [
   'receta',
@@ -263,7 +265,40 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
       },
       include,
     });
-    return res.status(201).json({ document });
+
+    // Enviar la receta al correo del paciente (tarea 13 de la reunión del
+    // 30/09: "no tienen la opción... todavía no"). Best-effort: si el
+    // paciente no tiene correo, o el envío falla, la receta ya quedó
+    // guardada igual — no se pierde el trabajo del profesional por un
+    // problema de correo. Sale desde el correo configurado de la clínica
+    // (Configuración > Notificaciones); si no lo configuraron, sale desde el
+    // de la plataforma.
+    if (patient.email) {
+      sendEmail({
+        to: patient.email,
+        subject: `Tu receta médica — ${clinica.name}`,
+        html: buildRecetaEmailHtml({
+          patientFirstName: patient.firstName,
+          clinicaNombre: clinica.name,
+          clinicaLogoUrl: clinica.logoUrl,
+          profesionalNombre: professional.name,
+          medicamentos,
+          observaciones: body.observaciones?.trim() || null,
+        }),
+        clinicaId: req.user!.clinicaId!,
+        attachments: [
+          {
+            filename: `receta-${createdAt.toISOString().slice(0, 10)}.pdf`,
+            contentBytes: pdfBuffer.toString('base64'),
+            contentType: 'application/pdf',
+          },
+        ],
+      }).catch((err) => {
+        console.error('No se pudo enviar la receta por correo', err);
+      });
+    }
+
+    return res.status(201).json({ document, emailSentTo: patient.email ?? null });
   } catch (err) {
     console.error('Error generando/subiendo la receta manual', err);
     return res.status(502).json({ error: 'No se pudo generar la receta. Intenta nuevamente.' });
