@@ -139,6 +139,33 @@ export async function mirrorAppointmentToDentalDemo(input: MirrorAppointmentInpu
   return data;
 }
 
+// Espejo de un abono de la cartola hacia Dental-Demo-Back, donde se convierte
+// en un ClinicIncome (bug 4 de la reunión del 30/09). Va colgado del
+// presupuesto espejado, que es quien lleva el profesional: de ahí sale la
+// atribución en la liquidación.
+export type MirrorIncomeInput =
+  | {
+      clinicId: string;
+      externalId: string;
+      patientId: string;
+      // Id del presupuesto YA resuelto al del otro lado
+      // (`TreatmentPlan.federatedTreatmentPlanId`). Sin él el abono se espeja
+      // igual, pero no participa de ninguna liquidación: no hay a quién
+      // atribuirlo.
+      treatmentPlanId?: string | null;
+      amount: number;
+      incomeDate: string;
+      description?: string | null;
+      paymentMethod?: string | null;
+      documentNumber?: string | null;
+    }
+  | { externalId: string; removed: true };
+
+export async function mirrorIncomeToDentalDemo(input: MirrorIncomeInput) {
+  const { data } = await dentalDemo.post<{ id: string | null }>('/api/platform/federated/incomes/mirror', input);
+  return data;
+}
+
 export type MirrorTreatmentPlanInput =
   | {
       patientId: string;

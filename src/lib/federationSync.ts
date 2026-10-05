@@ -1,4 +1,4 @@
-import type { Appointment, Clinica, Convenio, Patient, Prestacion, Prevision, Sucursal, TreatmentItem, TreatmentItemPhoto, TreatmentPlan, User } from '@prisma/client';
+import type { Appointment, Clinica, Convenio, LedgerMovement, Patient, Prestacion, Prevision, Sucursal, TreatmentItem, TreatmentItemPhoto, TreatmentPlan, User } from '@prisma/client';
 import prisma from './prisma';
 import {
   isFederationConfigured,
@@ -13,6 +13,7 @@ import {
   mirrorTreatmentItemPhotoToDentalDemo,
   mirrorTreatmentPlanToDentalDemo,
   mirrorUserToDentalDemo,
+  mirrorIncomeToDentalDemo,
 } from './federationClient';
 
 type EntityType =
@@ -29,7 +30,8 @@ type EntityType =
   | 'PRESTACION'
   | 'PREVISION'
   | 'USER'
-  | 'SUCURSAL';
+  | 'SUCURSAL'
+  | 'LEDGER_MOVEMENT';
 
 async function recordSyncFailure(entityType: EntityType, localId: string, payload: unknown, error: unknown) {
   const lastError = error instanceof Error ? error.message : String(error);
@@ -265,6 +267,67 @@ export async function syncAppointmentToFederation(appointment: Appointment): Pro
     await clearSyncFailure('APPOINTMENT', appointment.id);
   } catch (error) {
     await recordSyncFailure('APPOINTMENT', appointment.id, payload, error);
+  }
+}
+
+// Espeja un abono de la cartola como ingreso en Dental-Demo-Back. Hasta ahora
+// los abonos se quedaban sólo acá y la liquidación de cada profesional salía
+// vacía — no había ingresos que atribuirle (bug 4, reunión del 30/09).
+export async function syncLedgerMovementToFederation(movement: LedgerMovement): Promise<void> {
+  if (!isFederationConfigured()) return;
+  // Sólo los abonos son ingresos. Intereses y ajustes son correcciones de la
+  // cuenta del paciente, no plata que entró.
+  if (movement.type !== 'abono') return;
+  // Si vino DESDE Gestión, devolverlo sería un ida y vuelta sin sentido.
+  if (movement.federatedIncomeId) return;
+
+  const clinica = await prisma.clinica.findUnique({
+    where: { id: movement.clinicaId },
+    select: { federatedClinicId: true, federationCatalogOnly: true, federationPaused: true, federationSyncSettings: true },
+  });
+  if (!clinica?.federatedClinicId) return;
+  if (clinica.federationCatalogOnly || clinica.federationPaused) return;
+  if (!isSyncKeyEnabled(clinica.federationSyncSettings, 'treatmentPlans')) return;
+
+  const [patient, plan] = await Promise.all([
+    prisma.patient.findUnique({ where: { id: movement.patientId }, select: { federatedPatientId: true } }),
+    movement.treatmentPlanId
+      ? prisma.treatmentPlan.findUnique({
+          where: { id: movement.treatmentPlanId },
+          select: { federatedTreatmentPlanId: true },
+        })
+      : Promise.resolve(null),
+  ]);
+  if (!patient?.federatedPatientId) return; // paciente sin espejo: nada que colgar
+
+  const payload = {
+    clinicId: clinica.federatedClinicId,
+    externalId: movement.id,
+    patientId: patient.federatedPatientId,
+    treatmentPlanId: plan?.federatedTreatmentPlanId ?? undefined,
+    amount: movement.haber,
+    incomeDate: movement.createdAt.toISOString(),
+    description: movement.description ?? undefined,
+    paymentMethod: movement.paymentMethod ?? undefined,
+    documentNumber: movement.documentNumber ?? undefined,
+  };
+
+  try {
+    await mirrorIncomeToDentalDemo(payload);
+    await clearSyncFailure('LEDGER_MOVEMENT', movement.id);
+  } catch (error) {
+    await recordSyncFailure('LEDGER_MOVEMENT', movement.id, payload, error);
+  }
+}
+
+// Un abono borrado en la cartola se archiva del otro lado en vez de
+// desaparecer: si ya se liquidó, borrarlo dejaría la liquidación sin respaldo.
+export async function syncLedgerMovementRemovalToFederation(movementId: string): Promise<void> {
+  if (!isFederationConfigured()) return;
+  try {
+    await mirrorIncomeToDentalDemo({ externalId: movementId, removed: true });
+  } catch (error) {
+    console.error('No se pudo archivar el abono espejado en Dental-Demo-Back', error);
   }
 }
 

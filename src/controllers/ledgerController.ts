@@ -4,6 +4,7 @@ import { buildCartolaPdf } from '../lib/cartolaPdf';
 import { send as sendEmail } from '../lib/emailService';
 import { buildDebtReminderEmailHtml } from '../lib/emailTemplates/debtReminderEmail';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
+import { syncLedgerMovementToFederation, syncLedgerMovementRemovalToFederation } from '../lib/federationSync';
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 
 const MOVEMENT_TYPES = ['abono', 'interes', 'ajuste'];
@@ -359,6 +360,15 @@ export async function createMovement(req: Request, res: Response) {
     },
     include: movementInclude,
   });
+
+  // El abono viaja a Gestión como ingreso, que es de donde salen las
+  // liquidaciones de cada profesional (bug 4 de la reunión del 30/09).
+  // Best-effort: si falla queda registrado para reintentar, pero nunca
+  // bloquea el registro del abono en la cartola.
+  syncLedgerMovementToFederation(movement).catch((err) => {
+    console.error('No se pudo sincronizar el abono con Dental-Demo-Back', err);
+  });
+
   return res.status(201).json({ movement });
 }
 
@@ -383,5 +393,12 @@ export async function removeMovement(req: Request<{ id: string }>, res: Response
     }
   }
   await prisma.ledgerMovement.delete({ where: { id: req.params.id } });
+
+  // Se archiva el espejo en vez de borrarlo: si ese ingreso ya entró en una
+  // liquidación, borrarlo la dejaría sin respaldo.
+  syncLedgerMovementRemovalToFederation(req.params.id).catch((err) => {
+    console.error('No se pudo archivar el abono espejado en Dental-Demo-Back', err);
+  });
+
   return res.status(204).send();
 }
