@@ -60,6 +60,7 @@ export type RemoteSupplyLot = {
   lotNumber: string;
   expiresAt: string | null;
   stock: number;
+  unitCost: number | null;
 };
 
 // clinicaId es el id nativo de esta plataforma (DentalCloud) — Dental-Demo-Back

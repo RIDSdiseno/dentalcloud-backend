@@ -98,6 +98,7 @@ export async function create(req: Request, res: Response) {
     productLotId?: string;
     productSupplyId?: string;
     productQuantityUsed?: number;
+    productUnitCost?: number;
     examRounds?: ExamRoundInput[];
   };
   if (!body.patientId) {
@@ -179,6 +180,14 @@ export async function create(req: Request, res: Response) {
       ? cantidadUsada
       : null;
 
+  // Foto del precio al momento de atender. Si mañana sube el costo del lote,
+  // lo que costó esta atención no cambia. Valoriza el consumo; NO genera un
+  // gasto nuevo (esa plata ya se conto al comprar el insumo).
+  const costoUnitario = Number(body.productUnitCost);
+  const productUnitCost =
+    productQuantityUsed && Number.isFinite(costoUnitario) && costoUnitario > 0 ? Math.round(costoUnitario) : null;
+  const productTotalCost = productUnitCost ? Math.round(productUnitCost * productQuantityUsed!) : null;
+
   const evolution = await prisma.evolution.create({
     data: {
       patientId: body.patientId,
@@ -192,6 +201,8 @@ export async function create(req: Request, res: Response) {
       productLotId: productQuantityUsed ? productLotId : null,
       productSupplyId: productQuantityUsed ? productSupplyId : null,
       productQuantityUsed,
+      productUnitCost,
+      productTotalCost,
       clinicaId: req.user!.clinicaId!,
       examRounds: {
         create: parsedRounds.rounds.map((r) => ({ ...r, clinicaId: req.user!.clinicaId! })),

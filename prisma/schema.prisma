@@ -901,6 +901,14 @@ model Evolution {
   // Cuándo se descontó del inventario. Sirve para no descontar dos veces y
   // para saber si hay que devolver el stock al anular la evolución.
   inventoryDiscountedAt DateTime?
+  // Cuánto costó el insumo que se aplicó. Es una foto del precio al momento de
+  // atender, no un vínculo: si mañana sube el costo del lote, lo que costó esta
+  // atención no cambia. Esto VALORIZA el consumo, no genera un gasto nuevo —
+  // la plata ya se contó como gasto al comprar el insumo (ver
+  // clinicSupply.service.js/syncSupplyExpense); contarla otra vez al consumir
+  // la duplicaría.
+  productUnitCost       Int?
+  productTotalCost      Int?
   // Anulación. Una evolución es registro clínico: no se borra, se anula. Antes
   // se eliminaba de verdad y, aunque quedaba copia en EvolutionDeletion, esa
   // tabla no se muestra en ninguna pantalla — la evolución simplemente
