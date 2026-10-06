@@ -866,44 +866,56 @@ model ClinicalDocument {
 }
 
 model Evolution {
-  id               String               @id @default(uuid())
-  patientId        String
-  professionalId   String
-  content          String
-  enabled          Boolean              @default(true)
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  clinicaId        String
+  id                    String               @id @default(uuid())
+  patientId             String
+  professionalId        String
+  content               String
+  enabled               Boolean              @default(true)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  clinicaId             String
   // Procedimiento del presupuesto que esta evolución documenta (opcional —
   // una evolución también puede ser una nota clínica general, sin ítem
   // asociado). Al crearla con este campo, el ítem se marca automáticamente
   // como realizado (ver evolutionsController.ts) — mismo campo `treatedBy`/
   // `treatedAt` que ya existe si se marca a mano con el checkbox.
-  treatmentItemId  String?
+  treatmentItemId       String?
   // Trazabilidad del producto usado, documentada en el momento de evolucionar
   // (no al presupuestar) — el presupuesto puede venir de otro sistema (aún
   // por integrar); lo que realmente se hizo/usó se registra acá. Si hay
   // `treatmentItemId`, se copia también al ítem para no romper vistas que
   // todavía leen desde ahí (ver evolutionsController.ts).
-  productName      String?
-  productLot       String?
-  productExpiresAt DateTime?
-  productQuantity  String?
+  productName           String?
+  productLot            String?
+  productExpiresAt      DateTime?
+  productQuantity       String?
+  // Lote real del inventario de Gestión, elegido con el buscador. Los campos
+  // de arriba son el texto que se muestra; estos tres son lo que permite
+  // descontar de verdad. Null = se escribió a mano (el inventario no respondía)
+  // y entonces no se descuenta nada: no sabemos de qué lote sacarlo.
+  productLotId          String?
+  productSupplyId       String?
+  // Cantidad como número, para poder restarla. productQuantity sigue siendo
+  // texto libre ("1 jeringa 1ml") y se mantiene para no perder lo ya escrito.
+  productQuantityUsed   Float?
+  // Cuándo se descontó del inventario. Sirve para no descontar dos veces y
+  // para saber si hay que devolver el stock al anular la evolución.
+  inventoryDiscountedAt DateTime?
   // Anulación. Una evolución es registro clínico: no se borra, se anula. Antes
   // se eliminaba de verdad y, aunque quedaba copia en EvolutionDeletion, esa
   // tabla no se muestra en ninguna pantalla — la evolución simplemente
   // desaparecía del historial del paciente, que es justo lo que el respaldo
   // legal busca impedir. Anulada sigue a la vista, tachada y con el motivo.
-  anuladaAt        DateTime?
-  anuladaPorId     String?
-  anulacionMotivo  String?
-  clinica          Clinica              @relation(fields: [clinicaId], references: [id])
-  patient          Patient              @relation(fields: [patientId], references: [id])
-  professional     User                 @relation("EvolutionProfessional", fields: [professionalId], references: [id])
-  anuladaPor       User?                @relation("EvolutionAnuladaPor", fields: [anuladaPorId], references: [id])
-  treatmentItem    TreatmentItem?       @relation(fields: [treatmentItemId], references: [id])
-  photos           EvolutionPhoto[]
-  examRounds       EvolutionExamRound[]
+  anuladaAt             DateTime?
+  anuladaPorId          String?
+  anulacionMotivo       String?
+  clinica               Clinica              @relation(fields: [clinicaId], references: [id])
+  patient               Patient              @relation(fields: [patientId], references: [id])
+  professional          User                 @relation("EvolutionProfessional", fields: [professionalId], references: [id])
+  anuladaPor            User?                @relation("EvolutionAnuladaPor", fields: [anuladaPorId], references: [id])
+  treatmentItem         TreatmentItem?       @relation(fields: [treatmentItemId], references: [id])
+  photos                EvolutionPhoto[]
+  examRounds            EvolutionExamRound[]
 
   @@index([patientId, createdAt])
   @@index([clinicaId])

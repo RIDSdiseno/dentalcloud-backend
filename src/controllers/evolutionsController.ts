@@ -5,6 +5,7 @@ import { syncTreatmentItemToFederation } from '../lib/federationSync';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
+import { discountEvolutionInventory, returnEvolutionInventory } from '../lib/evolutionInventory';
 import {
   assertCloudinaryConfigured,
   CloudinaryNotConfiguredError,
@@ -94,6 +95,9 @@ export async function create(req: Request, res: Response) {
     productLot?: string;
     productExpiresAt?: string;
     productQuantity?: string;
+    productLotId?: string;
+    productSupplyId?: string;
+    productQuantityUsed?: number;
     examRounds?: ExamRoundInput[];
   };
   if (!body.patientId) {
@@ -165,6 +169,15 @@ export async function create(req: Request, res: Response) {
   const productLot = body.productLot?.trim() || null;
   const productExpiresAt = body.productExpiresAt ? new Date(body.productExpiresAt) : null;
   const productQuantity = body.productQuantity?.trim() || null;
+  // Sólo se guardan juntos: sin lote real no hay de dónde descontar, y una
+  // cantidad suelta no sirve para nada.
+  const productLotId = body.productLotId?.trim() || null;
+  const productSupplyId = body.productSupplyId?.trim() || null;
+  const cantidadUsada = Number(body.productQuantityUsed);
+  const productQuantityUsed =
+    productLotId && productSupplyId && Number.isFinite(cantidadUsada) && cantidadUsada > 0
+      ? cantidadUsada
+      : null;
 
   const evolution = await prisma.evolution.create({
     data: {
@@ -176,6 +189,9 @@ export async function create(req: Request, res: Response) {
       productLot,
       productExpiresAt,
       productQuantity,
+      productLotId: productQuantityUsed ? productLotId : null,
+      productSupplyId: productQuantityUsed ? productSupplyId : null,
+      productQuantityUsed,
       clinicaId: req.user!.clinicaId!,
       examRounds: {
         create: parsedRounds.rounds.map((r) => ({ ...r, clinicaId: req.user!.clinicaId! })),
@@ -212,6 +228,13 @@ export async function create(req: Request, res: Response) {
       console.error('No se pudo sincronizar el ítem evolucionado con Dental-Demo-Back', err);
     });
   }
+
+  // Descuenta del inventario lo que se aplicó. No se espera (ni se deja
+  // reventar) a propósito: la evolución ya está grabada y es lo que importa;
+  // si el inventario no responde, queda el fallo en el log y el stock sin
+  // mover — ver evolutionInventory.ts.
+  discountEvolutionInventory(evolution).catch(() => {});
+
   return res.status(201).json({ evolution });
 }
 
@@ -306,6 +329,11 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
     },
     include,
   });
+
+  // Si esta evolución había descontado stock, el producto vuelve: se anuló
+  // porque no debió existir, y ese consumo tampoco.
+  returnEvolutionInventory(updated).catch(() => {});
+
   return res.json({ evolution: updated });
 }
 
