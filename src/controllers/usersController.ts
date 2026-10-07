@@ -210,6 +210,47 @@ type DimageStaffRow = { rut: string; name: string; email: string };
 // fordentcloud (RIDS RX -> fordentcloud). Genera una contraseña local nueva por
 // cada uno (no conocemos ni podemos reutilizar la de RIDS RX) y la devuelve una
 // única vez para que el admin se la pase a esa persona.
+// Cambiar la contraseña de un usuario. Lo importante acá no es guardarla —
+// eso es una línea— sino avisarle al otro sistema: DentalCloud y Gestión tienen
+// cuentas separadas, y hasta ahora la contraseña sólo se emparejaba el día que
+// se creaba la clínica. Cualquier cambio posterior dejaba a la persona entrando
+// en un sistema y rebotando en el otro, sin forma de enterarse hasta que lo
+// intentaba.
+export async function updatePassword(req: Request<{ id: string }>, res: Response) {
+  const { password } = req.body as { password?: string };
+  if (!password) {
+    return res.status(400).json({ error: 'La contraseña es requerida' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!user || !belongsToRequesterClinica(user, req)) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash },
+  });
+
+  // Se espera el resultado (a diferencia de otras sincronizaciones, que van en
+  // segundo plano) para poder decir en la respuesta si quedó igualada en los dos
+  // sistemas o sólo en este. Que falle no deshace el cambio local: la contraseña
+  // nueva ya sirve acá, y se puede reintentar.
+  let federationSynced = true;
+  try {
+    await syncUserToFederation(updated, password);
+  } catch (err) {
+    federationSynced = false;
+    console.error('No se pudo sincronizar la contraseña con Dental-Demo-Back', err);
+  }
+
+  return res.json({ user: toPublicUser(updated), federationSynced });
+}
+
 export async function importFromDimage(req: Request, res: Response) {
   const clinicaId = req.user!.clinicaId!;
   const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { rxEnabled: true } });
