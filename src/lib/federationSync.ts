@@ -420,6 +420,15 @@ export async function syncTreatmentItemToFederation(item: TreatmentItem): Promis
     ? await prisma.prestacion.findUnique({ where: { id: item.prestacionId }, select: { federatedPrestacionId: true } })
     : null;
 
+  // Quién atendió de verdad este procedimiento. El presupuesto propone un
+  // profesional, pero la evolución es la que manda: en un mismo presupuesto
+  // pueden intervenir varios doctores, y la liquidación reparte por esto
+  // (tarea 23 del informe del 30/09). Sólo viaja si esa persona ya tiene par
+  // en el otro sistema; si no, no hay a quién atribuirlo allá.
+  const tratante = item.treatedById
+    ? await prisma.user.findUnique({ where: { id: item.treatedById }, select: { federatedUserId: true } })
+    : null;
+
   const payload = {
     treatmentPlanId: plan.federatedTreatmentPlanId,
     externalId: item.id,
@@ -436,6 +445,8 @@ export async function syncTreatmentItemToFederation(item: TreatmentItem): Promis
     productLot: item.productLot ?? undefined,
     productExpiresAt: item.productExpiresAt ? item.productExpiresAt.toISOString() : undefined,
     productQuantity: item.productQuantity ?? undefined,
+    professionalExternalId: tratante?.federatedUserId ?? undefined,
+    completedAt: item.treatedAt ? item.treatedAt.toISOString() : undefined,
   };
 
   try {
