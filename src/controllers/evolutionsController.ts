@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
-import { syncTreatmentItemToFederation } from '../lib/federationSync';
+import { syncTreatmentItemToFederation, syncLedgerMovementToFederation } from '../lib/federationSync';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
@@ -99,6 +99,11 @@ export async function create(req: Request, res: Response) {
     productSupplyId?: string;
     productQuantityUsed?: number;
     productUnitCost?: number;
+    // "Guardar y pagar": el pago que el paciente le hace a LA CLÍNICA en el
+    // mismo acto de evolucionar, para no tener que ir a la cartola aparte
+    // (tarea 23 del informe del 30/09). El profesional no cobra del paciente:
+    // cobra después su porcentaje de lo que entró, en la liquidación.
+    payment?: { amount?: number; paymentMethod?: string; documentNumber?: string };
     examRounds?: ExamRoundInput[];
   };
   if (!body.patientId) {
@@ -246,7 +251,47 @@ export async function create(req: Request, res: Response) {
   // mover — ver evolutionInventory.ts.
   discountEvolutionInventory(evolution).catch(() => {});
 
-  return res.status(201).json({ evolution });
+  // El pago del paciente a la clínica, si se registró junto con la evolución.
+  // Va atado al presupuesto del procedimiento: sin presupuesto no hay a qué
+  // imputarlo ni de dónde sacar la liquidación después.
+  let payment: { id: string; haber: number } | null = null;
+  let paymentError: string | null = null;
+  const montoPago = Math.round(Number(body.payment?.amount) || 0);
+  if (montoPago > 0) {
+    if (!treatmentItem) {
+      paymentError = 'Para registrar el pago hay que indicar qué procedimiento del presupuesto se realizó';
+    } else {
+      try {
+        const movimiento = await prisma.ledgerMovement.create({
+          data: {
+            patientId: body.patientId,
+            treatmentPlanId: treatmentItem.treatmentPlanId,
+            type: 'abono',
+            debe: 0,
+            haber: montoPago,
+            description: 'Pago registrado al evolucionar',
+            paymentMethod: body.payment?.paymentMethod?.trim() || null,
+            documentNumber: body.payment?.documentNumber?.trim() || null,
+            registeredById: req.user!.sub,
+            clinicaId: req.user!.clinicaId!,
+          },
+        });
+        payment = { id: movimiento.id, haber: movimiento.haber };
+        // Mismo criterio que en la cartola: el abono viaja a Gestión como
+        // ingreso, que es de donde sale la liquidación del profesional.
+        syncLedgerMovementToFederation(movimiento).catch((err) => {
+          console.error('No se pudo sincronizar con Dental-Demo-Back el pago registrado al evolucionar', err);
+        });
+      } catch (err) {
+        // La evolución ya está grabada: no se pierde el registro clínico
+        // porque falle el cobro. Se avisa para que lo registren en la cartola.
+        console.error('No se pudo registrar el pago junto con la evolución', err);
+        paymentError = 'La evolución se guardó, pero el pago no pudo registrarse. Regístralo desde la cartola.';
+      }
+    }
+  }
+
+  return res.status(201).json({ evolution, payment, paymentError });
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
