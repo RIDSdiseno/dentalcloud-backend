@@ -361,9 +361,12 @@ export async function update(req: Request<{ id: string }>, res: Response) {
 // igual del historial del paciente: justo lo que el respaldo busca impedir.
 // La tabla se conserva (guarda los borrados antiguos) pero ya no se escribe.
 //
-// No revierte nada que ya se haya sincronizado al TreatmentItem
-// (completed/producto/fotos) cuando la evolución documentaba un procedimiento
-// — anular la nota no deshace el tratamiento que ya se hizo.
+// Si la evolución documentaba un procedimiento del presupuesto, al anularla
+// ese procedimiento vuelve a quedar PENDIENTE (se desmarca como realizado y se
+// re-sincroniza con Gestión), para que una atención anulada no se siga
+// contando ni liquidando. El pago registrado con "Guardar y pagar" NO se toca:
+// es plata real que el paciente entregó, y su devolución es una decisión
+// aparte del administrador.
 export async function remove(req: Request<{ id: string }>, res: Response) {
   const body = req.body as { reason?: string };
   if (!body.reason?.trim()) {
@@ -396,6 +399,26 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   // Si esta evolución había descontado stock, el producto vuelve: se anuló
   // porque no debió existir, y ese consumo tampoco.
   returnEvolutionInventory(updated).catch(() => {});
+
+  // Si la evolución había marcado un procedimiento del presupuesto como
+  // realizado, al anularla ese procedimiento vuelve a quedar pendiente: una
+  // atención anulada no debe seguir contándose para liquidar ni pagar al
+  // profesional. Se re-sincroniza con Gestión para que salga de "atenciones
+  // realizadas". Best-effort: si algo de esto falla, la anulación ya quedó.
+  if (evolution.treatmentItemId) {
+    try {
+      const revertedItem = await prisma.treatmentItem.update({
+        where: { id: evolution.treatmentItemId },
+        data: { completed: false, treatedById: null, treatedAt: null },
+      });
+      await recalculatePlan(revertedItem.treatmentPlanId, req.user!.sub);
+      syncTreatmentItemToFederation(revertedItem).catch((err) => {
+        console.error('No se pudo sincronizar la anulación del procedimiento con Dental-Demo-Back', err);
+      });
+    } catch (err) {
+      console.error('No se pudo revertir el procedimiento al anular la evolución', err);
+    }
+  }
 
   return res.json({ evolution: updated });
 }
