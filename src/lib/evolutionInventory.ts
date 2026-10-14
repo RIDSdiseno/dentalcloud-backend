@@ -39,9 +39,19 @@ async function registrarFallo(evolutionId: string, error: unknown) {
   console.error(`[inventario] no se pudo mover el stock de la evolución ${evolutionId}: ${mensaje}`);
 }
 
-export async function discountEvolutionInventory(evolution: EvolucionConProducto) {
-  if (!puedeDescontar(evolution) || evolution.inventoryDiscountedAt) return;
-  if (!(await isClinicaFederatedForInventory(evolution.clinicaId))) return;
+// 'skipped' = no había nada que descontar (sin lote real, ya descontado, o la
+//             clínica no tiene inventario federado).
+// 'ok'      = el stock se movió.
+// 'failed'  = se intentó y falló (inventario caído, stock insuficiente, etc.).
+//             La evolución NO se revierte por esto; sólo se informa para que la
+//             pantalla pueda avisar que el stock quedó sin mover.
+export type InventoryDiscountResult = { status: 'ok' | 'skipped' | 'failed'; message?: string };
+
+export async function discountEvolutionInventory(
+  evolution: EvolucionConProducto
+): Promise<InventoryDiscountResult> {
+  if (!puedeDescontar(evolution) || evolution.inventoryDiscountedAt) return { status: 'skipped' };
+  if (!(await isClinicaFederatedForInventory(evolution.clinicaId))) return { status: 'skipped' };
 
   try {
     await createRemoteInventoryLotMovement(
@@ -58,8 +68,10 @@ export async function discountEvolutionInventory(evolution: EvolucionConProducto
       where: { id: evolution.id },
       data: { inventoryDiscountedAt: new Date() },
     });
+    return { status: 'ok' };
   } catch (error) {
     await registrarFallo(evolution.id, error);
+    return { status: 'failed', message: error instanceof Error ? error.message : String(error) };
   }
 }
 

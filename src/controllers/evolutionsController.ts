@@ -245,11 +245,18 @@ export async function create(req: Request, res: Response) {
     });
   }
 
-  // Descuenta del inventario lo que se aplicó. No se espera (ni se deja
-  // reventar) a propósito: la evolución ya está grabada y es lo que importa;
-  // si el inventario no responde, queda el fallo en el log y el stock sin
-  // mover — ver evolutionInventory.ts.
-  discountEvolutionInventory(evolution).catch(() => {});
+  // Descuenta del inventario lo que se aplicó. La evolución YA está grabada:
+  // pase lo que pase con el inventario, el registro clínico no se pierde (ver
+  // evolutionInventory.ts). Se espera el resultado —el cliente de federación
+  // tiene timeout, así que no cuelga— sólo para poder avisar si el stock no se
+  // pudo mover, en vez de que quede descuadrado en silencio.
+  let inventoryError: string | null = null;
+  const descuentoInventario = await discountEvolutionInventory(evolution).catch(
+    () => ({ status: 'failed' as const })
+  );
+  if (descuentoInventario.status === 'failed') {
+    inventoryError = 'La evolución se guardó, pero el inventario no se pudo descontar. Revisa el stock del lote.';
+  }
 
   // El pago del paciente a la clínica, si se registró junto con la evolución.
   // Va atado al presupuesto del procedimiento: sin presupuesto no hay a qué
@@ -291,7 +298,7 @@ export async function create(req: Request, res: Response) {
     }
   }
 
-  return res.status(201).json({ evolution, payment, paymentError });
+  return res.status(201).json({ evolution, payment, paymentError, inventoryError });
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
