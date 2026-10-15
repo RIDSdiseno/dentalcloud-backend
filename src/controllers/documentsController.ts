@@ -210,7 +210,7 @@ export async function createManualReceta(req: Request<{ id: string }>, res: Resp
         legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
       },
     }),
-    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true, rut: true, documentType: true, signatureUrl: true } }),
+    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { name: true, rut: true, documentType: true, colegiado: true, signatureUrl: true } }),
   ]);
   if (!clinica) {
     return res.status(404).json({ error: 'Clínica no encontrada' });

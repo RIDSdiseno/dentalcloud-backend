@@ -27,6 +27,9 @@ type RecetaManualPdfInput = {
     // Una doctora española lleva DNI, no RUT: rotularlo mal en una receta
     // tampoco es un detalle (mismo criterio que la cabecera de la clínica).
     documentType?: string | null;
+    // Nº de colegiado: en España la receta lo exige. Se imprime sólo si está
+    // cargado (en Chile no aplica).
+    colegiado?: string | null;
     signatureUrl: string | null;
   } | null;
   medicamentos: Medicamento[];
@@ -37,9 +40,11 @@ type RecetaManualPdfInput = {
 const INK = '#0f172a';
 const MUTED = '#64748b';
 
-function professionalLine(professional: { name: string; rut: string | null; documentType?: string | null }): string {
-  if (!professional.rut) return professional.name;
-  return `${professional.name} — ${documentLabel(professional.documentType)} ${formatDocument(professional.rut, professional.documentType)}`;
+function professionalLine(professional: { name: string; rut: string | null; documentType?: string | null; colegiado?: string | null }): string {
+  const colegiado = professional.colegiado?.trim();
+  const sufijoColegiado = colegiado ? ` · Nº colegiado ${colegiado}` : '';
+  if (!professional.rut) return `${professional.name}${sufijoColegiado}`;
+  return `${professional.name} — ${documentLabel(professional.documentType)} ${formatDocument(professional.rut, professional.documentType)}${sufijoColegiado}`;
 }
 
 function formatAge(birthDate: Date | null): string {

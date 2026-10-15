@@ -124,6 +124,10 @@ model User {
   // Tipo del documento guardado en `rut` (del profesional).
   documentType                   String                      @default("RUT")
   rut                            String?
+  // Número de colegiado del profesional (nº de colegiado del Colegio de
+  // Dentistas). En España la receta lo exige por ley; en Chile no aplica, por
+  // eso es opcional y sólo se imprime en la receta cuando está cargado.
+  colegiado                      String?
   clinicaId                      String?
   // Baja de profesional (softlimit): false = no puede iniciar sesión con
   // permisos de escritura (ver middleware/authenticate.ts) — sigue pudiendo

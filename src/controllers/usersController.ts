@@ -54,6 +54,7 @@ function toPublicUser(user: {
   name: string;
   role: string;
   rut: string | null;
+  colegiado?: string | null;
   createdAt: Date;
   clinicaId: string | null;
   signatureUrl?: string | null;
@@ -65,6 +66,7 @@ function toPublicUser(user: {
     name: user.name,
     role: user.role,
     rut: user.rut,
+    colegiado: user.colegiado ?? null,
     createdAt: user.createdAt,
     clinicaId: user.clinicaId,
     signatureUrl: user.signatureUrl ?? null,
@@ -79,19 +81,20 @@ export async function list(req: Request, res: Response) {
   const includeInactive = req.query.includeInactive === 'true';
   const users = await prisma.user.findMany({
     where: { clinicaId: req.user!.clinicaId!, ...(includeInactive ? {} : { active: true }) },
-    select: { id: true, email: true, name: true, role: true, rut: true, createdAt: true, clinicaId: true, signatureUrl: true, active: true },
+    select: { id: true, email: true, name: true, role: true, rut: true, colegiado: true, createdAt: true, clinicaId: true, signatureUrl: true, active: true },
     orderBy: [{ role: 'asc' }, { name: 'asc' }],
   });
   return res.json({ users });
 }
 
 export async function create(req: Request, res: Response) {
-  const { name, email, password, role, rut, signatureDataUrl } = req.body as {
+  const { name, email, password, role, rut, colegiado, signatureDataUrl } = req.body as {
     name?: string;
     email?: string;
     password?: string;
     role?: string;
     rut?: string;
+    colegiado?: string;
     signatureDataUrl?: string;
   };
 
@@ -140,6 +143,7 @@ export async function create(req: Request, res: Response) {
       role,
       rut: rut?.trim() ? normalizeDocument(documentType, rut) : null,
       documentType,
+      colegiado: colegiado?.trim() || null,
       clinicaId,
       ...(signature ? { signatureUrl: signature.url, signaturePublicId: signature.publicId } : {}),
     },
@@ -155,9 +159,10 @@ export async function create(req: Request, res: Response) {
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
-  const { rut, active, documentType: rawDocumentType } = req.body as {
+  const { rut, active, colegiado, documentType: rawDocumentType } = req.body as {
     rut?: string | null;
     active?: boolean;
+    colegiado?: string | null;
     documentType?: string;
   };
   const user = await prisma.user.findUnique({ where: { id: req.params.id } });
@@ -192,6 +197,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     data: {
       ...(cleanedRut !== undefined ? { rut: cleanedRut } : {}),
       ...(editedDocumentType ? { documentType: editedDocumentType } : {}),
+      ...(colegiado !== undefined ? { colegiado: colegiado?.trim() || null } : {}),
       ...(active !== undefined ? { active } : {}),
     },
   });
