@@ -63,6 +63,7 @@ const INSTRUCTIONS = [
   'Mantén siempre la calma y la amabilidad, incluso si el usuario está molesto o se equivoca. Sé honesto sobre lo que puedes y lo que no puedes hacer; no prometas lo que no está disponible.',
   'Puedes ayudar a identificar pacientes sin atención hace tiempo y proponer un mensaje de reactivación o seguimiento para que el usuario lo confirme antes de enviarlo.',
   'Si el usuario pide un SEGUIMIENTO general de la clínica (a quién contactar o recuperar, quién quedó pendiente, "citas vencidas", "pacientes que no volvieron", "quién debe", "pagos pendientes", "deudores/morosos", "presupuestos o planes abandonados o sin avanzar"), usa la herramienta "ver_seguimiento" con el "tipo" adecuado: "citas" (citas pasadas sin reagendar), "pagos" (saldos pendientes), "planes" (presupuestos sin avanzar) o "todos". El sistema le mostrará las listas directamente; no inventes nombres ni cifras, y resume brevemente sin repetir la lista.',
+  'Cuando, tras un seguimiento, el usuario pida contactar o enviar un recordatorio a uno de esos pacientes, redacta un mensaje breve, cordial y profesional de parte de la clínica, adecuado al motivo (cita no reagendada → invitar a retomar su control o reagendar; pago pendiente → recordar con tacto el saldo; presupuesto detenido → ofrecer continuar el tratamiento). Propónlo con "proponer_accion" tipo "enviar_correo" (con "paciente" y "contenido"); al confirmar, el correo se enviará de verdad al correo del paciente, así que mantén un tono respetuoso y sin datos clínicos sensibles. Si el paciente no tuviera correo, el sistema lo avisará. Trata un paciente a la vez, salvo que el usuario pida explícitamente varios.',
   'Si el usuario pide ir, entrar, abrir o que lo lleves a una sección del sistema (Pacientes, Agenda, Presupuestos, Catálogo, Configuración, etc.), usa la herramienta "navegar"; el sistema lo llevará allá si su cuenta tiene permiso para esa sección.',
   'Para llevar a la FICHA de un paciente CONCRETO (ej. "llévame al paciente Bruno", "abre la ficha de X"), usa "ir_a_ficha_paciente" con el nombre, en vez de "navegar".',
   'El sistema tiene un botón "Instrucciones" en la barra superior (arriba a la derecha): es una guía/recorrido que explica cada módulo a medida que el usuario navega. Cuando pregunten por un manual, tutorial, instructivo o "cómo se usa la aplicación", menciónalo además de orientarlos tú directamente.',
@@ -980,29 +981,43 @@ export async function execute(req: Request, res: Response) {
       return res.json({ ejecutado: false, mensaje: r.error });
     }
     const p = r.patient;
+    const nombrePac = `${p.firstName} ${p.lastName}`;
     const texto = String(body.contenido ?? '').trim();
     if (!texto) {
       return res.json({ ejecutado: false, mensaje: 'No me indicó el texto del correo.' });
     }
-    // SEGURO DE PRUEBA: el correo se envía al propio usuario, nunca al paciente,
-    // hasta que se decida explícitamente enviarlo a pacientes reales.
-    const me = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } });
-    if (!me?.email) {
-      return res.json({ ejecutado: false, mensaje: 'No tengo su correo para enviarle la prueba.' });
+    // Envío REAL al paciente: necesitamos su correo (resolvePatient no lo trae).
+    // Si no tiene correo registrado, no se envía nada y se avisa con claridad.
+    const full = await prisma.patient.findUnique({
+      where: { id: p.id },
+      select: { email: true },
+    });
+    const destino = (full?.email ?? '').trim();
+    if (!destino) {
+      return res.json({
+        ejecutado: false,
+        mensaje: `${nombrePac} no tiene un correo registrado en su ficha. Agréguelo primero y lo reintentamos.`,
+      });
     }
-    const html =
-      `<p>${escapeHtml(texto)}</p><hr>` +
-      `<p style="color:#888;font-size:12px">Correo de PRUEBA del asistente RIDS. ` +
-      `En producción iría dirigido al paciente ${escapeHtml(`${p.firstName} ${p.lastName}`)}.</p>`;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(destino)) {
+      return res.json({
+        ejecutado: false,
+        mensaje: `El correo de ${nombrePac} (${destino}) no tiene un formato válido; revíselo en la ficha.`,
+      });
+    }
+    const clinica = await prisma.clinica.findUnique({
+      where: { id: req.user.clinicaId },
+      select: { name: true },
+    });
+    const nombreClinica = clinica?.name?.trim() || 'su clínica dental';
+    const firma = `<p style="color:#64748b;font-size:12px;margin-top:16px">— Equipo de ${escapeHtml(nombreClinica)}</p>`;
+    const html = `<p>${escapeHtml(texto)}</p>${firma}`;
     try {
-      await sendMail({ to: me.email, subject: '[PRUEBA] Mensaje de su clínica dental', html });
+      await sendMail({ to: destino, subject: `Mensaje de ${nombreClinica}`, html });
     } catch {
       return res.json({ ejecutado: false, mensaje: 'No se pudo enviar el correo (revise la configuración de correo).' });
     }
-    return res.json({
-      ejecutado: true,
-      mensaje: `Correo de prueba enviado a usted (${me.email}). El destinatario real sería ${p.firstName} ${p.lastName}.`,
-    });
+    return res.json({ ejecutado: true, mensaje: `Correo enviado a ${nombrePac} (${destino}).` });
   }
 
     if (body.tipo === 'crear_paciente') {
