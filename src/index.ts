@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth';
 import chairsRoutes from './routes/chairs';
@@ -29,9 +30,20 @@ import agendaSettingsRoutes from './routes/agendaSettings';
 import emailSettingsRoutes from './routes/emailSettings';
 import documentFormatsRoutes from './routes/documentFormats';
 import consultationPaymentsRoutes from './routes/consultationPayments';
+import assistantRoutes from './routes/assistant';
 import { startFederationRetryLoop } from './lib/federationRetry';
 
 const app = express();
+
+// Cabeceras de seguridad (igual que el portal del paciente). En modo conservador:
+// desactivamos CSP y Cross-Origin-Resource-Policy para no bloquear recursos
+// (imágenes/PDF de Rx y documentos) que el front carga desde otro dominio.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: false,
+  })
+);
 
 // Railway corre detrás de un proxy; sin esto, req.ip devuelve la IP interna del
 // proxy en vez de la IP real del cliente (necesario para el registro del firmante).
@@ -85,6 +97,7 @@ app.use('/api/clinica/agenda-settings', agendaSettingsRoutes);
 app.use('/api/clinica/email-settings', emailSettingsRoutes);
 app.use('/api/document-formats', documentFormatsRoutes);
 app.use('/api/consultation-payments', consultationPaymentsRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
