@@ -42,7 +42,12 @@ const INSTRUCTIONS = [
   'Para datos de un PROFESIONAL o empleado (no un paciente) usa "buscar_profesional". Un paciente y un profesional son cosas distintas: no busques a un profesional como paciente.',
   'Si el usuario pide cambiar, conceder o quitar PERMISOS de alguien, no uses ninguna herramienta ni lo propongas: responde con amabilidad que, por seguridad, los permisos NO se cambian desde el asistente y que debe hacerlo un administrador en el panel de Configuración → Permisos.',
   'Usa cada herramienta SOLO cuando el usuario lo pida de verdad; no busques en saludos, agradecimientos ni preguntas generales, y no repitas una consulta que ya mostraste. Si piden algo que aún no puedes consultar (por ejemplo el saldo o la cartola detallada), dilo en texto, sin usar una herramienta que no corresponde.',
-  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
+  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
+  'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
+  'Si el usuario dice que un paciente LLEGÓ a la clínica, llegó a su hora, está en recepción, o "marca la llegada" (ej. "llegó Juan", "ya llegó la señora Rojas", "marca que llegó Bruno"), usa "proponer_accion" tipo "marcar_llegada" con el "paciente". El sistema busca la cita de HOY de ese paciente y la deja registrada como llegada al confirmar.',
+  'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, o "¿tengo hora el martes?", usa la herramienta "buscar_hora_libre" con la "fecha" del día que consultan (formato "YYYY-MM-DD"); el sistema le mostrará los horarios disponibles de ese día. No inventes horas: deja que la herramienta las calcule.',
+  'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
+  'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
   'El usuario puede escribir nombres de forma informal o con errores de tipeo; usa el contexto de la conversación para entender a quién o a qué se refiere, sobre todo en preguntas de seguimiento como "¿y tiene cita?" o "¿pero él tiene?".',
   'Si la petición es ambigua o falta un dato clave (el nombre exacto, la fecha, qué dato cambiar, a qué persona te refieres), haz UNA pregunta breve para aclarar, en vez de adivinar, inventar o usar una herramienta a ciegas. Vale más preguntar que equivocarse.',
   'Antes de usar una herramienta, verifica que sea la correcta para lo que se pide. Si una consulta no devuelve resultados, dilo con naturalidad y ofrece una alternativa concreta; no repitas la misma búsqueda.',
@@ -193,9 +198,24 @@ const TOOLS = [
   {
     type: 'function' as const,
     name: 'ver_agenda_dia',
-    description: 'Muestra las citas de HOY de la clínica del usuario (hora, paciente y estado).',
+    description: 'Muestra las citas de HOY de la clínica (hora, paciente y estado). Úsala SOLO cuando pregunten explícitamente por hoy ("¿qué hay hoy?", "agenda de hoy"). NO la uses para "¿tiene citas?" de un paciente ni para preguntas generales sobre citas: para un paciente usa ver_citas_paciente.',
     strict: false,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    type: 'function' as const,
+    name: 'buscar_hora_libre',
+    description: 'Muestra los horarios DISPONIBLES (cupos libres) de un día en la clínica. Úsala para "¿qué horas hay libres el martes?", "¿cuándo puedo atender a alguien?", "¿hay cupo mañana?". El sistema calcula los huecos reales según los sillones y las citas ya tomadas.',
+    strict: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        fecha: { type: 'string', description: 'Día a consultar en hora de Chile, formato "YYYY-MM-DD". Si no lo dan, se asume hoy.' },
+        duracion: { type: 'number', description: 'Duración de la hora en minutos (opcional, por defecto 30).' },
+      },
+      required: ['fecha'],
+      additionalProperties: false,
+    },
   },
   {
     type: 'function' as const,
@@ -265,11 +285,12 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
-        fecha_hora: { type: 'string', description: 'Para agendar_cita: fecha y hora en hora de Chile, formato "YYYY-MM-DDTHH:MM", ej. "2026-10-21T10:00".' },
+        fecha_hora: { type: 'string', description: 'Para agendar_cita: fecha y hora en hora de Chile, formato "YYYY-MM-DDTHH:MM". Para reagendar_cita: la NUEVA fecha y hora. Para cancelar_cita (opcional): la fecha y hora de la cita a cancelar si el paciente tiene varias.' },
+        fecha_actual: { type: 'string', description: 'Para reagendar_cita, solo si el paciente tiene varias citas próximas: la fecha y hora ACTUAL de la cita que se mueve, formato "YYYY-MM-DDTHH:MM".' },
         campo: { type: 'string', description: 'Para editar_ficha: qué dato cambiar (teléfono, correo o dirección).' },
         valor: { type: 'string', description: 'Para editar_ficha: el nuevo valor.' },
         rut: { type: 'string', description: 'Para crear_paciente: el RUT del paciente.' },
@@ -360,6 +381,69 @@ async function resolvePatient(
   return { patient: matches[0] };
 }
 
+// Citas próximas (no canceladas) de un paciente, de la más cercana en adelante.
+// Se usan para mover o anular una cita sin tocar el historial pasado.
+type ApptRow = { id: string; chairId: string | null; startAt: Date; endAt: Date; status: string };
+async function futureAppointments(patientId: string, clinicaId: string): Promise<ApptRow[]> {
+  return prisma.appointment.findMany({
+    where: { patientId, clinicaId, status: { not: 'cancelada' }, startAt: { gte: new Date() } },
+    select: { id: true, chairId: true, startAt: true, endAt: true, status: true },
+    orderBy: { startAt: 'asc' },
+    take: 20,
+  });
+}
+
+// Citas de HOY de un paciente (para marcar llegada). No incluye canceladas.
+async function todaysAppointments(patientId: string, clinicaId: string): Promise<ApptRow[]> {
+  const dayCl = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+  const dayStart = parseSantiago(`${dayCl}T00:00`);
+  if (!dayStart) return [];
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  return prisma.appointment.findMany({
+    where: { patientId, clinicaId, status: { not: 'cancelada' }, startAt: { gte: dayStart, lt: dayEnd } },
+    select: { id: true, chairId: true, startAt: true, endAt: true, status: true },
+    orderBy: { startAt: 'asc' },
+    take: 20,
+  });
+}
+
+function sameSantiagoDay(a: Date, b: Date): boolean {
+  const f = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+  return f(a) === f(b);
+}
+
+// Elige CUÁL cita entre varias, según una fecha/hora opcional que dio el usuario.
+// Si hay una sola, la toma; si la fecha dada identifica una clara, esa; si no se
+// puede decidir con seguridad, devuelve la lista para preguntar (nunca adivina).
+function pickAppointment(
+  appts: ApptRow[],
+  given?: string
+): { appt: ApptRow } | { ambiguous: ApptRow[] } | null {
+  if (appts.length === 0) return null;
+  if (appts.length === 1) return { appt: appts[0] };
+  const target = given ? parseSantiago(given) : null;
+  if (!target) return { ambiguous: appts };
+  const sameDay = appts.filter((a) => sameSantiagoDay(a.startAt, target));
+  if (sameDay.length === 1) return { appt: sameDay[0] };
+  const hasTime = /\d{1,2}:\d{2}/.test(given ?? '');
+  const pool = sameDay.length ? sameDay : appts;
+  if (hasTime) {
+    const closest = pool.reduce((best, a) =>
+      Math.abs(a.startAt.getTime() - target.getTime()) < Math.abs(best.startAt.getTime() - target.getTime()) ? a : best
+    );
+    const cerca = sameDay.length > 0 || Math.abs(closest.startAt.getTime() - target.getTime()) < 3 * 60 * 60 * 1000;
+    if (cerca) return { appt: closest };
+  }
+  return { ambiguous: pool };
+}
+
+// Lista corta de citas (fecha y hora de Chile) para pedir al usuario que elija.
+function listarCitas(appts: ApptRow[]): string {
+  return appts
+    .map((a) => a.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' }))
+    .join('; ');
+}
+
 // Contexto seguro: solo conteos agregados de la clínica del usuario.
 async function buildClinicContext(req: Request): Promise<string> {
   const now = new Date();
@@ -418,15 +502,25 @@ export async function chat(req: Request, res: Response) {
     }
     messages.push({ role: 'user', content: message });
 
+    // Prompt caching: el manual de instrucciones y la lista de herramientas son
+    // IGUALES en cada llamada, así que se marcan como cacheables (cache_control).
+    // En llamadas seguidas (mismo prompt base dentro de la ventana de caché) ese
+    // bloque se cobra ~10% y no el 100%, bajando mucho el gasto de tokens. El
+    // "context" (fecha y conteos) cambia cada vez, por eso va en bloque aparte y
+    // SIN cachear, para no invalidar la caché del manual.
     const response = await client.messages.create({
       model: ASSISTANT_MODEL,
       max_tokens: 1024,
-      system: INSTRUCTIONS + context,
+      system: [
+        { type: 'text', text: INSTRUCTIONS, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: context },
+      ],
       messages,
-      tools: TOOLS.map((t) => ({
+      tools: TOOLS.map((t, i) => ({
         name: t.name,
         description: t.description,
         input_schema: t.parameters,
+        ...(i === TOOLS.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
       })) as any,
     });
     if (clinicaId) {
@@ -599,6 +693,55 @@ export async function chat(req: Request, res: Response) {
           paciente: `${a.patient.firstName} ${a.patient.lastName}`,
         }));
         return res.json({ agenda });
+      }
+
+      // Horas libres de un día: recorre la ventana de atención en pasos de 30
+      // min y deja los tramos donde queda al menos un sillón libre (no choca con
+      // una cita ya tomada). Es una CONSULTA: la lista va al front, no al modelo.
+      if (toolUse.name === 'buscar_hora_libre') {
+        const perms = await resolveRequestPermissions(req);
+        let allowed = false;
+        if (perms === 'full-access') allowed = true;
+        else if (perms !== 'no-clinic') allowed = perms.agenda;
+        if (!allowed) return res.json({ denied: true, permiso: PERMISSION_LABELS.agenda });
+        const clinicaId = req.user?.clinicaId;
+        if (!clinicaId) return res.json({ fecha: null, slots: [] });
+        const base = args.fecha ? parseSantiago(String(args.fecha)) : new Date();
+        const ref = base ?? new Date();
+        const dayCl = ref.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+        const dur = Math.min(240, Math.max(10, Number(args.duracion) || 30));
+        const dayStart = parseSantiago(`${dayCl}T00:00`);
+        if (!dayStart) return res.json({ fecha: dayCl, slots: [] });
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+        // Ventana de atención del día según horarios configurados; si no hay, 09:00–19:00.
+        const weekday = new Date(`${dayCl}T12:00:00Z`).getUTCDay();
+        const scheds = await prisma.workSchedule.findMany({ where: { clinicaId, weekday }, select: { startTime: true, endTime: true } });
+        const toMin = (s: string) => { const [h, m] = s.split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+        let openMin = 9 * 60;
+        let closeMin = 19 * 60;
+        if (scheds.length) {
+          openMin = Math.min(...scheds.map((s) => toMin(s.startTime)));
+          closeMin = Math.max(...scheds.map((s) => toMin(s.endTime)));
+        }
+        const chairs = await prisma.chair.count({ where: { clinicaId, active: true } });
+        if (chairs === 0) return res.json({ fecha: dayCl, slots: [], duracion: dur });
+        const appts = await prisma.appointment.findMany({
+          where: { clinicaId, status: { not: 'cancelada' }, startAt: { lt: dayEnd }, endAt: { gt: dayStart } },
+          select: { startAt: true, endAt: true },
+        });
+        const now = Date.now();
+        const slots: string[] = [];
+        for (let t = openMin; t + dur <= closeMin && slots.length < 12; t += 30) {
+          const hh = String(Math.floor(t / 60)).padStart(2, '0');
+          const mm = String(t % 60).padStart(2, '0');
+          const sStart = parseSantiago(`${dayCl}T${hh}:${mm}`);
+          if (!sStart) continue;
+          const sEnd = new Date(sStart.getTime() + dur * 60 * 1000);
+          if (sStart.getTime() < now) continue; // no ofrecer horas ya pasadas
+          const overlap = appts.filter((a) => a.startAt.getTime() < sEnd.getTime() && a.endAt.getTime() > sStart.getTime()).length;
+          if (overlap < chairs) slots.push(`${hh}:${mm}`);
+        }
+        return res.json({ fecha: dayCl, slots, duracion: dur });
       }
 
       if (toolUse.name === 'ver_consentimientos_paciente') {
@@ -796,6 +939,7 @@ export async function chat(req: Request, res: Response) {
             paciente: args.paciente ? String(args.paciente) : null,
             contenido: args.contenido ? String(args.contenido) : null,
             fechaHora: args.fecha_hora ? String(args.fecha_hora) : null,
+            fechaActual: args.fecha_actual ? String(args.fecha_actual) : null,
             campo: args.campo ? String(args.campo) : null,
             valor: args.valor ? String(args.valor) : null,
             rut: args.rut ? String(args.rut) : null,
@@ -835,6 +979,7 @@ export async function execute(req: Request, res: Response) {
     paciente?: string;
     contenido?: string;
     fechaHora?: string;
+    fechaActual?: string;
     campo?: string;
     valor?: string;
     rut?: string;
@@ -929,6 +1074,139 @@ export async function execute(req: Request, res: Response) {
     });
     const txt = start.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
     return res.json({ ejecutado: true, mensaje: `Listo: cita agendada para ${p.firstName} ${p.lastName} el ${txt}.` });
+  }
+
+  if (body.tipo === 'reagendar_cita') {
+    const perms = await resolveRequestPermissions(req);
+    let allowed = false;
+    if (perms === 'full-access') allowed = true;
+    else if (perms !== 'no-clinic') allowed = perms.agenda;
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.agenda}».` });
+    }
+    const r = await resolvePatient(String(body.paciente ?? ''), req);
+    if ('error' in r) {
+      return res.json({ ejecutado: false, mensaje: r.error });
+    }
+    const p = r.patient;
+    const newStart = parseSantiago(String(body.fechaHora ?? ''));
+    if (!newStart) {
+      return res.json({ ejecutado: false, mensaje: 'No entendí la nueva fecha y hora de la cita.' });
+    }
+    if (newStart.getTime() < Date.now()) {
+      return res.json({ ejecutado: false, mensaje: 'Esa fecha ya pasó; indique una fecha futura.' });
+    }
+    const appts = await futureAppointments(p.id, req.user.clinicaId);
+    const picked = pickAppointment(appts, body.fechaActual ? String(body.fechaActual) : undefined);
+    if (!picked) {
+      return res.json({ ejecutado: false, mensaje: `${p.firstName} ${p.lastName} no tiene citas próximas para mover.` });
+    }
+    if ('ambiguous' in picked) {
+      return res.json({
+        ejecutado: false,
+        mensaje: `${p.firstName} ${p.lastName} tiene varias citas próximas (${listarCitas(picked.ambiguous)}). Dígame cuál mover indicando su fecha y hora.`,
+      });
+    }
+    const appt = picked.appt;
+    const durMs = Math.max(15 * 60 * 1000, appt.endAt.getTime() - appt.startAt.getTime());
+    const newEnd = new Date(newStart.getTime() + durMs);
+    // Sillón: se intenta conservar el mismo; si ese horario está ocupado, se
+    // busca cualquier otro sillón activo libre (sin chocar con la propia cita).
+    const chairs = await prisma.chair.findMany({
+      where: { clinicaId: req.user.clinicaId, active: true },
+      orderBy: { number: 'asc' },
+      select: { id: true },
+    });
+    const ordered = [
+      ...(appt.chairId ? [appt.chairId] : []),
+      ...chairs.map((c) => c.id).filter((id) => id !== appt.chairId),
+    ];
+    if (ordered.length === 0) {
+      return res.json({ ejecutado: false, mensaje: 'No hay sillones configurados en la clínica.' });
+    }
+    let chairId: string | null = null;
+    for (const c of ordered) {
+      const conflict = await prisma.appointment.count({
+        where: { chairId: c, id: { not: appt.id }, status: { not: 'cancelada' }, startAt: { lt: newEnd }, endAt: { gt: newStart } },
+      });
+      if (conflict === 0) {
+        chairId = c;
+        break;
+      }
+    }
+    if (!chairId) {
+      return res.json({ ejecutado: false, mensaje: 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.' });
+    }
+    await prisma.appointment.update({ where: { id: appt.id }, data: { startAt: newStart, endAt: newEnd, chairId } });
+    const antes = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    const despues = newStart.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    return res.json({ ejecutado: true, mensaje: `Listo: moví la cita de ${p.firstName} ${p.lastName} del ${antes} al ${despues}.` });
+  }
+
+  if (body.tipo === 'cancelar_cita') {
+    const perms = await resolveRequestPermissions(req);
+    let allowed = false;
+    if (perms === 'full-access') allowed = true;
+    else if (perms !== 'no-clinic') allowed = perms.agenda;
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.agenda}».` });
+    }
+    const r = await resolvePatient(String(body.paciente ?? ''), req);
+    if ('error' in r) {
+      return res.json({ ejecutado: false, mensaje: r.error });
+    }
+    const p = r.patient;
+    const appts = await futureAppointments(p.id, req.user.clinicaId);
+    const picked = pickAppointment(appts, body.fechaHora ? String(body.fechaHora) : undefined);
+    if (!picked) {
+      return res.json({ ejecutado: false, mensaje: `${p.firstName} ${p.lastName} no tiene citas próximas para cancelar.` });
+    }
+    if ('ambiguous' in picked) {
+      return res.json({
+        ejecutado: false,
+        mensaje: `${p.firstName} ${p.lastName} tiene varias citas próximas (${listarCitas(picked.ambiguous)}). Dígame cuál cancelar indicando su fecha y hora.`,
+      });
+    }
+    const appt = picked.appt;
+    await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'cancelada' } });
+    const cuando = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    return res.json({ ejecutado: true, mensaje: `Listo: cancelé la cita de ${p.firstName} ${p.lastName} del ${cuando}.` });
+  }
+
+  if (body.tipo === 'marcar_llegada') {
+    const perms = await resolveRequestPermissions(req);
+    let allowed = false;
+    if (perms === 'full-access') allowed = true;
+    else if (perms !== 'no-clinic') allowed = perms.agenda;
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.agenda}».` });
+    }
+    const r = await resolvePatient(String(body.paciente ?? ''), req);
+    if ('error' in r) {
+      return res.json({ ejecutado: false, mensaje: r.error });
+    }
+    const p = r.patient;
+    const nombre = `${p.firstName} ${p.lastName}`;
+    const appts = await todaysAppointments(p.id, req.user.clinicaId);
+    if (appts.length === 0) {
+      return res.json({ ejecutado: false, mensaje: `${nombre} no tiene una cita para hoy.` });
+    }
+    const picked = pickAppointment(appts, body.fechaHora ? String(body.fechaHora) : undefined);
+    if (!picked || 'ambiguous' in picked) {
+      const lista = picked && 'ambiguous' in picked ? picked.ambiguous : appts;
+      return res.json({
+        ejecutado: false,
+        mensaje: `${nombre} tiene varias citas hoy (${listarCitas(lista)}). Dígame a qué hora es la que llegó.`,
+      });
+    }
+    const appt = picked.appt;
+    const yaLlego: Record<string, string> = { llego: 'llegada', en_atencion: 'en atención', finalizada: 'finalizada' };
+    if (yaLlego[appt.status]) {
+      return res.json({ ejecutado: false, mensaje: `La cita de ${nombre} ya figura como «${yaLlego[appt.status]}».` });
+    }
+    await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'llego', arrivedAt: new Date() } });
+    const hora = appt.startAt.toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit' });
+    return res.json({ ejecutado: true, mensaje: `Listo: registré la llegada de ${nombre} (cita de las ${hora}).` });
   }
 
   if (body.tipo === 'editar_ficha') {
