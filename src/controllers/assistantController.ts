@@ -4,6 +4,9 @@ import { getAnthropicClient, isAnthropicConfigured, getAnthropicModel } from '..
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 import { PERMISSION_LABELS, type PermissionKey } from '../lib/rolePermissions';
 import { sendMail } from '../lib/mailer';
+import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation } from '../lib/federationSync';
+import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
+import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError, getAiTokenUsage } from '../lib/aiTokenUsage';
 
 function escapeHtml(s: string): string {
@@ -42,11 +45,13 @@ const INSTRUCTIONS = [
   'Para datos de un PROFESIONAL o empleado (no un paciente) usa "buscar_profesional". Un paciente y un profesional son cosas distintas: no busques a un profesional como paciente.',
   'Si el usuario pide cambiar, conceder o quitar PERMISOS de alguien, no uses ninguna herramienta ni lo propongas: responde con amabilidad que, por seguridad, los permisos NO se cambian desde el asistente y que debe hacerlo un administrador en el panel de Configuración → Permisos.',
   'Usa cada herramienta SOLO cuando el usuario lo pida de verdad; no busques en saludos, agradecimientos ni preguntas generales, y no repitas una consulta que ya mostraste. Si piden algo que aún no puedes consultar (por ejemplo el saldo o la cartola detallada), dilo en texto, sin usar una herramienta que no corresponde.',
-  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
+  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "registrar_pago" (con "paciente" y "monto" en pesos; opcionalmente "metodo" de pago); "estado_presupuesto" (con "presupuesto" = número y "estado" = el nuevo estado del plan); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
   'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
   'Si el usuario dice que un paciente LLEGÓ a la clínica, llegó a su hora, está en recepción, o "marca la llegada" (ej. "llegó Juan", "ya llegó la señora Rojas", "marca que llegó Bruno"), usa "proponer_accion" tipo "marcar_llegada" con el "paciente". El sistema busca la cita de HOY de ese paciente y la deja registrada como llegada al confirmar.',
   'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, o "¿tengo hora el martes?", usa la herramienta "buscar_hora_libre" con la "fecha" del día que consultan (formato "YYYY-MM-DD"); el sistema le mostrará los horarios disponibles de ese día. No inventes horas: deja que la herramienta las calcule.',
-  'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
+  'Si el usuario dice que un paciente PAGÓ o ABONÓ un monto ("Juan pagó 20 mil", "abónale 15.000 a la señora", "registra un pago de 30000 de Bruno"), usa "proponer_accion" tipo "registrar_pago" con el "paciente" y el "monto" en pesos chilenos como número entero (ej. "20 mil" → 20000, "$15.000" → 15000). Si mencionan el medio de pago (efectivo, tarjeta, transferencia), ponlo en "metodo". Si no te dan el monto, pregúntalo; nunca lo inventes. Registra solo ingresos (abonos), no cobros ni deudas. Si aclaran que el pago es de un presupuesto o tratamiento específico, incluye "presupuesto" con su número (ej. "del presupuesto 74" → presupuesto: "74"); si no lo mencionan, el abono queda libre (sin presupuesto).',
+  'Si piden cambiar el ESTADO de un presupuesto / plan de tratamiento — "inicia el tratamiento del presupuesto 74", "marca el presupuesto 74 como terminado", "da de alta el presupuesto 74", "reabre el presupuesto 74" — usa "proponer_accion" tipo "estado_presupuesto" con "presupuesto" (su número) y "estado" con uno de estos valores exactos: "sin_iniciar" (reabrir), "en_tratamiento" (iniciar/empezar/activar), "terminado" (terminar/finalizar) o "alta" (dar de alta). Un presupuesto ya "de alta" no se puede modificar: el sistema lo avisará.',
+  'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
   'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
   'El usuario puede escribir nombres de forma informal o con errores de tipeo; usa el contexto de la conversación para entender a quién o a qué se refiere, sobre todo en preguntas de seguimiento como "¿y tiene cita?" o "¿pero él tiene?".',
   'Si la petición es ambigua o falta un dato clave (el nombre exacto, la fecha, qué dato cambiar, a qué persona te refieres), haz UNA pregunta breve para aclarar, en vez de adivinar, inventar o usar una herramienta a ciegas. Vale más preguntar que equivocarse.',
@@ -296,6 +301,10 @@ const TOOLS = [
         rut: { type: 'string', description: 'Para crear_paciente: el RUT del paciente.' },
         telefono: { type: 'string', description: 'Para crear_paciente: teléfono (opcional).' },
         correo: { type: 'string', description: 'Para crear_paciente: correo (opcional).' },
+        monto: { type: 'number', description: 'Para registrar_pago: monto del abono en pesos chilenos, número entero sin puntos (ej. 20000).' },
+        metodo: { type: 'string', description: 'Para registrar_pago: medio de pago (efectivo, tarjeta, transferencia), opcional.' },
+        presupuesto: { type: 'string', description: 'Número del presupuesto/plan (ej. "74"). En registrar_pago es opcional (si no, abono libre); en estado_presupuesto es obligatorio.' },
+        estado: { type: 'string', description: 'Para estado_presupuesto: nuevo estado del plan, uno de "sin_iniciar", "en_tratamiento", "terminado" o "alta".' },
       },
       required: ['tipo', 'resumen'],
       additionalProperties: false,
@@ -945,6 +954,10 @@ export async function chat(req: Request, res: Response) {
             rut: args.rut ? String(args.rut) : null,
             telefono: args.telefono ? String(args.telefono) : null,
             correo: args.correo ? String(args.correo) : null,
+            monto: args.monto != null && args.monto !== '' && Number.isFinite(Number(args.monto)) ? Number(args.monto) : null,
+            metodo: args.metodo ? String(args.metodo) : null,
+            presupuesto: args.presupuesto ? String(args.presupuesto) : null,
+            estado: args.estado ? String(args.estado) : null,
           },
         });
       }
@@ -985,6 +998,10 @@ export async function execute(req: Request, res: Response) {
     rut?: string;
     telefono?: string;
     correo?: string;
+    monto?: number;
+    metodo?: string;
+    presupuesto?: string;
+    estado?: string;
   };
 
   try {
@@ -1207,6 +1224,130 @@ export async function execute(req: Request, res: Response) {
     await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'llego', arrivedAt: new Date() } });
     const hora = appt.startAt.toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit' });
     return res.json({ ejecutado: true, mensaje: `Listo: registré la llegada de ${nombre} (cita de las ${hora}).` });
+  }
+
+  if (body.tipo === 'registrar_pago') {
+    // Registrar pagos exige el permiso de cartola (igual que en Cartola → "Nuevo
+    // movimiento"). Es un ABONO: queda como haber en la cartola del paciente y
+    // se sincroniza a Gestión como ingreso para las liquidaciones (bug 4).
+    const perms = await resolveRequestPermissions(req);
+    let allowed = false;
+    if (perms === 'full-access') allowed = true;
+    else if (perms !== 'no-clinic') allowed = perms.cartola;
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.cartola}».` });
+    }
+    const r = await resolvePatient(String(body.paciente ?? ''), req);
+    if ('error' in r) {
+      return res.json({ ejecutado: false, mensaje: r.error });
+    }
+    const p = r.patient;
+    const nombre = `${p.firstName} ${p.lastName}`;
+    const monto = Math.round(Number(body.monto ?? 0));
+    if (!Number.isFinite(monto) || monto <= 0) {
+      return res.json({ ejecutado: false, mensaje: 'Indíqueme un monto válido mayor a 0 para el abono.' });
+    }
+    const metodo = String(body.metodo ?? '').trim() || null;
+    // Si indican un presupuesto, se ata el abono a él (así cuenta para ese plan
+    // y se atribuye al profesional en las liquidaciones). Sin esto, abono libre.
+    let treatmentPlanId: string | null = null;
+    let planTxt = '';
+    const planRef = String(body.presupuesto ?? '').trim();
+    if (planRef) {
+      const numMatch = planRef.match(/\d+/);
+      const plans = await prisma.treatmentPlan.findMany({
+        where: {
+          patientId: p.id,
+          ...(numMatch ? { number: Number(numMatch[0]) } : { name: { contains: planRef, mode: 'insensitive' as const } }),
+        },
+        select: { id: true, number: true },
+        take: 5,
+      });
+      if (plans.length === 0) {
+        return res.json({ ejecutado: false, mensaje: `No encontré el presupuesto «${planRef}» de ${nombre}. Verifique el número e intente de nuevo.` });
+      }
+      if (plans.length > 1) {
+        return res.json({ ejecutado: false, mensaje: `${nombre} tiene varios presupuestos que calzan (${plans.map((pl) => '#' + pl.number).join(', ')}). Dígame el número exacto.` });
+      }
+      treatmentPlanId = plans[0].id;
+      planTxt = ` al presupuesto #${plans[0].number}`;
+    }
+    const movement = await prisma.ledgerMovement.create({
+      data: {
+        patientId: p.id,
+        treatmentPlanId,
+        type: 'abono',
+        debe: 0,
+        haber: monto,
+        description: String(body.contenido ?? '').trim() || null,
+        paymentMethod: metodo,
+        registeredById: req.user.sub,
+        clinicaId: req.user.clinicaId,
+      },
+    });
+    // Best-effort: si falla la sincronización, el abono igual quedó registrado.
+    syncLedgerMovementToFederation(movement).catch((err) => {
+      console.error('[assistant] no se pudo sincronizar el abono con Gestión', err);
+    });
+    const montoTxt = monto.toLocaleString('es-CL');
+    return res.json({
+      ejecutado: true,
+      mensaje: `Listo: registré un abono de $${montoTxt} a ${nombre}${planTxt}${metodo ? ` (${metodo})` : ''}.`,
+    });
+  }
+
+  if (body.tipo === 'estado_presupuesto') {
+    const perms = await resolveRequestPermissions(req);
+    let allowed = false;
+    if (perms === 'full-access') allowed = true;
+    else if (perms !== 'no-clinic') allowed = perms.tratamientos;
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.tratamientos}».` });
+    }
+    const estado = String(body.estado ?? '').trim().toLowerCase();
+    if (!TREATMENT_STATUSES.includes(estado)) {
+      return res.json({ ejecutado: false, mensaje: 'No reconozco ese estado. Puede ser: sin iniciar, en tratamiento, terminado o de alta.' });
+    }
+    const numMatch = String(body.presupuesto ?? '').match(/\d+/);
+    if (!numMatch) {
+      return res.json({ ejecutado: false, mensaje: 'Indíqueme el número del presupuesto.' });
+    }
+    const where: { clinicaId: string; number: number; patientId?: string } = {
+      clinicaId: req.user.clinicaId,
+      number: Number(numMatch[0]),
+    };
+    if (body.paciente && String(body.paciente).trim()) {
+      const rp = await resolvePatient(String(body.paciente), req);
+      if (!('error' in rp)) where.patientId = rp.patient.id;
+    }
+    const plans = await prisma.treatmentPlan.findMany({
+      where,
+      select: { id: true, number: true, status: true, startedByUserId: true, completedByUserId: true, patient: { select: { firstName: true, lastName: true } } },
+      take: 5,
+    });
+    if (plans.length === 0) {
+      return res.json({ ejecutado: false, mensaje: `No encontré el presupuesto #${numMatch[0]} en su clínica.` });
+    }
+    if (plans.length > 1) {
+      return res.json({ ejecutado: false, mensaje: `Hay varios presupuestos #${numMatch[0]}. Dígame el nombre del paciente.` });
+    }
+    const plan = plans[0];
+    if (isPlanAlta(plan)) {
+      return res.json({ ejecutado: false, mensaje: `El presupuesto #${plan.number} ya está de alta y no se puede modificar.` });
+    }
+    const legible: Record<string, string> = { sin_iniciar: 'sin iniciar', en_tratamiento: 'en tratamiento', terminado: 'terminado', alta: 'de alta' };
+    if (plan.status === estado) {
+      return res.json({ ejecutado: false, mensaje: `El presupuesto #${plan.number} ya está «${legible[estado]}».` });
+    }
+    const updated = await prisma.treatmentPlan.update({
+      where: { id: plan.id },
+      data: { status: estado, ...lifecycleStampsForManualStatusChange(plan, estado, req.user.sub) },
+    });
+    syncTreatmentPlanToFederation(updated).catch((err) => {
+      console.error('[assistant] no se pudo sincronizar el cambio de estado del presupuesto', err);
+    });
+    const nombre = `${plan.patient.firstName} ${plan.patient.lastName}`;
+    return res.json({ ejecutado: true, mensaje: `Listo: el presupuesto #${plan.number} de ${nombre} quedó «${legible[estado]}».` });
   }
 
   if (body.tipo === 'editar_ficha') {
