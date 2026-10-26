@@ -29,10 +29,15 @@ function parseSantiago(input: string): Date | null {
     return Number.isNaN(d.getTime()) ? null : d;
   }
   const [Y, Mo, D, H, Mi] = [m[1], m[2], m[3], m[4], m[5]].map(Number);
-  const guess = new Date(Date.UTC(Y, Mo - 1, D, H, Mi));
-  const asSantiago = new Date(guess.toLocaleString('en-US', { timeZone: 'America/Santiago' }));
-  const diff = guess.getTime() - asSantiago.getTime();
-  const result = new Date(guess.getTime() + diff);
+  const utcGuess = Date.UTC(Y, Mo - 1, D, H, Mi);
+  // Desfase real de Santiago cerca de ese instante. Se calcula restando dos
+  // lecturas (Santiago y UTC) hechas en la MISMA zona de la máquina, que así se
+  // cancela: el resultado es correcto aunque el servidor NO corra en UTC.
+  const d = new Date(utcGuess);
+  const sant = new Date(d.toLocaleString('en-US', { timeZone: 'America/Santiago' }));
+  const utc = new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const offset = sant.getTime() - utc.getTime();
+  const result = new Date(utcGuess - offset);
   return Number.isNaN(result.getTime()) ? null : result;
 }
 
