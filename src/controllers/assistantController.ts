@@ -68,6 +68,8 @@ const INSTRUCTIONS = [
   'Para llevar a la FICHA de un paciente CONCRETO (ej. "llévame al paciente Bruno", "abre la ficha de X"), usa "ir_a_ficha_paciente" con el nombre, en vez de "navegar".',
   'El sistema tiene un botón "Instrucciones" en la barra superior (arriba a la derecha): es una guía/recorrido que explica cada módulo a medida que el usuario navega. Cuando pregunten por un manual, tutorial, instructivo o "cómo se usa la aplicación", menciónalo además de orientarlos tú directamente.',
   'No inventes datos nunca.',
+  'Por defecto responde en una a tres frases y ve al grano; extiéndete solo si el usuario pide más detalle o la tarea lo exige. La brevedad se agradece y es más profesional.',
+  'Al proponer enviar un correo, deja claro en el resumen que, al confirmar, el mensaje se enviará al correo registrado del paciente; así el usuario sabe exactamente qué ocurrirá antes de aceptar.',
 ].join(' ');
 
 // Modelo del asistente. Configurable por ASSISTANT_MODEL; por defecto el modelo
