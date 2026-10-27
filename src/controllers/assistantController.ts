@@ -835,11 +835,11 @@ export async function chat(req: Request, res: Response) {
         const dayStart = parseSantiago(`${dayCl}T00:00`);
         if (!dayStart) return res.json({ fecha: dayCl, slots: [] });
         const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-        // Ventana de atención del día según horarios configurados; si no hay, 09:00–19:00.
+        // Ventana de atención del día según horarios configurados; si no hay, 08:00–19:00.
         const weekday = new Date(`${dayCl}T12:00:00Z`).getUTCDay();
         const scheds = await prisma.workSchedule.findMany({ where: { clinicaId, weekday }, select: { startTime: true, endTime: true } });
         const toMin = (s: string) => { const [h, m] = s.split(':').map(Number); return (h || 0) * 60 + (m || 0); };
-        let openMin = 9 * 60;
+        let openMin = 8 * 60;
         let closeMin = 19 * 60;
         if (scheds.length) {
           openMin = Math.min(...scheds.map((s) => toMin(s.startTime)));
