@@ -17,6 +17,8 @@ import {
   fetchRemoteInventoryLots,
   createRemoteInventoryLotMovement,
 } from '../lib/federationClient';
+import cloudinary from '../lib/cloudinary';
+import { buildRecetaManualPdf } from '../lib/recetaManualPdf';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -74,6 +76,7 @@ const INSTRUCTIONS = [
   'La plataforma fordentcloud maneja muchas áreas y debes poder orientar sobre todas: agenda y citas, fichas de pacientes, presupuestos y planes de tratamiento, evoluciones clínicas, pagos y cartola, inventario de insumos, consentimientos, documentos clínicos, recetas, radiografías (Rx) y catálogos de prestaciones. Para lo que SÍ tienes herramienta, úsala; para lo demás, orienta al usuario sobre cómo y dónde hacerlo en el sistema.',
   'Si te piden ejecutar una acción para la que todavía no tienes herramienta, no finjas ni inventes: explica con amabilidad que esa acción aún no está disponible desde el asistente y que puede realizarla en la sección correspondiente del sistema; luego ofrece lo que sí puedes hacer. Si la cuenta no tiene permiso para algo, indícalo con claridad.',
   'El INVENTARIO de insumos es SOLO para administradores. Si preguntan por el stock de un insumo ("¿cuánto queda de X?", "¿tenemos anestesia?", "revisa el inventario") usa "ver_inventario". Si preguntan qué se está acabando, qué reponer, qué está vencido o por vencer, usa "alertas_inventario". Si quien pregunta no es administrador, el sistema se lo negará solo; nunca inventes cifras de stock ni de lotes.',
+  'RECETAS: si un profesional te DICTA una receta ("hazle una receta a Juan: amoxicilina 500 cada 8 horas por 7 días"), usa "proponer_accion" tipo "generar_receta" con "paciente" y "medicamentos" (una entrada por medicamento, con "medicamento" = nombre y dosis, e "indicaciones" = cómo tomarlo); si agregan una observación al pie, ponla en "observaciones". Regla ABSOLUTA: transcribe EXACTAMENTE lo que el profesional dicta; nunca inventes, sugieras ni agregues medicamentos, dosis o indicaciones por tu cuenta. Si te piden que TÚ decidas qué recetar ("¿qué le doy para una infección?"), niégate con amabilidad: eso lo define el profesional, tú solo registras lo que él indica. La receta la firma el profesional que te habla; si la cuenta no tiene firma guardada (o es de administración/recepción), el sistema avisará que no puede generarla.',
   'Si un administrador dice que se USÓ, GASTÓ, CONSUMIÓ o hay que SACAR/DESCONTAR una cantidad de un insumo ("saca 3 de anestesia", "gastamos 5 algodones", "descuenta 2 jeringas del inventario"), usa "proponer_accion" tipo "descontar_stock" con "insumo" (el nombre) y "cantidad" (número positivo de unidades). El sistema descuenta del lote que vence primero y pide tu confirmación antes. Si no te dan la cantidad, pregúntala; nunca la inventes. Esto solo registra salidas (consumo), nunca agrega stock.',
   'Adapta tu ayuda al rol de quien te habla: a recepción (operador) apóyale sobre todo con agendar y confirmar citas y con datos de contacto; a los profesionales (odontólogo/radiólogo) con sus pacientes, citas, presupuestos y evoluciones; al administrador con todo, incluida la visión general de la clínica.',
   'Nunca des diagnósticos ni recomendaciones de tratamiento médico o dental: eso lo decide el profesional. Puedes buscar, organizar y resumir información, pero no opinar clínicamente.',
@@ -330,7 +333,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -347,6 +350,19 @@ const TOOLS = [
         estado: { type: 'string', description: 'Para estado_presupuesto: nuevo estado del plan, uno de "sin_iniciar", "en_tratamiento", "terminado" o "alta".' },
         insumo: { type: 'string', description: 'Para descontar_stock: nombre del insumo del que se descuenta (ej. "anestesia", "algodón").' },
         cantidad: { type: 'number', description: 'Para descontar_stock: cuántas unidades se descuentan, número positivo (ej. "saca 3" → 3).' },
+        medicamentos: {
+          type: 'array',
+          description: 'Para generar_receta: la lista de medicamentos TAL CUAL los dicta el profesional. Nunca inventes ni agregues medicamentos ni dosis que no haya dicho.',
+          items: {
+            type: 'object',
+            properties: {
+              medicamento: { type: 'string', description: 'Nombre y dosis del medicamento (ej. "Amoxicilina 500 mg").' },
+              indicaciones: { type: 'string', description: 'Cómo tomarlo (ej. "cada 8 horas por 7 días").' },
+            },
+            required: ['medicamento'],
+          },
+        },
+        observaciones: { type: 'string', description: 'Para generar_receta: observación opcional al pie de la receta.' },
       },
       required: ['tipo', 'resumen'],
       additionalProperties: false,
@@ -1138,6 +1154,12 @@ export async function chat(req: Request, res: Response) {
             estado: args.estado ? String(args.estado) : null,
             insumo: args.insumo ? String(args.insumo) : null,
             cantidad: args.cantidad != null && args.cantidad !== '' && Number.isFinite(Number(args.cantidad)) ? Number(args.cantidad) : null,
+            medicamentos: Array.isArray(args.medicamentos)
+              ? (args.medicamentos as any[])
+                  .map((it) => ({ medicamento: String(it?.medicamento ?? '').trim(), indicaciones: String(it?.indicaciones ?? '').trim() }))
+                  .filter((it) => it.medicamento)
+              : null,
+            observaciones: args.observaciones ? String(args.observaciones) : null,
           },
         });
       }
@@ -1202,6 +1224,8 @@ export async function execute(req: Request, res: Response) {
     estado?: string;
     insumo?: string;
     cantidad?: number;
+    medicamentos?: { medicamento?: string; indicaciones?: string }[];
+    observaciones?: string;
   };
 
   try {
@@ -1745,6 +1769,105 @@ export async function execute(req: Request, res: Response) {
       return res.json({
         ejecutado: true,
         mensaje: `Listo: descontadas ${descontado}${unidad} de ${sup.name}. Quedan ${quedan}${unidad} disponibles.`,
+      });
+    }
+
+    if (body.tipo === 'generar_receta') {
+      // Misma puerta que la ruta real de receta: permiso "pacientes". La receta
+      // la FIRMA el profesional, así que además exige su firma guardada — eso
+      // deja fuera a recepción y a administración (no tienen firma), tal como el
+      // endpoint existente. No se toca ese endpoint: se reusa su generador de PDF.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.pacientes;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.pacientes}».` });
+      }
+      const medicamentos = (body.medicamentos ?? [])
+        .map((it) => ({ medicamento: String(it?.medicamento ?? '').trim(), indicaciones: String(it?.indicaciones ?? '').trim() }))
+        .filter((it) => it.medicamento);
+      if (medicamentos.length === 0) {
+        return res.json({ ejecutado: false, mensaje: 'Dígame al menos un medicamento (con su dosis e indicaciones) para la receta.' });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) {
+        return res.json({ ejecutado: false, mensaje: r.error });
+      }
+      const patient = await prisma.patient.findUnique({ where: { id: r.patient.id } });
+      if (!patient) {
+        return res.json({ ejecutado: false, mensaje: 'No encontré ese paciente.' });
+      }
+      const [clinica, professional] = await Promise.all([
+        prisma.clinica.findUnique({
+          where: { id: req.user.clinicaId },
+          select: {
+            name: true, logoUrl: true, address: true, phone: true, email: true, website: true,
+            rut: true, documentType: true,
+            legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
+          },
+        }),
+        prisma.user.findUnique({ where: { id: req.user.sub }, select: { name: true, rut: true, documentType: true, colegiado: true, signatureUrl: true } }),
+      ]);
+      if (!clinica) {
+        return res.json({ ejecutado: false, mensaje: 'No encontré la clínica.' });
+      }
+      // Sin firma guardada no se genera (igual que el endpoint real): la receta
+      // es un acto del profesional y va firmada.
+      if (!professional?.signatureUrl) {
+        return res.json({
+          ejecutado: false,
+          mensaje: 'Las recetas las firma el profesional, y su cuenta no tiene una firma guardada. Guárdela en su perfil (o pídale a un profesional con firma que la genere). Una cuenta de administración o recepción no puede emitir recetas.',
+        });
+      }
+      const createdAt = new Date();
+      const pdfBuffer = await buildRecetaManualPdf({
+        clinica,
+        patient: {
+          firstName: patient.firstName,
+          lastName: patient.lastName,
+          rut: patient.rut,
+          documentType: patient.documentType,
+          birthDate: patient.birthDate,
+          address: patient.address,
+        },
+        professional,
+        medicamentos,
+        observaciones: String(body.observaciones ?? '').trim() || null,
+        createdAt,
+      });
+      try {
+        const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { resource_type: 'raw', format: 'pdf', folder: `dentalcloud/${patient.id}/receta` },
+            (error, result) => {
+              if (error || !result) return reject(error);
+              resolve({ secure_url: result.secure_url, public_id: result.public_id });
+            }
+          );
+          stream.end(pdfBuffer);
+        });
+        await prisma.clinicalDocument.create({
+          data: {
+            patientId: patient.id,
+            uploadedById: req.user.sub,
+            category: 'receta',
+            fileName: `receta-${createdAt.toISOString().slice(0, 10)}.pdf`,
+            fileUrl: uploadResult.secure_url,
+            resourceType: 'raw',
+            publicId: uploadResult.public_id,
+            description: medicamentos.map((it) => it.medicamento).join(', '),
+            clinicaId: req.user.clinicaId,
+          },
+        });
+      } catch (e) {
+        console.error('[assistant.execute] generar_receta:', e);
+        return res.json({ ejecutado: false, mensaje: 'No se pudo generar la receta. Intente desde la ficha del paciente.' });
+      }
+      const n = medicamentos.length;
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: receta generada y guardada en la ficha de ${patient.firstName} ${patient.lastName} (${n} ${n === 1 ? 'medicamento' : 'medicamentos'}).`,
       });
     }
 
