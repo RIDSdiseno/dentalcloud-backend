@@ -66,6 +66,7 @@ const INSTRUCTIONS = [
   'Si el usuario dice que un paciente PAGÓ o ABONÓ un monto ("Juan pagó 20 mil", "abónale 15.000 a la señora", "registra un pago de 30000 de Bruno"), usa "proponer_accion" tipo "registrar_pago" con el "paciente" y el "monto" en pesos chilenos como número entero (ej. "20 mil" → 20000, "$15.000" → 15000). Si mencionan el medio de pago (efectivo, tarjeta, transferencia), ponlo en "metodo". Si no te dan el monto, pregúntalo; nunca lo inventes. Registra solo ingresos (abonos), no cobros ni deudas. Si aclaran que el pago es de un presupuesto o tratamiento específico, incluye "presupuesto" con su número (ej. "del presupuesto 74" → presupuesto: "74"); si no lo mencionan, el abono queda libre (sin presupuesto).',
   'Si piden cambiar el ESTADO de un presupuesto / plan de tratamiento — "inicia el tratamiento del presupuesto 74", "marca el presupuesto 74 como terminado", "da de alta el presupuesto 74", "reabre el presupuesto 74" — usa "proponer_accion" tipo "estado_presupuesto" con "presupuesto" (su número) y "estado" con uno de estos valores exactos: "sin_iniciar" (reabrir), "en_tratamiento" (iniciar/empezar/activar), "terminado" (terminar/finalizar) o "alta" (dar de alta). Un presupuesto ya "de alta" no se puede modificar: el sistema lo avisará.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
+  'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "agéndale una hora a Juan el martes y márcale la llegada a Ana", o "busca a Pedro y muéstrame las horas libres del lunes"), atiéndelos TODOS en la misma respuesta: usa varias herramientas a la vez, una por cada pedido. No te quedes solo con el primero. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una.',
   'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
   'El usuario puede escribir nombres de forma informal o con errores de tipeo; usa el contexto de la conversación para entender a quién o a qué se refiere, sobre todo en preguntas de seguimiento como "¿y tiene cita?" o "¿pero él tiene?".',
   'Si la petición es ambigua o falta un dato clave (el nombre exacto, la fecha, qué dato cambiar, a qué persona te refieres), haz UNA pregunta breve para aclarar, en vez de adivinar, inventar o usar una herramienta a ciegas. Vale más preguntar que equivocarse.',
@@ -649,8 +650,14 @@ export async function chat(req: Request, res: Response) {
       await recordAiTokenUsage(clinicaId, (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0));
     }
 
-    const toolUse = response.content.find((b) => b.type === 'tool_use');
-    if (toolUse && toolUse.type === 'tool_use') {
+    // Despacha UNA herramienta. El parámetro se llama `res` a propósito: así el
+    // cuerpo de abajo (cada `res.json(...)`) escribe en el destino que se le
+    // pase, sin cambiar nada. Para un solo pedido se le pasa el `res` real; para
+    // varios (multi-intención), un recolector que guarda cada resultado.
+    const handleOneTool = async (
+      toolUse: any,
+      res: { json: (x: any) => any }
+    ): Promise<any> => {
       const args = (toolUse.input && typeof toolUse.input === 'object' ? toolUse.input : {}) as Record<string, unknown>;
 
       // Buscar paciente: la consulta la resuelve el backend y los resultados
@@ -1134,6 +1141,24 @@ export async function chat(req: Request, res: Response) {
           },
         });
       }
+    };
+
+    // El modelo puede pedir VARIAS herramientas a la vez cuando el usuario junta
+    // varios pedidos en un mensaje. Una sola: comportamiento de siempre. Varias:
+    // se corre cada una recolectando su resultado y se devuelven juntas en
+    // `multi`, para que el front muestre una tarjeta por pedido.
+    const toolUses = response.content.filter((b) => b.type === 'tool_use');
+    if (toolUses.length === 1) {
+      return await handleOneTool(toolUses[0], res);
+    }
+    if (toolUses.length > 1) {
+      const resultados: any[] = [];
+      for (const tu of toolUses) {
+        let captured: any = null;
+        await handleOneTool(tu, { json: (x: any) => { captured = x; return x; } });
+        if (captured) resultados.push(captured);
+      }
+      return res.json({ multi: resultados });
     }
 
     const reply = response.content
