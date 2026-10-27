@@ -1016,7 +1016,11 @@ export async function chat(req: Request, res: Response) {
           } else {
             const cutoff = new Date(now.getTime() - 30 * DAY);
             const plans = await prisma.treatmentPlan.findMany({
-              where: { ...scope, completedAt: null, status: { not: 'terminado' }, amount: { gt: 0 }, updatedAt: { lt: cutoff } },
+              // "Sin avanzar" = ni terminado ni de alta. Se filtra por ESTADO
+              // (no por completedAt): un plan que se terminó y luego se reabrió
+              // conserva completedAt estampado, así que filtrar por completedAt
+              // lo escondía para siempre aunque volviera a estar activo-detenido.
+              where: { ...scope, status: { notIn: ['terminado', 'alta'] }, amount: { gt: 0 }, updatedAt: { lt: cutoff } },
               select: {
                 number: true,
                 name: true,
@@ -1180,7 +1184,14 @@ export async function chat(req: Request, res: Response) {
       const resultados: any[] = [];
       for (const tu of toolUses) {
         let captured: any = null;
-        await handleOneTool(tu, { json: (x: any) => { captured = x; return x; } });
+        // try/catch POR pedido: si uno falla (p.ej. un hipo de red/DB), no
+        // tumba a los demás; ese pedido devuelve un aviso y el resto se muestra.
+        try {
+          await handleOneTool(tu, { json: (x: any) => { captured = x; return x; } });
+        } catch (e) {
+          console.error('[assistant.chat] error en un pedido del lote:', e);
+          captured = { reply: 'No pude completar uno de los pedidos; inténtelo por separado.' };
+        }
         if (captured) resultados.push(captured);
       }
       return res.json({ multi: resultados });
