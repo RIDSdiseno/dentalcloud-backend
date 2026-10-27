@@ -9,9 +9,14 @@ import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError, getAiTokenUsage } from '../lib/aiTokenUsage';
 import { listInsumoSupplies } from '../services/insumoSupply.service';
-import { getInsumoAlerts } from '../services/insumoLot.service';
+import { getInsumoAlerts, listInsumoLots, createInsumoLotMovement } from '../services/insumoLot.service';
 import { isClinicaFederatedForInventory } from '../lib/federationEligibility';
-import { fetchRemoteInventorySupplies, fetchRemoteInventoryAlerts } from '../lib/federationClient';
+import {
+  fetchRemoteInventorySupplies,
+  fetchRemoteInventoryAlerts,
+  fetchRemoteInventoryLots,
+  createRemoteInventoryLotMovement,
+} from '../lib/federationClient';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -68,6 +73,7 @@ const INSTRUCTIONS = [
   'La plataforma fordentcloud maneja muchas áreas y debes poder orientar sobre todas: agenda y citas, fichas de pacientes, presupuestos y planes de tratamiento, evoluciones clínicas, pagos y cartola, inventario de insumos, consentimientos, documentos clínicos, recetas, radiografías (Rx) y catálogos de prestaciones. Para lo que SÍ tienes herramienta, úsala; para lo demás, orienta al usuario sobre cómo y dónde hacerlo en el sistema.',
   'Si te piden ejecutar una acción para la que todavía no tienes herramienta, no finjas ni inventes: explica con amabilidad que esa acción aún no está disponible desde el asistente y que puede realizarla en la sección correspondiente del sistema; luego ofrece lo que sí puedes hacer. Si la cuenta no tiene permiso para algo, indícalo con claridad.',
   'El INVENTARIO de insumos es SOLO para administradores. Si preguntan por el stock de un insumo ("¿cuánto queda de X?", "¿tenemos anestesia?", "revisa el inventario") usa "ver_inventario". Si preguntan qué se está acabando, qué reponer, qué está vencido o por vencer, usa "alertas_inventario". Si quien pregunta no es administrador, el sistema se lo negará solo; nunca inventes cifras de stock ni de lotes.',
+  'Si un administrador dice que se USÓ, GASTÓ, CONSUMIÓ o hay que SACAR/DESCONTAR una cantidad de un insumo ("saca 3 de anestesia", "gastamos 5 algodones", "descuenta 2 jeringas del inventario"), usa "proponer_accion" tipo "descontar_stock" con "insumo" (el nombre) y "cantidad" (número positivo de unidades). El sistema descuenta del lote que vence primero y pide tu confirmación antes. Si no te dan la cantidad, pregúntala; nunca la inventes. Esto solo registra salidas (consumo), nunca agrega stock.',
   'Adapta tu ayuda al rol de quien te habla: a recepción (operador) apóyale sobre todo con agendar y confirmar citas y con datos de contacto; a los profesionales (odontólogo/radiólogo) con sus pacientes, citas, presupuestos y evoluciones; al administrador con todo, incluida la visión general de la clínica.',
   'Nunca des diagnósticos ni recomendaciones de tratamiento médico o dental: eso lo decide el profesional. Puedes buscar, organizar y resumir información, pero no opinar clínicamente.',
   'Trata los datos de pacientes con discreción: entrega solo lo que se te pide y que la cuenta tenga permiso de ver, sin divulgar datos de más.',
@@ -323,7 +329,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -338,6 +344,8 @@ const TOOLS = [
         metodo: { type: 'string', description: 'Para registrar_pago: medio de pago (efectivo, tarjeta, transferencia), opcional.' },
         presupuesto: { type: 'string', description: 'Número del presupuesto/plan (ej. "74"). En registrar_pago es opcional (si no, abono libre); en estado_presupuesto es obligatorio.' },
         estado: { type: 'string', description: 'Para estado_presupuesto: nuevo estado del plan, uno de "sin_iniciar", "en_tratamiento", "terminado" o "alta".' },
+        insumo: { type: 'string', description: 'Para descontar_stock: nombre del insumo del que se descuenta (ej. "anestesia", "algodón").' },
+        cantidad: { type: 'number', description: 'Para descontar_stock: cuántas unidades se descuentan, número positivo (ej. "saca 3" → 3).' },
       },
       required: ['tipo', 'resumen'],
       additionalProperties: false,
@@ -534,6 +542,54 @@ async function readInventoryAlerts(clinicaId: string) {
   const filters = { includeItems: true, limit: 40 };
   if (await isClinicaFederatedForInventory(clinicaId)) return fetchRemoteInventoryAlerts(clinicaId, filters);
   return getInsumoAlerts(clinicaId, filters);
+}
+
+// Un insumo (activo, no archivado) por nombre, acotado a la clínica. Exige
+// precisión: si hay 0 o más de 1, devuelve un error para preguntar, igual que
+// resolvePatient — nunca se descuenta del insumo equivocado.
+type SupplyLite = { id: string; name: string; unit: string | null; currentStock: number | null };
+async function resolveSupply(clinicaId: string, nombre: string): Promise<{ error: string } | { supply: SupplyLite }> {
+  const q = nombre.trim();
+  if (!q) return { error: 'Indíqueme el nombre del insumo.' };
+  const data = await readInventorySupplies(clinicaId, q);
+  const items = (data.items ?? []) as any[];
+  if (items.length === 0) return { error: `No encontré el insumo «${q}» en el inventario.` };
+  // Coincidencia exacta de nombre primero (por si "algodón" calza con varios).
+  const exact = items.filter((s) => String(s.name).trim().toLowerCase() === q.toLowerCase());
+  const pool = exact.length ? exact : items;
+  if (pool.length > 1) {
+    return { error: `Hay varios insumos que coinciden con «${q}» (${pool.slice(0, 5).map((s) => s.name).join(', ')}). Sea más específico.` };
+  }
+  const s = pool[0];
+  return { supply: { id: s.id, name: s.name, unit: s.unit ?? null, currentStock: s.currentStock ?? null } };
+}
+
+type LotLite = { id: string; currentQuantity: number; expirationDate: string | null; expirationStatus: string; isActive: boolean };
+async function readInventoryLots(clinicaId: string, supplyId: string): Promise<LotLite[]> {
+  const filters = { active: true, limit: 200 };
+  const data = await (isClinicaFederatedForInventory(clinicaId).then((fed) =>
+    fed ? fetchRemoteInventoryLots(clinicaId, supplyId, filters) : listInsumoLots(clinicaId, supplyId, filters)
+  ));
+  return (data.items ?? []) as any[];
+}
+
+// Registra una SALIDA (OUT) de un lote. Nativo o federado, misma firma. El
+// servicio nativo valida por su cuenta (no permite salir de lote vencido ni
+// dejar el stock negativo), así que acá solo pasamos cantidades ya acotadas.
+async function writeInventoryOut(
+  clinicaId: string,
+  userId: string,
+  supplyId: string,
+  lotId: string,
+  quantity: number,
+  reason: string
+): Promise<void> {
+  const input = { movementType: 'OUT' as const, quantity, reason };
+  if (await isClinicaFederatedForInventory(clinicaId)) {
+    await createRemoteInventoryLotMovement(clinicaId, supplyId, lotId, input);
+    return;
+  }
+  await createInsumoLotMovement(clinicaId, userId, supplyId, lotId, input);
 }
 
 export async function chat(req: Request, res: Response) {
@@ -1073,6 +1129,8 @@ export async function chat(req: Request, res: Response) {
             metodo: args.metodo ? String(args.metodo) : null,
             presupuesto: args.presupuesto ? String(args.presupuesto) : null,
             estado: args.estado ? String(args.estado) : null,
+            insumo: args.insumo ? String(args.insumo) : null,
+            cantidad: args.cantidad != null && args.cantidad !== '' && Number.isFinite(Number(args.cantidad)) ? Number(args.cantidad) : null,
           },
         });
       }
@@ -1117,6 +1175,8 @@ export async function execute(req: Request, res: Response) {
     metodo?: string;
     presupuesto?: string;
     estado?: string;
+    insumo?: string;
+    cantidad?: number;
   };
 
   try {
@@ -1595,6 +1655,72 @@ export async function execute(req: Request, res: Response) {
         return res.json({ ejecutado: false, mensaje: 'No pude crear el paciente (¿quizá ya existe uno con ese RUT?).' });
       }
       return res.json({ ejecutado: true, mensaje: `Listo: paciente ${firstName} ${lastName} registrado.` });
+    }
+
+    if (body.tipo === 'descontar_stock') {
+      // Inventario = solo administradores (misma regla que requireAdmin).
+      if (!isClinicAdmin(req)) {
+        return res.json({ ejecutado: false, mensaje: 'El inventario de insumos es solo para administradores.' });
+      }
+      const cantidad = Math.floor(Number(body.cantidad));
+      if (!Number.isFinite(cantidad) || cantidad <= 0) {
+        return res.json({ ejecutado: false, mensaje: '¿Cuántas unidades descuento? Indíqueme una cantidad válida.' });
+      }
+      const r = await resolveSupply(req.user.clinicaId, String(body.insumo ?? ''));
+      if ('error' in r) {
+        return res.json({ ejecutado: false, mensaje: r.error });
+      }
+      const sup = r.supply;
+      const unidad = sup.unit ? ` ${sup.unit}` : '';
+      // Lotes utilizables: activos, con stock y NO vencidos, del que vence
+      // primero al que vence después (FEFO); los sin vencimiento van al final.
+      const lots = await readInventoryLots(req.user.clinicaId, sup.id);
+      const usable = lots
+        .filter((l) => l.isActive && l.currentQuantity > 0 && l.expirationStatus !== 'EXPIRED')
+        .sort((a, b) => {
+          const ea = a.expirationDate ? new Date(a.expirationDate).getTime() : Infinity;
+          const eb = b.expirationDate ? new Date(b.expirationDate).getTime() : Infinity;
+          return ea - eb;
+        });
+      const disponible = usable.reduce((s, l) => s + l.currentQuantity, 0);
+      if (disponible <= 0) {
+        return res.json({
+          ejecutado: false,
+          mensaje: `${sup.name} no tiene lotes con stock disponible para descontar. Revíselo en la sección de Inventario.`,
+        });
+      }
+      if (disponible < cantidad) {
+        return res.json({
+          ejecutado: false,
+          mensaje: `Solo hay ${disponible}${unidad} disponibles de ${sup.name}; no alcanzan para descontar ${cantidad}.`,
+        });
+      }
+      const reason = `Salida registrada desde el Asistente por ${req.user.email ?? 'un administrador'}`;
+      let descontado = 0;
+      try {
+        let restante = cantidad;
+        for (const l of usable) {
+          if (restante <= 0) break;
+          const take = Math.min(restante, l.currentQuantity);
+          await writeInventoryOut(req.user.clinicaId, req.user.sub, sup.id, l.id, take, reason);
+          restante -= take;
+          descontado += take;
+        }
+      } catch (e) {
+        console.error('[assistant.execute] descontar_stock parcial:', e);
+        if (descontado === 0) {
+          return res.json({ ejecutado: false, mensaje: `No se pudo descontar el stock de ${sup.name}. Intente desde la sección de Inventario.` });
+        }
+        return res.json({
+          ejecutado: true,
+          mensaje: `Alcancé a descontar ${descontado}${unidad} de ${sup.name} (de ${cantidad}); hubo un problema con el resto. Revise el inventario.`,
+        });
+      }
+      const quedan = disponible - descontado;
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: descontadas ${descontado}${unidad} de ${sup.name}. Quedan ${quedan}${unidad} disponibles.`,
+      });
     }
 
     return res.json({
