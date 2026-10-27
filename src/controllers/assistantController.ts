@@ -8,6 +8,10 @@ import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation } from '.
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError, getAiTokenUsage } from '../lib/aiTokenUsage';
+import { listInsumoSupplies } from '../services/insumoSupply.service';
+import { getInsumoAlerts } from '../services/insumoLot.service';
+import { isClinicaFederatedForInventory } from '../lib/federationEligibility';
+import { fetchRemoteInventorySupplies, fetchRemoteInventoryAlerts } from '../lib/federationClient';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -63,6 +67,7 @@ const INSTRUCTIONS = [
   'Antes de usar una herramienta, verifica que sea la correcta para lo que se pide. Si una consulta no devuelve resultados, dilo con naturalidad y ofrece una alternativa concreta; no repitas la misma búsqueda.',
   'La plataforma fordentcloud maneja muchas áreas y debes poder orientar sobre todas: agenda y citas, fichas de pacientes, presupuestos y planes de tratamiento, evoluciones clínicas, pagos y cartola, inventario de insumos, consentimientos, documentos clínicos, recetas, radiografías (Rx) y catálogos de prestaciones. Para lo que SÍ tienes herramienta, úsala; para lo demás, orienta al usuario sobre cómo y dónde hacerlo en el sistema.',
   'Si te piden ejecutar una acción para la que todavía no tienes herramienta, no finjas ni inventes: explica con amabilidad que esa acción aún no está disponible desde el asistente y que puede realizarla en la sección correspondiente del sistema; luego ofrece lo que sí puedes hacer. Si la cuenta no tiene permiso para algo, indícalo con claridad.',
+  'El INVENTARIO de insumos es SOLO para administradores. Si preguntan por el stock de un insumo ("¿cuánto queda de X?", "¿tenemos anestesia?", "revisa el inventario") usa "ver_inventario". Si preguntan qué se está acabando, qué reponer, qué está vencido o por vencer, usa "alertas_inventario". Si quien pregunta no es administrador, el sistema se lo negará solo; nunca inventes cifras de stock ni de lotes.',
   'Adapta tu ayuda al rol de quien te habla: a recepción (operador) apóyale sobre todo con agendar y confirmar citas y con datos de contacto; a los profesionales (odontólogo/radiólogo) con sus pacientes, citas, presupuestos y evoluciones; al administrador con todo, incluida la visión general de la clínica.',
   'Nunca des diagnósticos ni recomendaciones de tratamiento médico o dental: eso lo decide el profesional. Puedes buscar, organizar y resumir información, pero no opinar clínicamente.',
   'Trata los datos de pacientes con discreción: entrega solo lo que se te pide y que la cuenta tenga permiso de ver, sin divulgar datos de más.',
@@ -256,6 +261,29 @@ const TOOLS = [
       required: ['tipo'],
       additionalProperties: false,
     },
+  },
+  {
+    type: 'function' as const,
+    name: 'ver_inventario',
+    description:
+      'Muestra los insumos del inventario de la clínica con su stock actual, el mínimo y el estado. Úsala para "¿cuánto queda de X?", "¿tenemos stock de anestesia?", "revisa el inventario", "¿queda algodón?". Solo para administradores; a otras cuentas el sistema lo niega.',
+    strict: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        nombre: { type: 'string', description: 'Nombre del insumo a buscar (opcional; sin él, muestra el inventario general).' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'alertas_inventario',
+    description:
+      'Muestra las ALERTAS del inventario: insumos sin stock o con stock bajo, y lotes vencidos o por vencer (próximos 30 días). Úsala para "¿qué insumos se están acabando?", "¿qué hay que reponer?", "¿qué está por vencer?", "¿hay algo vencido?". Solo para administradores.',
+    strict: false,
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     type: 'function' as const,
@@ -482,6 +510,30 @@ async function buildClinicContext(req: Request): Promise<string> {
   } catch {
     return fecha;
   }
+}
+
+// Inventario de insumos: SOLO administradores. Se replica EXACTAMENTE la regla
+// de la ruta real de inventario (requireAdmin exige rol 'admin', ni siquiera
+// super_admin), para que el asistente conceda o niegue igual que el sistema.
+// No se usa resolveRequestPermissions acá porque esa función da 'full-access'
+// a cualquier rol fuera de la matriz, más amplio que lo que inventario permite.
+function isClinicAdmin(req: Request): boolean {
+  return req.user?.role === 'admin';
+}
+
+// Algunas clínicas tienen el inventario "federado" (vive en Dental-Demo-Back) y
+// otras el nativo de DentalCloud. Estas dos funciones devuelven la MISMA forma
+// en ambos casos (igual criterio que inventoryController), así cada herramienta
+// no tiene que saber cuál camino se usa. Son solo lectura: no escriben nada.
+async function readInventorySupplies(clinicaId: string, search: string) {
+  const filters = { ...(search ? { search } : {}), limit: 15 };
+  if (await isClinicaFederatedForInventory(clinicaId)) return fetchRemoteInventorySupplies(clinicaId, filters);
+  return listInsumoSupplies(clinicaId, filters);
+}
+async function readInventoryAlerts(clinicaId: string) {
+  const filters = { includeItems: true, limit: 40 };
+  if (await isClinicaFederatedForInventory(clinicaId)) return fetchRemoteInventoryAlerts(clinicaId, filters);
+  return getInsumoAlerts(clinicaId, filters);
 }
 
 export async function chat(req: Request, res: Response) {
@@ -905,6 +957,64 @@ export async function chat(req: Request, res: Response) {
         }
 
         return res.json({ seguimiento });
+      }
+
+      // Inventario: SOLO administradores (misma regla que la ruta real). La
+      // consulta la resuelve el backend (nativo o federado) y la lista va al
+      // front, no al modelo.
+      if (toolUse.name === 'ver_inventario') {
+        if (!isClinicAdmin(req)) return res.json({ denied: true, permiso: 'el inventario de insumos (solo administrador)' });
+        const clinicaId = req.user?.clinicaId;
+        if (!clinicaId) return res.json({ inventario: [], query: '' });
+        const nombre = String(args.nombre ?? '').trim();
+        const data = await readInventorySupplies(clinicaId, nombre);
+        const inventario = (data.items ?? []).map((s: any) => ({
+          nombre: s.name,
+          stock: s.currentStock,
+          minimo: s.minimumStock,
+          unidad: s.unit,
+          estado: s.status,
+          categoria: s.category,
+        }));
+        return res.json({ inventario, query: nombre });
+      }
+
+      if (toolUse.name === 'alertas_inventario') {
+        if (!isClinicAdmin(req)) return res.json({ denied: true, permiso: 'el inventario de insumos (solo administrador)' });
+        const clinicaId = req.user?.clinicaId;
+        if (!clinicaId) return res.json({ alertasInventario: null });
+        const a = await readInventoryAlerts(clinicaId);
+        // Solo los lotes problemáticos (vencidos o por vencer). Los lotes no
+        // traen el nombre del insumo, así que lo completamos con una consulta
+        // puntual (en clínicas nativas); si viene del camino federado, se usa
+        // el nombre que traiga el lote.
+        const problem = (a.items ?? []).filter(
+          (l: any) => l.expirationStatus === 'EXPIRED' || l.expirationStatus === 'EXPIRING'
+        );
+        const ids = [...new Set(problem.map((l: any) => l.supplyId).filter(Boolean))] as string[];
+        const nameMap = new Map<string, string>();
+        if (ids.length) {
+          const sup = await prisma.insumoSupply.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } });
+          for (const s of sup) nameMap.set(s.id, s.name);
+        }
+        const items = problem.map((l: any) => ({
+          insumo: l.supply?.name ?? nameMap.get(l.supplyId) ?? null,
+          lote: l.lotNumber,
+          cantidad: l.currentQuantity,
+          vence: l.expirationDate,
+          estado: l.expirationStatus,
+          etiqueta: l.expirationStatusLabel,
+          dias: l.daysUntilExpiration,
+        }));
+        return res.json({
+          alertasInventario: {
+            sinStock: a.suppliesWithoutStock,
+            stockBajo: a.lowStockSupplies,
+            vencidos: a.expiredLots,
+            porVencer: a.expiringLots,
+            items,
+          },
+        });
       }
 
       if (toolUse.name === 'navegar') {
