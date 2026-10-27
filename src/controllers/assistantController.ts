@@ -3,6 +3,8 @@ import prisma from '../lib/prisma';
 import { getAnthropicClient, isAnthropicConfigured, getAnthropicModel } from '../lib/anthropic';
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 import { PERMISSION_LABELS, type PermissionKey } from '../lib/rolePermissions';
+import { parseClinicaModules, CLINICA_MODULE_LABELS, type ClinicaModuleKey } from '../lib/clinicaModules';
+import { applyModuleOverrides } from '../lib/userAccessOverrides';
 import { sendMail } from '../lib/mailer';
 import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation } from '../lib/federationSync';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
@@ -612,6 +614,53 @@ async function writeInventoryOut(
   await createInsumoLotMovement(clinicaId, userId, supplyId, lotId, input);
 }
 
+// Capa "plan de la clínica" (equivalente a requireModuleEnabled): qué módulos
+// tiene encendidos la clínica en su plan (Clinica.modules) más las excepciones
+// por usuario (User.moduleOverrides). NO distingue por rol: aplica incluso al
+// admin. Sin clinicaId (p.ej. super_admin de plataforma) devuelve null y el
+// chequeo de permiso de siempre decide.
+async function getClinicModules(req: Request): Promise<Record<ClinicaModuleKey, boolean> | null> {
+  const clinicaId = req.user?.clinicaId;
+  if (!clinicaId) return null;
+  const [clinica, user] = await Promise.all([
+    prisma.clinica.findUnique({ where: { id: clinicaId }, select: { modules: true } }),
+    prisma.user.findUnique({ where: { id: req.user!.sub }, select: { moduleOverrides: true } }),
+  ]);
+  return applyModuleOverrides(parseClinicaModules(clinica?.modules), user?.moduleOverrides);
+}
+async function moduleOn(req: Request, key: ClinicaModuleKey): Promise<boolean> {
+  const mods = await getClinicModules(req);
+  return mods === null ? true : Boolean(mods[key]);
+}
+
+// Qué módulo del plan cubre cada herramienta de consulta y cada acción. Las que
+// no aparecen no dependen de un módulo del plan (inventario es solo-admin y no
+// es uno de los 8 módulos; el catálogo y la navegación tienen su propia regla).
+const TOOL_MODULE: Record<string, ClinicaModuleKey> = {
+  buscar_paciente: 'pacientes',
+  ir_a_ficha_paciente: 'pacientes',
+  ver_citas_paciente: 'agenda',
+  ver_agenda_dia: 'agenda',
+  buscar_hora_libre: 'agenda',
+  ver_presupuestos_paciente: 'tratamientos',
+  ver_saldo_paciente: 'cartola',
+  ver_evoluciones_paciente: 'evoluciones',
+  ver_documentos_paciente: 'documentosClinicos',
+  ver_consentimientos_paciente: 'consentimientos',
+};
+const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
+  nota_paciente: 'observaciones',
+  agendar_cita: 'agenda',
+  reagendar_cita: 'agenda',
+  cancelar_cita: 'agenda',
+  marcar_llegada: 'agenda',
+  registrar_pago: 'cartola',
+  estado_presupuesto: 'tratamientos',
+  crear_paciente: 'pacientes',
+  editar_ficha: 'pacientes',
+  generar_receta: 'pacientes',
+};
+
 export async function chat(req: Request, res: Response) {
   if (!isAnthropicConfigured()) {
     return res.status(503).json({ error: 'El asistente no está disponible en este momento' });
@@ -678,6 +727,14 @@ export async function chat(req: Request, res: Response) {
       res: { json: (x: any) => any }
     ): Promise<any> => {
       const args = (toolUse.input && typeof toolUse.input === 'object' ? toolUse.input : {}) as Record<string, unknown>;
+
+      // Capa "plan de la clínica": si el módulo que cubre esta herramienta está
+      // apagado para la clínica, se niega aquí (igual que requireModuleEnabled),
+      // antes del chequeo de permiso por perfil/usuario.
+      const toolMod = TOOL_MODULE[toolUse.name];
+      if (toolMod && !(await moduleOn(req, toolMod))) {
+        return res.json({ denied: true, permiso: `${CLINICA_MODULE_LABELS[toolMod]} (no está habilitado para su clínica)` });
+      }
 
       // Buscar paciente: la consulta la resuelve el backend y los resultados
       // se devuelven al front directamente (no vuelven al modelo).
@@ -938,6 +995,10 @@ export async function chat(req: Request, res: Response) {
         const perms = await resolveRequestPermissions(req);
         const can = (k: PermissionKey): boolean =>
           perms === 'full-access' ? true : perms !== 'no-clinic' ? Boolean(perms[k]) : false;
+        // También respeta el plan de la clínica: si un módulo está apagado, ese
+        // bloque del seguimiento no se muestra aunque el permiso esté dado.
+        const mods = await getClinicModules(req);
+        const modOn = (k: ClinicaModuleKey): boolean => (mods === null ? true : Boolean(mods[k]));
         const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
         const now = new Date();
         const DAY = 24 * 60 * 60 * 1000;
@@ -948,7 +1009,7 @@ export async function chat(req: Request, res: Response) {
         } = {};
 
         if (want.citas) {
-          if (!can('agenda')) {
+          if (!can('agenda') || !modOn('agenda')) {
             seguimiento.citas = null;
           } else {
             const [pasadas, futuras] = await Promise.all([
@@ -982,7 +1043,7 @@ export async function chat(req: Request, res: Response) {
         }
 
         if (want.pagos) {
-          if (!(can('cartola') && can('cartolaGeneral'))) {
+          if (!(can('cartola') && can('cartolaGeneral')) || !modOn('cartola')) {
             seguimiento.pagos = null;
           } else {
             const grouped = await prisma.ledgerMovement.groupBy({
@@ -1011,7 +1072,7 @@ export async function chat(req: Request, res: Response) {
         }
 
         if (want.planes) {
-          if (!can('tratamientos')) {
+          if (!can('tratamientos') || !modOn('tratamientos')) {
             seguimiento.planes = null;
           } else {
             const cutoff = new Date(now.getTime() - 30 * DAY);
@@ -1243,6 +1304,13 @@ export async function execute(req: Request, res: Response) {
   };
 
   try {
+
+  // Capa "plan de la clínica": si el módulo que cubre esta acción está apagado
+  // para la clínica, se niega antes de ejecutar (igual que requireModuleEnabled).
+  const actionMod = ACTION_MODULE[body.tipo ?? ''];
+  if (actionMod && !(await moduleOn(req, actionMod))) {
+    return res.json({ ejecutado: false, mensaje: `El módulo «${CLINICA_MODULE_LABELS[actionMod]}» no está habilitado para su clínica.` });
+  }
 
   if (body.tipo === 'nota_paciente') {
     const perms = await resolveRequestPermissions(req);
