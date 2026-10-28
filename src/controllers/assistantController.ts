@@ -38,12 +38,18 @@ function parseSantiago(input: string): Date | null {
     const d = new Date(s);
     return Number.isNaN(d.getTime()) ? null : d;
   }
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  // La hora es opcional: una fecha sola ("2026-10-30") se interpreta como la
+  // medianoche de ese día EN CHILE (no en UTC). Antes se exigía la hora, y una
+  // fecha sin hora caía en `new Date(s)`, que la toma como medianoche UTC y en
+  // Chile retrocede un día (devolvía el día anterior).
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
   if (!m) {
     const d = new Date(s);
     return Number.isNaN(d.getTime()) ? null : d;
   }
-  const [Y, Mo, D, H, Mi] = [m[1], m[2], m[3], m[4], m[5]].map(Number);
+  const [Y, Mo, D] = [m[1], m[2], m[3]].map(Number);
+  const H = m[4] ? Number(m[4]) : 0;
+  const Mi = m[5] ? Number(m[5]) : 0;
   const utcGuess = Date.UTC(Y, Mo - 1, D, H, Mi);
   // Desfase real de Santiago cerca de ese instante. Se calcula restando dos
   // lecturas (Santiago y UTC) hechas en la MISMA zona de la máquina, que así se
@@ -68,7 +74,7 @@ const INSTRUCTIONS = [
   'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "registrar_pago" (con "paciente" y "monto" en pesos; opcionalmente "metodo" de pago); "estado_presupuesto" (con "presupuesto" = número y "estado" = el nuevo estado del plan); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
   'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
   'Si el usuario dice que un paciente LLEGÓ a la clínica, llegó a su hora, está en recepción, o "marca la llegada" (ej. "llegó Juan", "ya llegó la señora Rojas", "marca que llegó Bruno"), usa "proponer_accion" tipo "marcar_llegada" con el "paciente". El sistema busca la cita de HOY de ese paciente y la deja registrada como llegada al confirmar.',
-  'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, o "¿tengo hora el martes?", usa la herramienta "buscar_hora_libre" con la "fecha" del día que consultan (formato "YYYY-MM-DD"); el sistema le mostrará los horarios disponibles de ese día. No inventes horas: deja que la herramienta las calcule.',
+  'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, "¿tengo hora el martes?" o "¿tengo espacio/cupo hoy?", usa la herramienta "buscar_hora_libre". Para hoy/mañana/pasado mañana pásale "dia" (hoy | manana | pasado_manana), NO calcules la fecha tú; para una fecha concreta pásale "fecha" (YYYY-MM-DD). El sistema le mostrará los horarios disponibles. No inventes horas: deja que la herramienta las calcule. Ojo: "¿tengo cupo/espacio?" pide HORAS LIBRES (buscar_hora_libre), NO la agenda de citas ya tomadas (ver_agenda_dia).',
   'Si el usuario dice que un paciente PAGÓ o ABONÓ un monto ("Juan pagó 20 mil", "abónale 15.000 a la señora", "registra un pago de 30000 de Bruno"), usa "proponer_accion" tipo "registrar_pago" con el "paciente" y el "monto" en pesos chilenos como número entero (ej. "20 mil" → 20000, "$15.000" → 15000). Si mencionan el medio de pago (efectivo, tarjeta, transferencia), ponlo en "metodo". Si no te dan el monto, pregúntalo; nunca lo inventes. Registra solo ingresos (abonos), no cobros ni deudas. Si aclaran que el pago es de un presupuesto o tratamiento específico, incluye "presupuesto" con su número (ej. "del presupuesto 74" → presupuesto: "74"); si no lo mencionan, el abono queda libre (sin presupuesto).',
   'Si piden cambiar el ESTADO de un presupuesto / plan de tratamiento — "inicia el tratamiento del presupuesto 74", "marca el presupuesto 74 como terminado", "da de alta el presupuesto 74", "reabre el presupuesto 74" — usa "proponer_accion" tipo "estado_presupuesto" con "presupuesto" (su número) y "estado" con uno de estos valores exactos: "sin_iniciar" (reabrir), "en_tratamiento" (iniciar/empezar/activar), "terminado" (terminar/finalizar) o "alta" (dar de alta). Un presupuesto ya "de alta" no se puede modificar: el sistema lo avisará.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
@@ -235,15 +241,16 @@ const TOOLS = [
   {
     type: 'function' as const,
     name: 'buscar_hora_libre',
-    description: 'Muestra los horarios DISPONIBLES (cupos libres) de un día en la clínica. Úsala para "¿qué horas hay libres el martes?", "¿cuándo puedo atender a alguien?", "¿hay cupo mañana?". El sistema calcula los huecos reales según los sillones y las citas ya tomadas.',
+    description: 'Muestra los horarios DISPONIBLES (cupos libres) de un día en la clínica. Úsala para "¿qué horas hay libres el martes?", "¿cuándo puedo atender a alguien?", "¿hay cupo mañana?", "¿tengo espacio/cupo hoy?". El sistema calcula los huecos reales según los sillones y las citas ya tomadas. Para HOY, MAÑANA o PASADO MAÑANA usa "dia" (no calcules tú la fecha); para una fecha de calendario concreta usa "fecha".',
     strict: false,
     parameters: {
       type: 'object',
       properties: {
-        fecha: { type: 'string', description: 'Día a consultar en hora de Chile, formato "YYYY-MM-DD". Si no lo dan, se asume hoy.' },
+        dia: { type: 'string', enum: ['hoy', 'manana', 'pasado_manana'], description: 'Para hoy, mañana o pasado mañana. El sistema calcula el día exacto con el reloj de Chile; es más seguro que "fecha" para estos casos. No lo combines con "fecha".' },
+        fecha: { type: 'string', description: 'Fecha de calendario explícita en hora de Chile, formato "YYYY-MM-DD" (ej. "el 30", "el lunes 3"). Úsala solo cuando NO sea hoy/mañana/pasado mañana. Si no das ni "dia" ni "fecha", se asume hoy.' },
         duracion: { type: 'number', description: 'Duración de la hora en minutos (opcional, por defecto 30).' },
       },
-      required: ['fecha'],
+      required: [],
       additionalProperties: false,
     },
   },
@@ -520,7 +527,11 @@ function listarCitas(appts: ApptRow[]): string {
 async function buildClinicContext(req: Request): Promise<string> {
   const now = new Date();
   const ahoraChile = now.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short' });
-  const fecha = ` La fecha y hora actual en Chile es: ${ahoraChile}. Úsala para calcular fechas como "mañana" o "el lunes". Para agendar entrega "fecha_hora" como "YYYY-MM-DDTHH:MM" en hora de Chile.`;
+  const isoHoy = now.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }); // YYYY-MM-DD en hora de Chile
+  const fecha =
+    ` HOY es exactamente ${isoHoy} en hora de Chile (${ahoraChile}). "hoy" = ${isoHoy}; calcula "mañana", "el lunes", etc. a partir de ${isoHoy}, sin restar ni sumar días de más.` +
+    ` En "buscar_hora_libre", para hoy/mañana/pasado mañana usa el parámetro "dia" (el sistema calcula el día con el reloj real); usa "fecha" (YYYY-MM-DD) solo para una fecha de calendario explícita.` +
+    ` Para agendar entrega "fecha_hora" como "YYYY-MM-DDTHH:MM" en hora de Chile.`;
   const clinicaId = req.user?.clinicaId;
   if (!clinicaId) return fecha;
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -911,7 +922,17 @@ export async function chat(req: Request, res: Response) {
         if (!allowed) return res.json({ denied: true, permiso: PERMISSION_LABELS.agenda });
         const clinicaId = req.user?.clinicaId;
         if (!clinicaId) return res.json({ fecha: null, slots: [] });
-        const base = args.fecha ? parseSantiago(String(args.fecha)) : new Date();
+        // "dia" (hoy/mañana/pasado mañana) lo resuelve el backend con el reloj
+        // real de Chile, así no dependemos de que el modelo sume bien los días
+        // (antes calculaba "hoy" como el día anterior). "fecha" queda solo para
+        // una fecha de calendario explícita.
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const diaRel = typeof args.dia === 'string' ? args.dia : null;
+        let base: Date | null;
+        if (diaRel === 'hoy') base = new Date();
+        else if (diaRel === 'manana') base = new Date(Date.now() + DAY_MS);
+        else if (diaRel === 'pasado_manana') base = new Date(Date.now() + 2 * DAY_MS);
+        else base = args.fecha ? parseSantiago(String(args.fecha)) : new Date();
         const ref = base ?? new Date();
         const dayCl = ref.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
         const dur = Math.min(240, Math.max(10, Number(args.duracion) || 30));
@@ -1264,7 +1285,12 @@ export async function chat(req: Request, res: Response) {
       .join('')
       .trim();
     if (!reply) {
-      return res.status(502).json({ error: 'El asistente no devolvió respuesta' });
+      // El modelo a veces devuelve una respuesta vacía (p.ej. ante un mensaje
+      // confuso o sin sentido). En vez de un error técnico, respondemos como un
+      // mensaje normal de la burbuja, pidiendo reformular con amabilidad.
+      return res.json({
+        reply: 'Perdón, no te entendí bien. ¿Puedes decírmelo de otra forma?',
+      });
     }
     return res.json({ reply });
   } catch (err) {
