@@ -26,6 +26,7 @@ import { send as sendRecetaEmail } from '../lib/emailService';
 import { buildRecetaEmailHtml } from '../lib/emailTemplates/recetaEmail';
 import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
+import { buildGenericDocumentPdf } from '../lib/genericDocumentPdf';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
 import crypto from 'node:crypto';
 
@@ -87,6 +88,8 @@ const INSTRUCTIONS = [
   'Si piden ENVIAR un consentimiento a un paciente ("mándale el consentimiento de tratamiento a Juan", "envía el consentimiento de protección de datos a la señora Rojas", "manda a firmar el consentimiento de ortodoncia"), usa "proponer_accion" tipo "enviar_consentimiento" con "paciente" y "consentimiento" (el nombre del consentimiento). El paciente debe tener correo registrado. El sistema le envía un correo con el link para firmar.',
   'Si piden una SOLICITUD DE EXÁMENES ("hazle una orden de exámenes a Juan: hemograma y perfil bioquímico", "genera una solicitud de radiografía panorámica para la señora Rojas"), usa "proponer_accion" tipo "solicitud_examen" con "paciente" y "contenido" = la lista de exámenes tal como los dicta el usuario; si agrega una indicación, ponla en "observaciones". El sistema genera el PDF y lo guarda en la ficha. No inventes exámenes que no haya dicho.',
   'Si un profesional DICTA una evolución o nota clínica ("evoluciona a Juan: llegó con dolor, se revisó y...", "registra una evolución de la señora Rojas: control post operatorio sin novedades"), usa "proponer_accion" tipo "dictar_evolucion" con "paciente" y "contenido" = el texto de la evolución TAL CUAL lo dicta, sin agregar ni inventar nada clínico. Esta es una NOTA de evolución; si además quiere ligarla a un procedimiento del presupuesto, cobrar o descontar inventario, eso se hace desde la ficha (el asistente solo registra la nota).',
+  'Si piden un CERTIFICADO, INDICACIONES o una CONSTANCIA ("hazle un certificado de atención a Juan", "redacta indicaciones post operatorias para la señora Rojas: reposo 3 días...", "genera una constancia de que vino hoy"), usa "proponer_accion" tipo "generar_certificado" con "paciente", "titulo" (el tipo de documento) y "contenido" (el texto del documento tal como lo dicta el usuario). No inventes contenido clínico que no haya dicho. El sistema genera el PDF y lo guarda en la ficha.',
+  'Si piden RECORDARLE la cita a un paciente ("recuérdale la cita a Juan", "mándale un recordatorio de su hora a la señora Rojas", "avísale a Bruno de su cita"), usa "proponer_accion" tipo "recordar_cita" con el "paciente". El sistema busca su próxima cita y le envía el recordatorio por correo. El paciente debe tener correo y una cita próxima.',
   'Si piden un RESUMEN o REPORTE de la clínica — "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?", "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay?", "¿cuántos presupuestos sin iniciar?" — usa la herramienta "ver_reporte" con el "tipo" correcto (facturacion | deudores | pacientes_nuevos | citas | presupuestos) y el "periodo" (hoy | semana | mes) cuando aplique. No inventes números: deja que la herramienta los calcule. Si la cuenta no tiene el permiso, el sistema lo niega.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
   'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "busca a Pedro, muéstrame sus presupuestos y agéndale el viernes a las 10"), identifícalos TODOS y atiéndelos TODOS en la misma respuesta: emite UNA herramienta por CADA pedido, aunque sean tres, cuatro o más. Cuéntalos mentalmente y revisa que no dejas ninguno afuera; no te quedes con el primero ni con solo algunos, y no juntes dos pedidos distintos en una sola herramienta. Si cada pedido necesita una herramienta distinta, usa todas las que hagan falta a la vez. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una. Pero NO emitas la misma herramienta dos veces con los mismos parámetros en una respuesta: un pedido = una sola llamada a esa herramienta (ej. no llames "ver_agenda_dia" dos veces para la misma pregunta).',
@@ -380,7 +383,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada) | generar_certificado (generar un certificado, indicaciones o constancia de texto libre) | recordar_cita (enviarle al paciente un recordatorio por correo de su próxima cita) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -400,6 +403,7 @@ const TOOLS = [
         lote: { type: 'string', description: 'Para ingresar_stock: número de lote del insumo que entra (ej. "L-2027-A").' },
         vencimiento: { type: 'string', description: 'Para ingresar_stock: fecha de vencimiento del lote, formato "YYYY-MM-DD" (opcional).' },
         consentimiento: { type: 'string', description: 'Para enviar_consentimiento: nombre del consentimiento a enviar (ej. "tratamiento general", "protección de datos", "ortodoncia").' },
+        titulo: { type: 'string', description: 'Para generar_certificado: el título/tipo del documento (ej. "Certificado de atención", "Indicaciones post operatorias", "Constancia"). Por defecto "Certificado". El texto del documento va en "contenido".' },
         medicamentos: {
           type: 'array',
           description: 'Para generar_receta: la lista de medicamentos TAL CUAL los dicta el profesional. Nunca inventes ni agregues medicamentos ni dosis que no haya dicho.',
@@ -741,6 +745,8 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   enviar_consentimiento: 'consentimientos',
   solicitud_examen: 'pacientes',
   dictar_evolucion: 'evoluciones',
+  generar_certificado: 'pacientes',
+  recordar_cita: 'agenda',
 };
 
 export async function chat(req: Request, res: Response) {
@@ -1420,6 +1426,7 @@ export async function chat(req: Request, res: Response) {
             lote: args.lote ? String(args.lote) : null,
             vencimiento: args.vencimiento ? String(args.vencimiento) : null,
             consentimiento: args.consentimiento ? String(args.consentimiento) : null,
+            titulo: args.titulo ? String(args.titulo) : null,
             medicamentos: Array.isArray(args.medicamentos)
               ? (args.medicamentos as any[])
                   .map((it) => ({ medicamento: String(it?.medicamento ?? '').trim(), indicaciones: String(it?.indicaciones ?? '').trim() }))
@@ -1529,6 +1536,7 @@ export async function execute(req: Request, res: Response) {
     observaciones?: string;
     items?: { descripcion?: string; precio?: number; cantidad?: number }[];
     consentimiento?: string;
+    titulo?: string;
   };
 
   try {
@@ -2607,6 +2615,141 @@ export async function execute(req: Request, res: Response) {
       return res.json({
         ejecutado: true,
         mensaje: `Listo: registré la evolución de ${p.firstName} ${p.lastName}.`,
+      });
+    }
+
+    if (body.tipo === 'generar_certificado') {
+      // Genera un documento de texto libre (certificado, indicaciones,
+      // constancia) y lo guarda como documento clínico. Mismo permiso que la
+      // receta/solicitud: "pacientes". Usa el generador de PDF genérico y el
+      // mismo flujo (PDF → Cloudinary → ClinicalDocument) que el resto.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.pacientes;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.pacientes}».` });
+      }
+      const cuerpo = String(body.contenido ?? '').trim();
+      if (!cuerpo) {
+        return res.json({ ejecutado: false, mensaje: 'Dígame qué debe decir el documento.' });
+      }
+      const titulo = String(body.titulo ?? '').trim() || 'Certificado';
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const patient = await prisma.patient.findUnique({ where: { id: r.patient.id } });
+      if (!patient) return res.json({ ejecutado: false, mensaje: 'No encontré ese paciente.' });
+      const [clinica, professional] = await Promise.all([
+        prisma.clinica.findUnique({
+          where: { id: req.user.clinicaId },
+          select: {
+            name: true, logoUrl: true, address: true, phone: true, email: true, website: true,
+            rut: true, documentType: true,
+            legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
+          },
+        }),
+        prisma.user.findUnique({ where: { id: req.user.sub }, select: { name: true } }),
+      ]);
+      if (!clinica) return res.json({ ejecutado: false, mensaje: 'No encontré la clínica.' });
+      const createdAt = new Date();
+      const pdfBuffer = await buildGenericDocumentPdf({
+        clinica,
+        patient: {
+          firstName: patient.firstName,
+          lastName: patient.lastName,
+          rut: patient.rut ?? '',
+          documentType: patient.documentType,
+          birthDate: patient.birthDate,
+        },
+        professional: professional ? { name: professional.name } : null,
+        titulo,
+        cuerpo,
+        createdAt,
+      });
+      try {
+        const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { resource_type: 'raw', format: 'pdf', folder: `dentalcloud/${patient.id}/certificado` },
+            (error, result) => {
+              if (error || !result) return reject(error);
+              resolve({ secure_url: result.secure_url, public_id: result.public_id });
+            }
+          );
+          stream.end(pdfBuffer);
+        });
+        const slug = titulo.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'certificado';
+        await prisma.clinicalDocument.create({
+          data: {
+            patientId: patient.id,
+            uploadedById: req.user.sub,
+            category: 'certificado',
+            fileName: `${slug}-${createdAt.toISOString().slice(0, 10)}.pdf`,
+            fileUrl: uploadResult.secure_url,
+            resourceType: 'raw',
+            publicId: uploadResult.public_id,
+            description: titulo,
+            clinicaId: req.user.clinicaId,
+          },
+        });
+      } catch (e) {
+        console.error('[assistant.execute] generar_certificado:', e);
+        return res.json({ ejecutado: false, mensaje: 'No se pudo generar el documento. Intente desde la ficha del paciente.' });
+      }
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: generé «${titulo}» para ${patient.firstName} ${patient.lastName}. Queda guardado en sus documentos.`,
+      });
+    }
+
+    if (body.tipo === 'recordar_cita') {
+      // Le recuerda al paciente su PRÓXIMA cita por correo. Permiso + módulo
+      // "agenda" (es sobre su cita). El asistente arma el mensaje con la fecha
+      // real de la cita; no inventa nada. Requiere correo y una cita próxima.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.agenda;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.agenda}».` });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const p = r.patient;
+      const nombre = `${p.firstName} ${p.lastName}`;
+      const full = await prisma.patient.findUnique({ where: { id: p.id }, select: { email: true } });
+      if (!full?.email) {
+        return res.json({ ejecutado: false, mensaje: `${nombre} no tiene un correo registrado para enviarle el recordatorio.` });
+      }
+      const cita = await prisma.appointment.findFirst({
+        where: { patientId: p.id, clinicaId: req.user.clinicaId, status: { not: 'cancelada' }, startAt: { gte: new Date() } },
+        orderBy: { startAt: 'asc' },
+        select: { startAt: true },
+      });
+      if (!cita) {
+        return res.json({ ejecutado: false, mensaje: `${nombre} no tiene una cita próxima para recordarle.` });
+      }
+      const clinica = await prisma.clinica.findUnique({ where: { id: req.user.clinicaId }, select: { name: true } });
+      const fechaTxt = cita.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short' });
+      try {
+        await sendRecetaEmail({
+          to: full.email,
+          subject: `Recordatorio de tu cita – ${clinica?.name ?? 'fordentcloud'}`,
+          html:
+            `<div style="font-family:Arial,sans-serif;color:#0f172a;line-height:1.5">` +
+            `<p>Hola ${p.firstName},</p>` +
+            `<p>Te recordamos tu próxima cita en <strong>${clinica?.name ?? 'la clínica'}</strong>:</p>` +
+            `<p style="font-size:18px;margin:16px 0"><strong>${fechaTxt}</strong></p>` +
+            `<p>Si no puedes asistir, por favor avísanos para reagendarla.</p>` +
+            `<p style="color:#64748b;font-size:12px;margin-top:24px">Mensaje enviado por fordentcloud.</p></div>`,
+          clinicaId: req.user.clinicaId,
+        });
+      } catch (err) {
+        console.error('[assistant] no se pudo enviar el recordatorio', err);
+        return res.json({ ejecutado: false, mensaje: 'No se pudo enviar el recordatorio. Intente de nuevo en un momento.' });
+      }
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: le recordé a ${nombre} su cita del ${fechaTxt} (a ${full.email}).`,
       });
     }
 
