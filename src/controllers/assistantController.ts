@@ -28,6 +28,8 @@ import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
 import { buildGenericDocumentPdf } from '../lib/genericDocumentPdf';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
+import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
+import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import crypto from 'node:crypto';
 
 function escapeHtml(s: string): string {
@@ -88,6 +90,7 @@ const INSTRUCTIONS = [
   'Si piden ENVIAR un consentimiento a un paciente ("mándale el consentimiento de tratamiento a Juan", "envía el consentimiento de protección de datos a la señora Rojas", "manda a firmar el consentimiento de ortodoncia"), usa "proponer_accion" tipo "enviar_consentimiento" con "paciente" y "consentimiento" (el nombre del consentimiento). El paciente debe tener correo registrado. El sistema le envía un correo con el link para firmar.',
   'Si piden una SOLICITUD DE EXÁMENES ("hazle una orden de exámenes a Juan: hemograma y perfil bioquímico", "genera una solicitud de radiografía panorámica para la señora Rojas"), usa "proponer_accion" tipo "solicitud_examen" con "paciente" y "contenido" = la lista de exámenes tal como los dicta el usuario; si agrega una indicación, ponla en "observaciones". El sistema genera el PDF y lo guarda en la ficha. No inventes exámenes que no haya dicho.',
   'Si un profesional DICTA una evolución o nota clínica ("evoluciona a Juan: llegó con dolor, se revisó y...", "registra una evolución de la señora Rojas: control post operatorio sin novedades"), usa "proponer_accion" tipo "dictar_evolucion" con "paciente" y "contenido" = el texto de la evolución TAL CUAL lo dicta, sin agregar ni inventar nada clínico. Esta es una NOTA de evolución; si además quiere ligarla a un procedimiento del presupuesto, cobrar o descontar inventario, eso se hace desde la ficha (el asistente solo registra la nota).',
+  'Si quieren EVOLUCIONAR UN PROCEDIMIENTO de un presupuesto — marcar que una prestación del plan SE REALIZÓ y dejar su evolución ("evoluciona la limpieza del presupuesto 5 de Juan: sin novedad", "marca como hecha la extracción del plan 3 de María: ...") — usa "proponer_accion" tipo "evolucionar_procedimiento" con "paciente", "presupuesto" (su número), "procedimiento" (la prestación del plan) y "contenido" (el texto de la evolución). Esto COMPLETA ese ítem del presupuesto. Si es solo una nota general SIN ligar a un procedimiento, usa "dictar_evolucion". Para COBRAR usa "registrar_pago" aparte; descontar un insumo puntual se hace en la ficha.',
   'Si piden un CERTIFICADO, INDICACIONES o una CONSTANCIA ("hazle un certificado de atención a Juan", "redacta indicaciones post operatorias para la señora Rojas: reposo 3 días...", "genera una constancia de que vino hoy"), usa "proponer_accion" tipo "generar_certificado" con "paciente", "titulo" (el tipo de documento) y "contenido" (el texto del documento tal como lo dicta el usuario). No inventes contenido clínico que no haya dicho. El sistema genera el PDF y lo guarda en la ficha.',
   'Si piden RECORDARLE la cita a un paciente ("recuérdale la cita a Juan", "mándale un recordatorio de su hora a la señora Rojas", "avísale a Bruno de su cita"), usa "proponer_accion" tipo "recordar_cita" con el "paciente". El sistema busca su próxima cita y le envía el recordatorio por correo. El paciente debe tener correo y una cita próxima.',
   'Si piden un RESUMEN o REPORTE de la clínica — "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?", "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay?", "¿cuántos presupuestos sin iniciar?" — usa la herramienta "ver_reporte" con el "tipo" correcto (facturacion | deudores | pacientes_nuevos | citas | presupuestos) y el "periodo" (hoy | semana | mes) cuando aplique. No inventes números: deja que la herramienta los calcule. Si la cuenta no tiene el permiso, el sistema lo niega.',
@@ -383,7 +386,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada) | generar_certificado (generar un certificado, indicaciones o constancia de texto libre) | recordar_cita (enviarle al paciente un recordatorio por correo de su próxima cita) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada, NOTA suelta) | evolucionar_procedimiento (marcar que una prestación de un presupuesto SE REALIZÓ y dejar su evolución) | generar_certificado (generar un certificado, indicaciones o constancia de texto libre) | recordar_cita (enviarle al paciente un recordatorio por correo de su próxima cita) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -404,6 +407,7 @@ const TOOLS = [
         vencimiento: { type: 'string', description: 'Para ingresar_stock: fecha de vencimiento del lote, formato "YYYY-MM-DD" (opcional).' },
         consentimiento: { type: 'string', description: 'Para enviar_consentimiento: nombre del consentimiento a enviar (ej. "tratamiento general", "protección de datos", "ortodoncia").' },
         titulo: { type: 'string', description: 'Para generar_certificado: el título/tipo del documento (ej. "Certificado de atención", "Indicaciones post operatorias", "Constancia"). Por defecto "Certificado". El texto del documento va en "contenido".' },
+        procedimiento: { type: 'string', description: 'Para evolucionar_procedimiento: la prestación/procedimiento del presupuesto que se realizó (ej. "limpieza", "extracción"). El número del presupuesto va en "presupuesto" y el texto de la evolución en "contenido".' },
         medicamentos: {
           type: 'array',
           description: 'Para generar_receta: la lista de medicamentos TAL CUAL los dicta el profesional. Nunca inventes ni agregues medicamentos ni dosis que no haya dicho.',
@@ -747,6 +751,7 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   dictar_evolucion: 'evoluciones',
   generar_certificado: 'pacientes',
   recordar_cita: 'agenda',
+  evolucionar_procedimiento: 'evoluciones',
 };
 
 export async function chat(req: Request, res: Response) {
@@ -1427,6 +1432,7 @@ export async function chat(req: Request, res: Response) {
             vencimiento: args.vencimiento ? String(args.vencimiento) : null,
             consentimiento: args.consentimiento ? String(args.consentimiento) : null,
             titulo: args.titulo ? String(args.titulo) : null,
+            procedimiento: args.procedimiento ? String(args.procedimiento) : null,
             medicamentos: Array.isArray(args.medicamentos)
               ? (args.medicamentos as any[])
                   .map((it) => ({ medicamento: String(it?.medicamento ?? '').trim(), indicaciones: String(it?.indicaciones ?? '').trim() }))
@@ -1537,6 +1543,7 @@ export async function execute(req: Request, res: Response) {
     items?: { descripcion?: string; precio?: number; cantidad?: number }[];
     consentimiento?: string;
     titulo?: string;
+    procedimiento?: string;
   };
 
   try {
@@ -2750,6 +2757,105 @@ export async function execute(req: Request, res: Response) {
       return res.json({
         ejecutado: true,
         mensaje: `Listo: le recordé a ${nombre} su cita del ${fechaTxt} (a ${full.email}).`,
+      });
+    }
+
+    if (body.tipo === 'evolucionar_procedimiento') {
+      // Evoluciona un PROCEDIMIENTO de un presupuesto: crea la evolución ligada
+      // al ítem y lo COMPLETA (replica evolutionsController.create en su parte
+      // ligada). Para no "descontar mal", el asistente NO toca inventario (elegir
+      // el lote se queda en la ficha) ni cobra acá (para cobrar está
+      // registrar_pago). Respeta las mismas precondiciones del sistema:
+      //   - módulo + permiso "evoluciones"
+      //   - el presupuesto es del paciente y NO está "de alta"
+      //   - si la prestación exige registrar producto/lote, se deriva a la ficha
+      //   - si el ítem lleva producto de marca, el consentimiento debe estar firmado
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.evoluciones;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.evoluciones}».` });
+      }
+      const contenido = String(body.contenido ?? '').trim();
+      if (!contenido) {
+        return res.json({ ejecutado: false, mensaje: 'Dígame el contenido de la evolución del procedimiento.' });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const p = r.patient;
+      const nombre = `${p.firstName} ${p.lastName}`;
+
+      const planRef = String(body.presupuesto ?? '').trim();
+      const numMatch = planRef.match(/\d+/);
+      if (!numMatch) {
+        return res.json({ ejecutado: false, mensaje: `¿De qué presupuesto es el procedimiento de ${nombre}? Dígame su número.` });
+      }
+      const plan = await prisma.treatmentPlan.findFirst({
+        where: { patientId: p.id, number: Number(numMatch[0]), ...(req.user.role === 'super_admin' ? {} : { clinicaId: req.user.clinicaId }) },
+        select: { id: true, number: true, status: true },
+      });
+      if (!plan) {
+        return res.json({ ejecutado: false, mensaje: `No encontré el presupuesto #${numMatch[0]} de ${nombre}.` });
+      }
+      if (isPlanAlta(plan)) {
+        return res.json({ ejecutado: false, mensaje: `El presupuesto #${plan.number} está de alta y ya no se puede modificar.` });
+      }
+
+      const proc = String(body.procedimiento ?? '').trim();
+      if (!proc) {
+        return res.json({ ejecutado: false, mensaje: `¿Qué procedimiento del presupuesto #${plan.number} se realizó?` });
+      }
+      const candidatos = await prisma.treatmentItem.findMany({
+        where: { treatmentPlanId: plan.id, completed: false, description: { contains: proc, mode: 'insensitive' as const } },
+        select: { id: true, description: true, productoMarcaId: true, prestacion: { select: { requiresProductTracking: true } } },
+        take: 3,
+      });
+      if (candidatos.length === 0) {
+        return res.json({ ejecutado: false, mensaje: `No encontré un procedimiento «${proc}» pendiente en el presupuesto #${plan.number} de ${nombre}.` });
+      }
+      if (candidatos.length > 1) {
+        return res.json({ ejecutado: false, mensaje: `En el presupuesto #${plan.number} hay varios que calzan con «${proc}» (${candidatos.map((c) => c.description).join(', ')}). Sea más específico.` });
+      }
+      const item = candidatos[0];
+
+      // Si la prestación exige trazar producto/lote/vencimiento, el chat no lo
+      // captura bien: se deriva a la ficha (igual que el sistema lo exigiría).
+      if (item.prestacion?.requiresProductTracking) {
+        return res.json({
+          ejecutado: false,
+          mensaje: `«${item.description}» requiere registrar el producto, lote y vencimiento usados; eso hay que hacerlo desde la ficha de ${nombre}.`,
+        });
+      }
+      // Si el ítem lleva un producto de marca, debe haber consentimiento firmado.
+      if (item.productoMarcaId) {
+        const bloqueo = await getUnsignedProductConsentError(p.id, item.productoMarcaId);
+        if (bloqueo) return res.json({ ejecutado: false, mensaje: bloqueo });
+      }
+
+      // Crea la evolución ligada y completa el ítem (mismos efectos que el
+      // sistema), sin pago ni descuento de inventario.
+      await prisma.evolution.create({
+        data: {
+          patientId: p.id,
+          professionalId: req.user.sub,
+          content: sanitizeHtml(contenido),
+          treatmentItemId: item.id,
+          clinicaId: req.user.clinicaId,
+        },
+      });
+      const updatedItem = await prisma.treatmentItem.update({
+        where: { id: item.id },
+        data: { completed: true, treatedById: req.user.sub, treatedAt: new Date() },
+      });
+      await recalculatePlan(plan.id, req.user.sub);
+      syncTreatmentItemToFederation(updatedItem).catch((err) => {
+        console.error('[assistant] no se pudo sincronizar el ítem evolucionado', err);
+      });
+
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: evolucioné «${item.description}» del presupuesto #${plan.number} de ${nombre} y lo marqué como realizado. (Para cobrar, dígame "registra un pago"; para descontar insumo, hágalo en la ficha.)`,
       });
     }
 
