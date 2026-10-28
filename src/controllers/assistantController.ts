@@ -6,23 +6,28 @@ import { PERMISSION_LABELS, type PermissionKey } from '../lib/rolePermissions';
 import { parseClinicaModules, CLINICA_MODULE_LABELS, type ClinicaModuleKey } from '../lib/clinicaModules';
 import { applyModuleOverrides } from '../lib/userAccessOverrides';
 import { sendMail } from '../lib/mailer';
-import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation } from '../lib/federationSync';
+import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation, syncTreatmentItemToFederation } from '../lib/federationSync';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError, getAiTokenUsage } from '../lib/aiTokenUsage';
 import { listInsumoSupplies } from '../services/insumoSupply.service';
-import { getInsumoAlerts, listInsumoLots, createInsumoLotMovement } from '../services/insumoLot.service';
+import { getInsumoAlerts, listInsumoLots, createInsumoLotMovement, createInsumoLot } from '../services/insumoLot.service';
 import { isClinicaFederatedForInventory } from '../lib/federationEligibility';
 import {
   fetchRemoteInventorySupplies,
   fetchRemoteInventoryAlerts,
   fetchRemoteInventoryLots,
   createRemoteInventoryLotMovement,
+  createRemoteInventoryLot,
 } from '../lib/federationClient';
 import cloudinary from '../lib/cloudinary';
 import { buildRecetaManualPdf } from '../lib/recetaManualPdf';
 import { send as sendRecetaEmail } from '../lib/emailService';
 import { buildRecetaEmailHtml } from '../lib/emailTemplates/recetaEmail';
+import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
+import { buildExamRequestPdf } from '../lib/examRequestPdf';
+import { sanitizeHtml } from '../lib/sanitizeHtml';
+import crypto from 'node:crypto';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -77,8 +82,13 @@ const INSTRUCTIONS = [
   'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, "¿tengo hora el martes?" o "¿tengo espacio/cupo hoy?", usa la herramienta "buscar_hora_libre". Para hoy/mañana/pasado mañana pásale "dia" (hoy | manana | pasado_manana), NO calcules la fecha tú; para una fecha concreta pásale "fecha" (YYYY-MM-DD). El sistema le mostrará los horarios disponibles. No inventes horas: deja que la herramienta las calcule. Ojo: "¿tengo cupo/espacio?" pide HORAS LIBRES (buscar_hora_libre), NO la agenda de citas ya tomadas (ver_agenda_dia).',
   'Si el usuario dice que un paciente PAGÓ o ABONÓ un monto ("Juan pagó 20 mil", "abónale 15.000 a la señora", "registra un pago de 30000 de Bruno"), usa "proponer_accion" tipo "registrar_pago" con el "paciente" y el "monto" en pesos chilenos como número entero (ej. "20 mil" → 20000, "$15.000" → 15000). Si mencionan el medio de pago (efectivo, tarjeta, transferencia), ponlo en "metodo". Si no te dan el monto, pregúntalo; nunca lo inventes. Registra solo ingresos (abonos), no cobros ni deudas. Si aclaran que el pago es de un presupuesto o tratamiento específico, incluye "presupuesto" con su número (ej. "del presupuesto 74" → presupuesto: "74"); si no lo mencionan, el abono queda libre (sin presupuesto).',
   'Si piden cambiar el ESTADO de un presupuesto / plan de tratamiento — "inicia el tratamiento del presupuesto 74", "marca el presupuesto 74 como terminado", "da de alta el presupuesto 74", "reabre el presupuesto 74" — usa "proponer_accion" tipo "estado_presupuesto" con "presupuesto" (su número) y "estado" con uno de estos valores exactos: "sin_iniciar" (reabrir), "en_tratamiento" (iniciar/empezar/activar), "terminado" (terminar/finalizar) o "alta" (dar de alta). Un presupuesto ya "de alta" no se puede modificar: el sistema lo avisará.',
+  'Si piden CREAR un presupuesto o plan de tratamiento ("hazle un presupuesto a Juan con una limpieza y una tapadura", "créale un plan con ortodoncia", "arma un presupuesto de blanqueamiento para la señora Rojas"), usa "proponer_accion" tipo "crear_presupuesto" con el "paciente" y una lista "items", UN elemento por prestación. En cada ítem pon "descripcion" (el nombre de la prestación tal como lo dijo el usuario); si el usuario DICTA un precio, ponlo en "precio" (entero en pesos), si no, déjalo sin precio y el sistema lo toma del catálogo; usa "cantidad" solo si pide más de una. No inventes prestaciones ni precios que el usuario no haya dicho. El sistema calcula el total, asigna el número y crea el presupuesto; los detalles finos (dientes, convenio, fotos) se afinan después en la ficha del paciente.',
+  'Si piden INGRESAR o sumar stock / registrar una ENTRADA de un insumo ("ingresa 50 cajas de guantes lote L-2027 que vencen en marzo 2027", "llegaron 10 de anestesia, lote X"), usa "proponer_accion" tipo "ingresar_stock" con "insumo", "cantidad", "lote" (número de lote) y "vencimiento" si lo dicen (YYYY-MM-DD). Es una ENTRADA (lote nuevo), distinta de "descontar_stock" que es salida. El inventario es solo para administradores.',
+  'Si piden ENVIAR un consentimiento a un paciente ("mándale el consentimiento de tratamiento a Juan", "envía el consentimiento de protección de datos a la señora Rojas", "manda a firmar el consentimiento de ortodoncia"), usa "proponer_accion" tipo "enviar_consentimiento" con "paciente" y "consentimiento" (el nombre del consentimiento). El paciente debe tener correo registrado. El sistema le envía un correo con el link para firmar.',
+  'Si piden una SOLICITUD DE EXÁMENES ("hazle una orden de exámenes a Juan: hemograma y perfil bioquímico", "genera una solicitud de radiografía panorámica para la señora Rojas"), usa "proponer_accion" tipo "solicitud_examen" con "paciente" y "contenido" = la lista de exámenes tal como los dicta el usuario; si agrega una indicación, ponla en "observaciones". El sistema genera el PDF y lo guarda en la ficha. No inventes exámenes que no haya dicho.',
+  'Si un profesional DICTA una evolución o nota clínica ("evoluciona a Juan: llegó con dolor, se revisó y...", "registra una evolución de la señora Rojas: control post operatorio sin novedades"), usa "proponer_accion" tipo "dictar_evolucion" con "paciente" y "contenido" = el texto de la evolución TAL CUAL lo dicta, sin agregar ni inventar nada clínico. Esta es una NOTA de evolución; si además quiere ligarla a un procedimiento del presupuesto, cobrar o descontar inventario, eso se hace desde la ficha (el asistente solo registra la nota).',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
-  'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "busca a Pedro, muéstrame sus presupuestos y agéndale el viernes a las 10"), identifícalos TODOS y atiéndelos TODOS en la misma respuesta: emite UNA herramienta por CADA pedido, aunque sean tres, cuatro o más. Cuéntalos mentalmente y revisa que no dejas ninguno afuera; no te quedes con el primero ni con solo algunos, y no juntes dos pedidos distintos en una sola herramienta. Si cada pedido necesita una herramienta distinta, usa todas las que hagan falta a la vez. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una.',
+  'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "busca a Pedro, muéstrame sus presupuestos y agéndale el viernes a las 10"), identifícalos TODOS y atiéndelos TODOS en la misma respuesta: emite UNA herramienta por CADA pedido, aunque sean tres, cuatro o más. Cuéntalos mentalmente y revisa que no dejas ninguno afuera; no te quedes con el primero ni con solo algunos, y no juntes dos pedidos distintos en una sola herramienta. Si cada pedido necesita una herramienta distinta, usa todas las que hagan falta a la vez. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una. Pero NO emitas la misma herramienta dos veces con los mismos parámetros en una respuesta: un pedido = una sola llamada a esa herramienta (ej. no llames "ver_agenda_dia" dos veces para la misma pregunta).',
   'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
   'El usuario puede escribir nombres de forma informal o con errores de tipeo; usa el contexto de la conversación para entender a quién o a qué se refiere, sobre todo en preguntas de seguimiento como "¿y tiene cita?" o "¿pero él tiene?".',
   'Si la petición es ambigua o falta un dato clave (el nombre exacto, la fecha, qué dato cambiar, a qué persona te refieres), haz UNA pregunta breve para aclarar, en vez de adivinar, inventar o usar una herramienta a ciegas. Vale más preguntar que equivocarse.',
@@ -345,7 +355,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -360,8 +370,11 @@ const TOOLS = [
         metodo: { type: 'string', description: 'Para registrar_pago: medio de pago (efectivo, tarjeta, transferencia), opcional.' },
         presupuesto: { type: 'string', description: 'Número del presupuesto/plan (ej. "74"). En registrar_pago es opcional (si no, abono libre); en estado_presupuesto es obligatorio.' },
         estado: { type: 'string', description: 'Para estado_presupuesto: nuevo estado del plan, uno de "sin_iniciar", "en_tratamiento", "terminado" o "alta".' },
-        insumo: { type: 'string', description: 'Para descontar_stock: nombre del insumo del que se descuenta (ej. "anestesia", "algodón").' },
-        cantidad: { type: 'number', description: 'Para descontar_stock: cuántas unidades se descuentan, número positivo (ej. "saca 3" → 3).' },
+        insumo: { type: 'string', description: 'Para descontar_stock o ingresar_stock: nombre del insumo (ej. "anestesia", "algodón").' },
+        cantidad: { type: 'number', description: 'Para descontar_stock (unidades que salen) o ingresar_stock (unidades que entran). Número positivo (ej. "saca 3" → 3, "ingresa 50" → 50).' },
+        lote: { type: 'string', description: 'Para ingresar_stock: número de lote del insumo que entra (ej. "L-2027-A").' },
+        vencimiento: { type: 'string', description: 'Para ingresar_stock: fecha de vencimiento del lote, formato "YYYY-MM-DD" (opcional).' },
+        consentimiento: { type: 'string', description: 'Para enviar_consentimiento: nombre del consentimiento a enviar (ej. "tratamiento general", "protección de datos", "ortodoncia").' },
         medicamentos: {
           type: 'array',
           description: 'Para generar_receta: la lista de medicamentos TAL CUAL los dicta el profesional. Nunca inventes ni agregues medicamentos ni dosis que no haya dicho.',
@@ -375,6 +388,19 @@ const TOOLS = [
           },
         },
         observaciones: { type: 'string', description: 'Para generar_receta: observación opcional al pie de la receta.' },
+        items: {
+          type: 'array',
+          description: 'Para crear_presupuesto: la lista de prestaciones/ítems del presupuesto, UNO por prestación que dicte el usuario.',
+          items: {
+            type: 'object',
+            properties: {
+              descripcion: { type: 'string', description: 'Nombre de la prestación o ítem (ej. "Limpieza", "Extracción", "Blanqueamiento").' },
+              precio: { type: 'number', description: 'Precio en pesos chilenos (entero), SOLO si el usuario lo dicta. Si no, omítelo y el sistema lo toma del catálogo.' },
+              cantidad: { type: 'number', description: 'Cuántas unidades, solo si el usuario pide más de una (ej. "2 tapaduras" → 2).' },
+            },
+            required: ['descripcion'],
+          },
+        },
       },
       required: ['tipo', 'resumen'],
       additionalProperties: false,
@@ -625,6 +651,22 @@ async function writeInventoryOut(
   await createInsumoLotMovement(clinicaId, userId, supplyId, lotId, input);
 }
 
+// Registra una ENTRADA (lote nuevo) de un insumo. Nativo o federado, misma
+// firma — igual que writeInventoryOut pero para crear un lote. Ambos servicios
+// validan por su cuenta (número de lote requerido y único por insumo).
+async function writeInventoryIn(
+  clinicaId: string,
+  userId: string,
+  supplyId: string,
+  input: { lotNumber: string; initialQuantity: number; expirationDate: string | null }
+): Promise<void> {
+  if (await isClinicaFederatedForInventory(clinicaId)) {
+    await createRemoteInventoryLot(clinicaId, supplyId, input);
+    return;
+  }
+  await createInsumoLot(clinicaId, userId, supplyId, input);
+}
+
 // Capa "plan de la clínica" (equivalente a requireModuleEnabled): qué módulos
 // tiene encendidos la clínica en su plan (Clinica.modules) más las excepciones
 // por usuario (User.moduleOverrides). NO distingue por rol: aplica incluso al
@@ -670,6 +712,10 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   crear_paciente: 'pacientes',
   editar_ficha: 'pacientes',
   generar_receta: 'pacientes',
+  crear_presupuesto: 'tratamientos',
+  enviar_consentimiento: 'consentimientos',
+  solicitud_examen: 'pacientes',
+  dictar_evolucion: 'evoluciones',
 };
 
 export async function chat(req: Request, res: Response) {
@@ -1243,12 +1289,24 @@ export async function chat(req: Request, res: Response) {
             estado: args.estado ? String(args.estado) : null,
             insumo: args.insumo ? String(args.insumo) : null,
             cantidad: args.cantidad != null && args.cantidad !== '' && Number.isFinite(Number(args.cantidad)) ? Number(args.cantidad) : null,
+            lote: args.lote ? String(args.lote) : null,
+            vencimiento: args.vencimiento ? String(args.vencimiento) : null,
+            consentimiento: args.consentimiento ? String(args.consentimiento) : null,
             medicamentos: Array.isArray(args.medicamentos)
               ? (args.medicamentos as any[])
                   .map((it) => ({ medicamento: String(it?.medicamento ?? '').trim(), indicaciones: String(it?.indicaciones ?? '').trim() }))
                   .filter((it) => it.medicamento)
               : null,
             observaciones: args.observaciones ? String(args.observaciones) : null,
+            items: Array.isArray(args.items)
+              ? (args.items as any[])
+                  .map((it) => ({
+                    descripcion: String(it?.descripcion ?? '').trim(),
+                    precio: it?.precio != null && Number.isFinite(Number(it.precio)) ? Number(it.precio) : null,
+                    cantidad: it?.cantidad != null && Number.isFinite(Number(it.cantidad)) ? Number(it.cantidad) : null,
+                  }))
+                  .filter((it) => it.descripcion)
+              : null,
           },
         });
       }
@@ -1258,7 +1316,19 @@ export async function chat(req: Request, res: Response) {
     // varios pedidos en un mensaje. Una sola: comportamiento de siempre. Varias:
     // se corre cada una recolectando su resultado y se devuelven juntas en
     // `multi`, para que el front muestre una tarjeta por pedido.
-    const toolUses = response.content.filter((b) => b.type === 'tool_use');
+    const rawToolUses = response.content.filter((b) => b.type === 'tool_use');
+    // Seguro contra herramientas duplicadas: si el modelo repite la MISMA
+    // consulta con los mismos parámetros (ej. "ver_agenda_dia" dos veces para
+    // una pregunta), se corre una sola vez. Las acciones (proponer_accion) NO
+    // se deduplican: el usuario podría pedir dos pagos iguales a propósito.
+    const seenTool = new Set<string>();
+    const toolUses = rawToolUses.filter((b: any) => {
+      if (b.name === 'proponer_accion') return true;
+      const key = `${b.name}:${JSON.stringify(b.input ?? {})}`;
+      if (seenTool.has(key)) return false;
+      seenTool.add(key);
+      return true;
+    });
     if (toolUses.length === 1) {
       return await handleOneTool(toolUses[0], res);
     }
@@ -1324,9 +1394,13 @@ export async function execute(req: Request, res: Response) {
     presupuesto?: string;
     estado?: string;
     insumo?: string;
+    lote?: string;
+    vencimiento?: string;
     cantidad?: number;
     medicamentos?: { medicamento?: string; indicaciones?: string }[];
     observaciones?: string;
+    items?: { descripcion?: string; precio?: number; cantidad?: number }[];
+    consentimiento?: string;
   };
 
   try {
@@ -1880,6 +1954,57 @@ export async function execute(req: Request, res: Response) {
       });
     }
 
+    if (body.tipo === 'ingresar_stock') {
+      // ENTRADA de stock = crear un lote nuevo de un insumo existente (replica
+      // createInsumoLot / "Nuevo lote" del inventario). Solo administradores,
+      // igual que todo el inventario. En clínicas con inventario federado no hay
+      // creación de lote remoto por acá, así que se deriva al módulo.
+      if (!isClinicAdmin(req)) {
+        return res.json({ ejecutado: false, mensaje: 'El inventario de insumos es solo para administradores.' });
+      }
+      const cantidad = Math.floor(Number(body.cantidad));
+      if (!Number.isFinite(cantidad) || cantidad <= 0) {
+        return res.json({ ejecutado: false, mensaje: '¿Cuántas unidades ingresan? Indíqueme una cantidad válida.' });
+      }
+      const lote = String(body.lote ?? '').trim();
+      if (!lote) {
+        return res.json({ ejecutado: false, mensaje: 'Para ingresar stock necesito el número de lote del insumo.' });
+      }
+      const r = await resolveSupply(req.user.clinicaId, String(body.insumo ?? ''));
+      if ('error' in r) {
+        return res.json({ ejecutado: false, mensaje: r.error });
+      }
+      const sup = r.supply;
+      const unidad = sup.unit ? ` ${sup.unit}` : '';
+      // Vencimiento opcional (YYYY-MM-DD en hora de Chile). Si no es parseable, se ignora.
+      let expirationDate: string | null = null;
+      const venc = String(body.vencimiento ?? '').trim();
+      if (venc) {
+        const d = parseSantiago(venc);
+        if (d) expirationDate = d.toISOString();
+      }
+      try {
+        await writeInventoryIn(req.user.clinicaId, req.user.sub, sup.id, {
+          lotNumber: lote,
+          initialQuantity: cantidad,
+          expirationDate,
+        });
+      } catch (e: any) {
+        // Error nativo (statusCode 400 con mensaje) o remoto (axios: response.data.error).
+        const msg =
+          e?.response?.data?.error ||
+          e?.response?.data?.message ||
+          (e?.statusCode === 400 && e?.message ? String(e.message) : null) ||
+          `No se pudo ingresar el stock de ${sup.name}. Intente desde la sección de Inventario.`;
+        return res.json({ ejecutado: false, mensaje: String(msg) });
+      }
+      const vencTxt = expirationDate ? `, vence ${new Date(expirationDate).toLocaleDateString('es-CL')}` : '';
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: ingresé ${cantidad}${unidad} de ${sup.name} al lote ${lote}${vencTxt}.`,
+      });
+    }
+
     if (body.tipo === 'generar_receta') {
       // Misma puerta que la ruta real de receta: permiso "pacientes". La receta
       // la FIRMA el profesional, así que además exige su firma guardada — eso
@@ -2013,6 +2138,350 @@ export async function execute(req: Request, res: Response) {
       });
     }
 
+    if (body.tipo === 'crear_presupuesto') {
+      // Crea un presupuesto/plan de tratamiento. Replica POST /treatment-plans:
+      // exige el módulo "tratamientos" (gate de arriba) + permisos de rol
+      // "tratamientos" Y "crearPresupuestos" (igual que la ruta real: router.use
+      // requireRolePermission('tratamientos') + route requireRolePermission(
+      // 'crearPresupuestos')). Crea el plan con sus ítems en una sola operación;
+      // el total, el número y el estado inicial los pone el sistema, y sincroniza
+      // con Dental-Demo-Back. Lo fino (dientes, convenio, fotos) se afina luego
+      // en la ficha, que el chat no puede capturar.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = Boolean(perms.tratamientos && perms.crearPresupuestos);
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.crearPresupuestos}».` });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) {
+        return res.json({ ejecutado: false, mensaje: r.error });
+      }
+      const p = r.patient;
+      const nombre = `${p.firstName} ${p.lastName}`;
+      const clinicaId = req.user.clinicaId;
+
+      // Una clínica "ambas" (dental + estética) necesita saber el tipo de
+      // diagrama; el chat no lo distingue, así que se deriva a la ficha (mismo
+      // criterio que el backend real, que exige diagramType en ese caso).
+      const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { tipo: true } });
+      if (clinica?.tipo === 'ambas') {
+        return res.json({ ejecutado: false, mensaje: `Su clínica maneja odontología y estética a la vez; por ahora ese presupuesto hay que crearlo desde la ficha de ${nombre} para elegir odontograma o mapa facial.` });
+      }
+      const diagramType = clinica?.tipo === 'estetica' ? 'estetica' : 'dental';
+
+      // Resolver cada ítem: precio dictado o, si no, del catálogo de prestaciones.
+      const rawItems = Array.isArray(body.items) ? body.items : [];
+      const itemsData: Array<{
+        description: string;
+        cost: number;
+        listPrice: number;
+        prestacionId: string | null;
+        convenioDiscountPercent: number;
+        clinicaId: string;
+        createdAt: Date;
+      }> = [];
+      const sinPrecio: string[] = [];
+      let index = 0;
+      for (const it of rawItems) {
+        const desc = String(it?.descripcion ?? '').trim();
+        if (!desc) continue;
+        const cantidad = Math.max(1, Math.round(Number(it?.cantidad) || 1));
+        let unit =
+          it?.precio != null && Number.isFinite(Number(it.precio)) && Number(it.precio) > 0
+            ? Math.round(Number(it.precio))
+            : null;
+        let prestacionId: string | null = null;
+        if (unit === null) {
+          // Precio del catálogo: solo si hay UNA prestación que calce (si no, se
+          // deja sin precio para no adivinar mal).
+          const matches = await prisma.prestacion.findMany({
+            where: { clinicaId, active: true, name: { contains: desc, mode: 'insensitive' as const } },
+            select: { id: true, basePrice: true },
+            take: 2,
+          });
+          if (matches.length === 1) {
+            unit = matches[0].basePrice;
+            prestacionId = matches[0].id;
+          }
+        }
+        if (unit === null) {
+          unit = 0;
+          sinPrecio.push(desc);
+        }
+        const lineCost = unit * cantidad;
+        itemsData.push({
+          description: cantidad > 1 ? `${desc} (x${cantidad})` : desc,
+          cost: lineCost,
+          listPrice: lineCost,
+          prestacionId,
+          convenioDiscountPercent: 0,
+          clinicaId,
+          createdAt: new Date(Date.now() + index),
+        });
+        index += 1;
+      }
+      if (itemsData.length === 0) {
+        return res.json({ ejecutado: false, mensaje: `Dígame al menos una prestación o ítem para el presupuesto de ${nombre}.` });
+      }
+
+      const amount = itemsData.reduce((s, i) => s + i.cost, 0);
+      const plan = await prisma.treatmentPlan.create({
+        data: {
+          patientId: p.id,
+          professionalId: req.user.sub,
+          createdById: req.user.sub,
+          createdByUserId: req.user.sub,
+          clinicaId,
+          amount,
+          diagramType,
+          items: { create: itemsData },
+        },
+        include: { items: true },
+      });
+
+      // Best-effort (no bloquea): sincroniza el plan y sus ítems con Gestión.
+      (async () => {
+        await syncTreatmentPlanToFederation(plan);
+        for (const item of plan.items) await syncTreatmentItemToFederation(item);
+      })().catch((err) => console.error('[assistant] no se pudo sincronizar el presupuesto creado', err));
+
+      const totalTxt = amount.toLocaleString('es-CL');
+      const aviso = sinPrecio.length
+        ? ` Ojo: ${sinPrecio.length === 1 ? 'un ítem quedó sin precio' : `${sinPrecio.length} ítems quedaron sin precio`} (no estaban en el catálogo); ajústelo en la ficha.`
+        : '';
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: creé el presupuesto #${plan.number} para ${nombre} con ${plan.items.length} ${plan.items.length === 1 ? 'ítem' : 'ítems'} por $${totalTxt}.${aviso} Ábralo en la ficha del paciente para afinar dientes, convenio y detalles.`,
+      });
+    }
+
+    if (body.tipo === 'enviar_consentimiento') {
+      // Envía un consentimiento a firmar al paciente, por correo. Replica
+      // POST /data-consents (dataConsentsController.send): módulo + permiso
+      // 'consentimientos'; paciente con correo; tipo de la clínica; correo con
+      // link de firma; Consent en estado 'pendiente' con 7 días de vigencia y un
+      // token único; snapshot del PDF si el tipo tiene uno cargado. El correo es
+      // bloqueante: si no se envía, no se registra nada (igual que el sistema).
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.consentimientos;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.consentimientos}».` });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const p = r.patient;
+      const nombre = `${p.firstName} ${p.lastName}`;
+      const full = await prisma.patient.findUnique({ where: { id: p.id }, select: { email: true } });
+      if (!full?.email) {
+        return res.json({ ejecutado: false, mensaje: `${nombre} no tiene un correo registrado. Agrégaselo en la ficha para poder enviarle el consentimiento.` });
+      }
+      const q = String(body.consentimiento ?? '').trim();
+      if (!q) {
+        return res.json({ ejecutado: false, mensaje: '¿Qué consentimiento le envío? (por ejemplo "tratamiento general" o "protección de datos").' });
+      }
+      const tipos = await prisma.consentType.findMany({
+        where: { clinicaId: req.user.clinicaId, active: true, name: { contains: q, mode: 'insensitive' as const } },
+        select: { id: true, name: true, porProfesional: true, pdfUrl: true, legalText: true },
+        take: 5,
+      });
+      if (tipos.length === 0) {
+        return res.json({ ejecutado: false, mensaje: `No encontré un consentimiento llamado «${q}» en su clínica.` });
+      }
+      if (tipos.length > 1) {
+        return res.json({ ejecutado: false, mensaje: `Hay varios consentimientos que calzan con «${q}» (${tipos.map((t) => t.name).join(', ')}). Sea más específico.` });
+      }
+      const ct = tipos[0];
+      // Solo los tipos "por profesional" se atan a un doctor; usamos al que pide.
+      const professionalId = ct.porProfesional ? req.user.sub : null;
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const sentAt = new Date();
+      const expiresAt = new Date(sentAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const origins = (process.env.FRONTEND_ORIGIN ?? '')
+        .split(',')
+        .map((o) => o.trim().replace(/\/+$/, ''))
+        .filter(Boolean);
+      const baseUrl = origins[0] ?? 'http://localhost:5173';
+      const signUrl = `${baseUrl}/consentimiento/${token}`;
+      const clinica = await prisma.clinica.findUnique({ where: { id: req.user.clinicaId }, select: { name: true, logoUrl: true } });
+
+      try {
+        await sendRecetaEmail({
+          to: full.email,
+          subject: `Consentimiento: ${ct.name} – fordentcloud`,
+          html: buildConsentEmailHtml({
+            patientFirstName: p.firstName,
+            consentTypeName: ct.name,
+            signUrl,
+            expiresAt,
+            clinicaNombre: clinica?.name ?? 'fordentcloud',
+            clinicaLogoUrl: clinica?.logoUrl ?? undefined,
+          }),
+          clinicaId: req.user.clinicaId,
+        });
+      } catch (err) {
+        console.error('[assistant] no se pudo enviar el correo de consentimiento', err);
+        return res.json({ ejecutado: false, mensaje: 'No se pudo enviar el correo del consentimiento. Intente de nuevo en un momento.' });
+      }
+
+      const datos = {
+        status: 'pendiente',
+        token,
+        sentAt,
+        expiresAt,
+        method: 'email',
+        sentById: req.user.sub,
+        contentSnapshot: ct.legalText,
+        professionalId,
+        professionalSignatureUrl: null as string | null,
+      };
+      const previo = await prisma.consent.findFirst({ where: { patientId: p.id, consentTypeId: ct.id, professionalId } });
+      const consent = previo
+        ? await prisma.consent.update({
+            where: { id: previo.id },
+            data: { ...datos, respondedAt: null, signerName: null, signerRut: null, signerIp: null, userAgent: null },
+          })
+        : await prisma.consent.create({ data: { ...datos, patientId: p.id, consentTypeId: ct.id, clinicaId: req.user.clinicaId } });
+
+      if (ct.pdfUrl) {
+        try {
+          const snap = await cloudinary.uploader.upload(ct.pdfUrl, {
+            resource_type: 'raw',
+            folder: `dentalcloud/${req.user.clinicaId}/consentimientos-firmados`,
+            public_id: consent.id,
+            overwrite: true,
+          });
+          await prisma.consent.update({ where: { id: consent.id }, data: { pdfSnapshotUrl: snap.secure_url } });
+        } catch (e) {
+          console.error('[assistant] no se pudo copiar el PDF del consentimiento', e);
+        }
+      }
+
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: le envié el consentimiento «${ct.name}» a ${nombre} (${full.email}). Tiene 7 días para firmarlo.`,
+      });
+    }
+
+    if (body.tipo === 'solicitud_examen') {
+      // Genera una solicitud de exámenes (replica POST /patients/:id/exam-request
+      // → createExamRequest): permiso "pacientes" (mismo que la receta), sin firma
+      // ni correo. Reusa el MISMO generador de PDF del sistema, sube a Cloudinary
+      // y lo guarda como documento clínico 'solicitud_laboratorio'.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.pacientes;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.pacientes}».` });
+      }
+      const exams = String(body.contenido ?? '').trim();
+      if (!exams) {
+        return res.json({ ejecutado: false, mensaje: 'Dígame qué exámenes incluyo en la solicitud.' });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const patient = await prisma.patient.findUnique({ where: { id: r.patient.id } });
+      if (!patient) return res.json({ ejecutado: false, mensaje: 'No encontré ese paciente.' });
+      const [clinica, professional] = await Promise.all([
+        prisma.clinica.findUnique({
+          where: { id: req.user.clinicaId },
+          select: {
+            name: true, logoUrl: true, address: true, phone: true, email: true, website: true,
+            rut: true, documentType: true,
+            legalName: true, legalAddress: true, legalEmail: true, legalPhone: true, legalWebsite: true,
+          },
+        }),
+        prisma.user.findUnique({ where: { id: req.user.sub }, select: { name: true } }),
+      ]);
+      if (!clinica) return res.json({ ejecutado: false, mensaje: 'No encontré la clínica.' });
+      const createdAt = new Date();
+      const pdfBuffer = await buildExamRequestPdf({
+        clinica,
+        patient: {
+          firstName: patient.firstName,
+          lastName: patient.lastName,
+          rut: patient.rut ?? '',
+          documentType: patient.documentType,
+          birthDate: patient.birthDate,
+        },
+        professional: professional ? { name: professional.name } : null,
+        exams,
+        notes: String(body.observaciones ?? '').trim() || null,
+        createdAt,
+      });
+      try {
+        const uploadResult = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { resource_type: 'raw', format: 'pdf', folder: `dentalcloud/${patient.id}/solicitud_laboratorio` },
+            (error, result) => {
+              if (error || !result) return reject(error);
+              resolve({ secure_url: result.secure_url, public_id: result.public_id });
+            }
+          );
+          stream.end(pdfBuffer);
+        });
+        await prisma.clinicalDocument.create({
+          data: {
+            patientId: patient.id,
+            uploadedById: req.user.sub,
+            category: 'solicitud_laboratorio',
+            fileName: `solicitud-examenes-${createdAt.toISOString().slice(0, 10)}.pdf`,
+            fileUrl: uploadResult.secure_url,
+            resourceType: 'raw',
+            publicId: uploadResult.public_id,
+            description: exams.slice(0, 200),
+            clinicaId: req.user.clinicaId,
+          },
+        });
+      } catch (e) {
+        console.error('[assistant.execute] solicitud_examen:', e);
+        return res.json({ ejecutado: false, mensaje: 'No se pudo generar la solicitud de exámenes. Intente desde la ficha del paciente.' });
+      }
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: generé la solicitud de exámenes para ${patient.firstName} ${patient.lastName}. Queda guardada en sus documentos.`,
+      });
+    }
+
+    if (body.tipo === 'dictar_evolucion') {
+      // Registra una evolución/nota clínica DICTADA. Replica POST /evolutions
+      // (evolutionsController.create) en su forma SEGURA: una nota suelta, SIN
+      // ligar a un ítem del presupuesto, SIN cobro y SIN descuento de inventario
+      // (esos efectos exigen elegir lote/monto con cuidado y se hacen en la
+      // ficha). Módulo + permiso "evoluciones". El contenido es obligatorio.
+      const perms = await resolveRequestPermissions(req);
+      let allowed = false;
+      if (perms === 'full-access') allowed = true;
+      else if (perms !== 'no-clinic') allowed = perms.evoluciones;
+      if (!allowed) {
+        return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.evoluciones}».` });
+      }
+      const contenido = String(body.contenido ?? '').trim();
+      if (!contenido) {
+        return res.json({ ejecutado: false, mensaje: 'Dígame el contenido de la evolución a registrar.' });
+      }
+      const r = await resolvePatient(String(body.paciente ?? ''), req);
+      if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+      const p = r.patient;
+      await prisma.evolution.create({
+        data: {
+          patientId: p.id,
+          professionalId: req.user.sub,
+          content: sanitizeHtml(contenido),
+          clinicaId: req.user.clinicaId,
+        },
+      });
+      return res.json({
+        ejecutado: true,
+        mensaje: `Listo: registré la evolución de ${p.firstName} ${p.lastName}.`,
+      });
+    }
+
     return res.json({
       ejecutado: false,
       mensaje: 'Esta acción todavía no está conectada para ejecutarse. Muy pronto estará disponible.',
@@ -2023,9 +2492,14 @@ export async function execute(req: Request, res: Response) {
   }
 }
 
-// Uso de IA de la clínica en el mes actual: para que vean cuánto llevan y cuánto
-// les queda. Refleja el tope vigente (si el super admin lo sube, se ve al tiro).
+// Uso de IA de la clínica en el mes actual: cuánto llevan y cuánto les queda.
+// SOLO lo puede ver el administrador de la clínica (mismo criterio que
+// inventario: rol 'admin'). Para cualquier otra cuenta se niega, así el dato
+// de consumo/costo no se filtra ni siquiera por API.
 export async function usage(req: Request, res: Response) {
+  if (!isClinicAdmin(req)) {
+    return res.status(403).json({ error: 'Solo el administrador de la clínica puede ver el uso de IA.' });
+  }
   const clinicaId = req.user?.clinicaId;
   if (!clinicaId) {
     return res.json({ limit: 0, used: 0, remaining: null, periodo: null });

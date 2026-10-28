@@ -52,6 +52,11 @@ o tocar un registro clínico/legal cuando no corresponde.
 | agendar/reagendar/cancelar | sillón activo + sin choque + fecha futura + cita existente |
 | descontar_stock | solo admin; FEFO; no lote vencido; stock suficiente |
 | generar_receta | permiso `pacientes` + firma del profesional + ≥1 medicamento |
+| crear_presupuesto | módulo `tratamientos` + permisos `tratamientos` y `crearPresupuestos`; paciente válido; ≥1 ítem; precio del catálogo o dictado; total/número/estado los pone el sistema; sincroniza a federación; clínica "ambas" se deriva a la ficha |
+| enviar_consentimiento | módulo + permiso `consentimientos`; paciente con correo; tipo de la clínica; correo con link + `Consent` pendiente 7 días con token; snapshot del PDF si el tipo lo tiene; correo bloqueante (si falla no registra) |
+| ingresar_stock (entrada) | solo admin (como todo inventario); insumo existente; nº de lote requerido; crea lote con cantidad + vencimiento; nativo o federado (`writeInventoryIn`) |
+| solicitud_examen | módulo + permiso `pacientes` (igual que receta); genera el PDF con el mismo builder del sistema y lo guarda como documento clínico `solicitud_laboratorio`; sin firma ni correo |
+| dictar_evolucion | módulo + permiso `evoluciones`; nota clínica SUELTA (sin ligar a ítem, SIN cobro ni descuento de inventario — esos efectos se hacen en la ficha con lote/monto elegidos a mano) |
 | crear_paciente / editar_ficha | RUT requerido / solo tel-correo-dirección, correo válido |
 
 ## Pendiente de alto cuidado: evoluciones
@@ -62,6 +67,9 @@ Una evolución **no es solo texto**. `evolutionsController.create` exige/arrastr
   plan **no estar "de alta"**;
 - puede **registrar un pago** y **descontar inventario** al crearse.
 
-Por eso, antes de dar a un profesional "dictar una evolución" por el asistente,
-hay que mapear y replicar TODO ese flujo (no un atajo), con el mismo cuidado
-legal que el resto (una evolución no se borra, se anula).
+Por eso el asistente SOLO crea la evolución en su forma segura: una **nota
+suelta** (`dictar_evolucion`), sin ligar a un ítem del presupuesto, sin cobro y
+sin descuento de inventario. La versión ligada a un procedimiento (que completa
+el ítem, recalcula el plan, puede cobrar y descontar un lote) se sigue haciendo
+**desde la ficha**, donde el profesional elige el lote y el monto a mano. Una
+evolución no se borra, se anula (con motivo), y eso también queda en la ficha.
