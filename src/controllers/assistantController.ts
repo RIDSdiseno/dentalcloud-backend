@@ -87,6 +87,7 @@ const INSTRUCTIONS = [
   'Si piden ENVIAR un consentimiento a un paciente ("mándale el consentimiento de tratamiento a Juan", "envía el consentimiento de protección de datos a la señora Rojas", "manda a firmar el consentimiento de ortodoncia"), usa "proponer_accion" tipo "enviar_consentimiento" con "paciente" y "consentimiento" (el nombre del consentimiento). El paciente debe tener correo registrado. El sistema le envía un correo con el link para firmar.',
   'Si piden una SOLICITUD DE EXÁMENES ("hazle una orden de exámenes a Juan: hemograma y perfil bioquímico", "genera una solicitud de radiografía panorámica para la señora Rojas"), usa "proponer_accion" tipo "solicitud_examen" con "paciente" y "contenido" = la lista de exámenes tal como los dicta el usuario; si agrega una indicación, ponla en "observaciones". El sistema genera el PDF y lo guarda en la ficha. No inventes exámenes que no haya dicho.',
   'Si un profesional DICTA una evolución o nota clínica ("evoluciona a Juan: llegó con dolor, se revisó y...", "registra una evolución de la señora Rojas: control post operatorio sin novedades"), usa "proponer_accion" tipo "dictar_evolucion" con "paciente" y "contenido" = el texto de la evolución TAL CUAL lo dicta, sin agregar ni inventar nada clínico. Esta es una NOTA de evolución; si además quiere ligarla a un procedimiento del presupuesto, cobrar o descontar inventario, eso se hace desde la ficha (el asistente solo registra la nota).',
+  'Si piden un RESUMEN o REPORTE de la clínica — "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?", "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay?", "¿cuántos presupuestos sin iniciar?" — usa la herramienta "ver_reporte" con el "tipo" correcto (facturacion | deudores | pacientes_nuevos | citas | presupuestos) y el "periodo" (hoy | semana | mes) cuando aplique. No inventes números: deja que la herramienta los calcule. Si la cuenta no tiene el permiso, el sistema lo niega.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
   'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "busca a Pedro, muéstrame sus presupuestos y agéndale el viernes a las 10"), identifícalos TODOS y atiéndelos TODOS en la misma respuesta: emite UNA herramienta por CADA pedido, aunque sean tres, cuatro o más. Cuéntalos mentalmente y revisa que no dejas ninguno afuera; no te quedes con el primero ni con solo algunos, y no juntes dos pedidos distintos en una sola herramienta. Si cada pedido necesita una herramienta distinta, usa todas las que hagan falta a la vez. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una. Pero NO emitas la misma herramienta dos veces con los mismos parámetros en una respuesta: un pedido = una sola llamada a esa herramienta (ej. no llames "ver_agenda_dia" dos veces para la misma pregunta).',
   'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
@@ -316,6 +317,30 @@ const TOOLS = [
       'Muestra las ALERTAS del inventario: insumos sin stock o con stock bajo, y lotes vencidos o por vencer (próximos 30 días). Úsala para "¿qué insumos se están acabando?", "¿qué hay que reponer?", "¿qué está por vencer?", "¿hay algo vencido?". Solo para administradores.',
     strict: false,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    type: 'function' as const,
+    name: 'ver_reporte',
+    description:
+      'Entrega un RESUMEN/REPORTE de la clínica. Úsala para "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?" / "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay esta semana?", "¿cuántos presupuestos sin iniciar?". Cada reporte respeta el permiso que corresponde; si la cuenta no lo tiene, el sistema lo niega. Los resultados se muestran al usuario.',
+    strict: false,
+    parameters: {
+      type: 'object',
+      properties: {
+        tipo: {
+          type: 'string',
+          enum: ['facturacion', 'deudores', 'pacientes_nuevos', 'citas', 'presupuestos'],
+          description: 'Qué reporte: "facturacion" (ingresos/abonos del período), "deudores" (quién debe más), "pacientes_nuevos", "citas" (cuántas citas) o "presupuestos" (cuántos por estado).',
+        },
+        periodo: {
+          type: 'string',
+          enum: ['hoy', 'semana', 'mes'],
+          description: 'Período para facturacion, pacientes_nuevos y citas (por defecto "mes"). No aplica a deudores ni presupuestos.',
+        },
+      },
+      required: ['tipo'],
+      additionalProperties: false,
+    },
   },
   {
     type: 'function' as const,
@@ -898,11 +923,13 @@ export async function chat(req: Request, res: Response) {
         if (!allowed) return res.json({ denied: true, permiso: PERMISSION_LABELS.cartolaGeneral });
         const p = await findOnePatient(String(args.nombre ?? ''), req);
         if (!p) return res.json({ paciente: null, saldo: null });
-        const agg = await prisma.ledgerMovement.aggregate({
-          where: { patientId: p.id },
-          _sum: { debe: true, haber: true },
-        });
-        const cobrado = agg._sum.debe ?? 0;
+        // La deuda real (como la Cartola) suma el monto de los presupuestos, no
+        // solo los movimientos de cartola: cobrado = Σ presupuestos + Σ debe.
+        const [agg, planAgg] = await Promise.all([
+          prisma.ledgerMovement.aggregate({ where: { patientId: p.id }, _sum: { debe: true, haber: true } }),
+          prisma.treatmentPlan.aggregate({ where: { patientId: p.id }, _sum: { amount: true } }),
+        ]);
+        const cobrado = (planAgg._sum.amount ?? 0) + (agg._sum.debe ?? 0);
         const pagado = agg._sum.haber ?? 0;
         return res.json({
           paciente: `${p.firstName} ${p.lastName}`,
@@ -1113,13 +1140,17 @@ export async function chat(req: Request, res: Response) {
           if (!(can('cartola') && can('cartolaGeneral')) || !modOn('cartola')) {
             seguimiento.pagos = null;
           } else {
-            const grouped = await prisma.ledgerMovement.groupBy({
-              by: ['patientId'],
-              where: { ...scope },
-              _sum: { debe: true, haber: true },
-            });
-            const pend = grouped
-              .map((g) => ({ patientId: g.patientId, pendiente: (g._sum.debe ?? 0) - (g._sum.haber ?? 0) }))
+            // Deuda real como la Cartola: Σ monto de presupuestos + Σ debe −
+            // Σ haber (los movimientos solos subestiman la deuda).
+            const [planesDeuda, grouped] = await Promise.all([
+              prisma.treatmentPlan.groupBy({ by: ['patientId'], where: { ...scope }, _sum: { amount: true } }),
+              prisma.ledgerMovement.groupBy({ by: ['patientId'], where: { ...scope }, _sum: { debe: true, haber: true } }),
+            ]);
+            const deudaMap = new Map<string, number>();
+            for (const pl of planesDeuda) deudaMap.set(pl.patientId, (deudaMap.get(pl.patientId) ?? 0) + (pl._sum.amount ?? 0));
+            for (const g of grouped) deudaMap.set(g.patientId, (deudaMap.get(g.patientId) ?? 0) + (g._sum.debe ?? 0) - (g._sum.haber ?? 0));
+            const pend = [...deudaMap.entries()]
+              .map(([patientId, pendiente]) => ({ patientId, pendiente }))
               .filter((x) => x.pendiente > 0)
               .sort((a, b) => b.pendiente - a.pendiente)
               .slice(0, 15);
@@ -1229,6 +1260,103 @@ export async function chat(req: Request, res: Response) {
             items,
           },
         });
+      }
+
+      // Reportes/resúmenes de la clínica (solo lectura; los números van al
+      // FRONT). Cada tipo respeta SU permiso + el módulo de la clínica: si la
+      // cuenta no lo tiene, se niega (nunca se muestra el dato). La deuda usa la
+      // MISMA fórmula que la Cartola real (Σ monto de presupuestos + Σ debe −
+      // Σ haber), no solo los movimientos, para que los números calcen.
+      if (toolUse.name === 'ver_reporte') {
+        const clinicaId = req.user?.clinicaId;
+        const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: clinicaId ?? '__sin_clinica__' };
+        const perms = await resolveRequestPermissions(req);
+        const can = (k: PermissionKey) => (perms === 'full-access' ? true : perms === 'no-clinic' ? false : Boolean(perms[k]));
+        const mods = await getClinicModules(req);
+        const modOn = (k: ClinicaModuleKey) => (mods === null ? true : Boolean(mods[k]));
+        const tipo = String(args.tipo ?? '');
+        const periodo = ['hoy', 'semana', 'mes'].includes(String(args.periodo)) ? String(args.periodo) : 'mes';
+
+        // Inicio del período en hora de Chile.
+        const dayCl = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+        let start: Date | null;
+        if (periodo === 'hoy') start = parseSantiago(`${dayCl}T00:00`);
+        else if (periodo === 'mes') start = parseSantiago(`${dayCl.slice(0, 7)}-01T00:00`);
+        else {
+          const wd = new Date(`${dayCl}T12:00:00Z`).getUTCDay(); // 0=dom … 6=sáb
+          const back = (wd + 6) % 7; // días hasta el lunes de esta semana
+          const base = parseSantiago(`${dayCl}T00:00`);
+          start = base ? new Date(base.getTime() - back * 24 * 60 * 60 * 1000) : null;
+        }
+        const periodoTxt = periodo === 'hoy' ? 'hoy' : periodo === 'semana' ? 'esta semana' : 'este mes';
+
+        if (tipo === 'facturacion') {
+          if (!(can('cartola') && can('cartolaGeneral')) || !modOn('cartola')) {
+            return res.json({ denied: true, permiso: PERMISSION_LABELS.cartolaGeneral });
+          }
+          const agg = await prisma.ledgerMovement.aggregate({
+            where: { ...scope, type: 'abono', ...(start ? { createdAt: { gte: start } } : {}) },
+            _sum: { haber: true },
+            _count: true,
+          });
+          return res.json({ reporte: { tipo, periodoTxt, total: agg._sum.haber ?? 0, movimientos: agg._count } });
+        }
+
+        if (tipo === 'deudores') {
+          if (!(can('cartola') && can('cartolaGeneral')) || !modOn('cartola')) {
+            return res.json({ denied: true, permiso: PERMISSION_LABELS.cartolaGeneral });
+          }
+          const [planes, movs] = await Promise.all([
+            prisma.treatmentPlan.groupBy({ by: ['patientId'], where: { ...scope }, _sum: { amount: true } }),
+            prisma.ledgerMovement.groupBy({ by: ['patientId'], where: { ...scope }, _sum: { debe: true, haber: true } }),
+          ]);
+          const deuda = new Map<string, number>();
+          for (const p of planes) deuda.set(p.patientId, (deuda.get(p.patientId) ?? 0) + (p._sum.amount ?? 0));
+          for (const m of movs) deuda.set(m.patientId, (deuda.get(m.patientId) ?? 0) + (m._sum.debe ?? 0) - (m._sum.haber ?? 0));
+          const top = [...deuda.entries()]
+            .map(([patientId, monto]) => ({ patientId, monto }))
+            .filter((x) => x.monto > 0)
+            .sort((a, b) => b.monto - a.monto)
+            .slice(0, 12);
+          const pacientes = top.length
+            ? await prisma.patient.findMany({ where: { id: { in: top.map((t) => t.patientId) } }, select: { id: true, firstName: true, lastName: true } })
+            : [];
+          const nameById = new Map(pacientes.map((p) => [p.id, `${p.firstName} ${p.lastName}`]));
+          const deudores = top.map((t) => ({ paciente: nameById.get(t.patientId) ?? '—', monto: t.monto }));
+          return res.json({ reporte: { tipo, deudores, total: deudores.reduce((s, d) => s + d.monto, 0) } });
+        }
+
+        if (tipo === 'pacientes_nuevos') {
+          if (!can('pacientes') || !modOn('pacientes')) {
+            return res.json({ denied: true, permiso: PERMISSION_LABELS.pacientes });
+          }
+          const count = await prisma.patient.count({ where: { ...scope, ...(start ? { createdAt: { gte: start } } : {}) } });
+          return res.json({ reporte: { tipo, periodoTxt, count } });
+        }
+
+        if (tipo === 'citas') {
+          if (!can('agenda') || !modOn('agenda')) {
+            return res.json({ denied: true, permiso: PERMISSION_LABELS.agenda });
+          }
+          const count = await prisma.appointment.count({
+            where: { ...scope, status: { not: 'cancelada' }, ...(start ? { startAt: { gte: start } } : {}) },
+          });
+          return res.json({ reporte: { tipo, periodoTxt, count } });
+        }
+
+        if (tipo === 'presupuestos') {
+          if (!can('tratamientos') || !modOn('tratamientos')) {
+            return res.json({ denied: true, permiso: PERMISSION_LABELS.tratamientos });
+          }
+          const [sinIniciar, enTratamiento, terminados] = await Promise.all([
+            prisma.treatmentPlan.count({ where: { ...scope, status: 'sin_iniciar' } }),
+            prisma.treatmentPlan.count({ where: { ...scope, status: 'en_tratamiento' } }),
+            prisma.treatmentPlan.count({ where: { ...scope, status: { in: ['terminado', 'alta'] } } }),
+          ]);
+          return res.json({ reporte: { tipo, sinIniciar, enTratamiento, terminados } });
+        }
+
+        return res.json({ reply: 'No reconozco ese tipo de reporte.' });
       }
 
       if (toolUse.name === 'navegar') {
