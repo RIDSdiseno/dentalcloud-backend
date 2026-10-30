@@ -32,6 +32,7 @@ import documentFormatsRoutes from './routes/documentFormats';
 import consultationPaymentsRoutes from './routes/consultationPayments';
 import assistantRoutes from './routes/assistant';
 import { startFederationRetryLoop } from './lib/federationRetry';
+import { startAppointmentReminders } from './lib/appointmentReminderScheduler';
 
 const app = express();
 
@@ -105,5 +106,6 @@ const port = process.env.PORT || 4001;
 app.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`);
   startFederationRetryLoop();
+  startAppointmentReminders();
 });
 
