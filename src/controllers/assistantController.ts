@@ -2899,6 +2899,28 @@ export async function usage(req: Request, res: Response) {
 // se procesa en memoria y no se guarda. El texto resultante vuelve al front, que
 // lo manda por el flujo normal de /chat (mismos permisos; las acciones siguen
 // pidiendo confirmación).
+// Detecta el formato REAL del audio por su firma de bytes (magic bytes), sin
+// confiar en el mimetype que manda el navegador. iOS/Safari a veces NO reporta
+// el tipo al grabar, y el blob llega etiquetado como "webm" cuando en realidad
+// es mp4 → Whisper lo rechaza ("Invalid file format"). Mirando los primeros
+// bytes acertamos la extensión pase lo que pase el dispositivo (iPad incluido).
+function sniffAudio(buf: Buffer, mimetype?: string): { ext: string; type: string } {
+  const at = (start: number, len: number) => buf.slice(start, start + len).toString('latin1');
+  if (buf.length >= 12 && at(4, 4) === 'ftyp') return { ext: 'm4a', type: 'audio/mp4' }; // MP4/M4A (iOS)
+  if (buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return { ext: 'webm', type: 'audio/webm' }; // WebM/Matroska
+  if (at(0, 4) === 'OggS') return { ext: 'ogg', type: 'audio/ogg' };
+  if (at(0, 4) === 'RIFF' && at(8, 4) === 'WAVE') return { ext: 'wav', type: 'audio/wav' };
+  if (at(0, 4) === 'fLaC') return { ext: 'flac', type: 'audio/flac' };
+  if (at(0, 3) === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) return { ext: 'mp3', type: 'audio/mpeg' };
+  // Sin firma reconocible: caer al mimetype declarado (comportamiento anterior).
+  const m = (mimetype || '').toLowerCase();
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return { ext: 'm4a', type: 'audio/mp4' };
+  if (m.includes('ogg')) return { ext: 'ogg', type: 'audio/ogg' };
+  if (m.includes('wav')) return { ext: 'wav', type: 'audio/wav' };
+  if (m.includes('mpeg') || m.includes('mp3')) return { ext: 'mp3', type: 'audio/mpeg' };
+  return { ext: 'webm', type: 'audio/webm' };
+}
+
 export async function transcribe(req: Request, res: Response) {
   if (!isOpenAIConfigured()) {
     return res.status(503).json({ error: 'La transcripción de voz no está disponible en este servidor.' });
@@ -2908,15 +2930,10 @@ export async function transcribe(req: Request, res: Response) {
     return res.status(400).json({ error: 'No llegó ningún audio para transcribir.' });
   }
   try {
-    // Whisper reconoce el formato por la extensión del nombre. iOS graba en
-    // audio/mp4 (.m4a) y Chrome/Android en audio/webm (.webm); mandamos un
-    // nombre que calce con el tipo real para que no lo rechace.
-    const ext = (file.mimetype || '').includes('mp4') || (file.mimetype || '').includes('m4a')
-      ? 'm4a'
-      : (file.mimetype || '').includes('ogg')
-        ? 'ogg'
-        : 'webm';
-    const audio = await toFile(file.buffer, `dictado.${ext}`, { type: file.mimetype || 'audio/webm' });
+    // El formato lo decide la FIRMA del archivo, no el mimetype del navegador
+    // (iOS lo manda mal). Así Whisper recibe un nombre que calza con el contenido.
+    const { ext, type } = sniffAudio(file.buffer, file.mimetype);
+    const audio = await toFile(file.buffer, `dictado.${ext}`, { type });
     const result = await getOpenAIClient().audio.transcriptions.create({
       file: audio,
       model: 'whisper-1',
