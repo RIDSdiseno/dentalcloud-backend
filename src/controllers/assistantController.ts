@@ -28,8 +28,10 @@ import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
 import { buildGenericDocumentPdf } from '../lib/genericDocumentPdf';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
-import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
+import { recalculatePlan } from '../lib/treatmentPlanLifecycle';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
+import { getOpenAIClient, isOpenAIConfigured } from '../lib/openai';
+import { toFile } from 'openai';
 import crypto from 'node:crypto';
 
 function escapeHtml(s: string): string {
@@ -2884,4 +2886,46 @@ export async function usage(req: Request, res: Response) {
   const u = await getAiTokenUsage(clinicaId);
   const remaining = u.limit > 0 ? Math.max(0, u.limit - u.used) : null;
   return res.json({ limit: u.limit, used: u.used, remaining, periodo: u.periodo });
+}
+
+// Transcribe un audio dictado por el usuario a texto (voz → texto).
+// Pensado para iPad/iPhone: esos equipos no soportan la Web Speech API del
+// navegador (reconocimiento de voz nativo), así que el front graba el audio con
+// MediaRecorder y lo manda acá. En PC/Android el front sigue usando la Web
+// Speech API y NO llega a este endpoint.
+//
+// Usa OpenAI Whisper (misma OPENAI_API_KEY que ya paga Dental-Demo-Back). NO
+// consume el presupuesto de IA de Anthropic (ese es solo del /chat). El audio
+// se procesa en memoria y no se guarda. El texto resultante vuelve al front, que
+// lo manda por el flujo normal de /chat (mismos permisos; las acciones siguen
+// pidiendo confirmación).
+export async function transcribe(req: Request, res: Response) {
+  if (!isOpenAIConfigured()) {
+    return res.status(503).json({ error: 'La transcripción de voz no está disponible en este servidor.' });
+  }
+  const file = (req as Request & { file?: { buffer: Buffer; originalname?: string; mimetype?: string } }).file;
+  if (!file || !file.buffer || file.buffer.length === 0) {
+    return res.status(400).json({ error: 'No llegó ningún audio para transcribir.' });
+  }
+  try {
+    // Whisper reconoce el formato por la extensión del nombre. iOS graba en
+    // audio/mp4 (.m4a) y Chrome/Android en audio/webm (.webm); mandamos un
+    // nombre que calce con el tipo real para que no lo rechace.
+    const ext = (file.mimetype || '').includes('mp4') || (file.mimetype || '').includes('m4a')
+      ? 'm4a'
+      : (file.mimetype || '').includes('ogg')
+        ? 'ogg'
+        : 'webm';
+    const audio = await toFile(file.buffer, `dictado.${ext}`, { type: file.mimetype || 'audio/webm' });
+    const result = await getOpenAIClient().audio.transcriptions.create({
+      file: audio,
+      model: 'whisper-1',
+      language: 'es',
+    });
+    const text = (result?.text || '').trim();
+    return res.json({ text });
+  } catch (err) {
+    console.error('[assistant.transcribe] error', err);
+    return res.status(502).json({ error: 'No pude entender el audio. Intenta de nuevo o escribe el mensaje.' });
+  }
 }
