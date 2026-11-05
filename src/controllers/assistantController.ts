@@ -905,13 +905,11 @@ export async function chat(req: Request, res: Response) {
         })) as any,
       });
       if (clinicaId) {
-        // Se cuentan también los tokens de caché (escritura y lectura), para que
-        // el consumo registrado de la clínica sea el real.
-        const u: any = r.usage ?? {};
-        await recordAiTokenUsage(
-          clinicaId,
-          (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
-        );
+        // Mismo criterio de siempre: entrada + salida, SIN los tokens de caché.
+        // Los topes mensuales por clínica (100.000 por defecto) están pensados
+        // con este conteo; sumar la caché (el manual se relee en cada mensaje)
+        // agotaría el tope en pocas preguntas.
+        await recordAiTokenUsage(clinicaId, (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0));
       }
       return r;
     };
