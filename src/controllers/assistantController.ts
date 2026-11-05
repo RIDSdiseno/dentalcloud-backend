@@ -6,7 +6,12 @@ import { PERMISSION_LABELS, type PermissionKey } from '../lib/rolePermissions';
 import { parseClinicaModules, CLINICA_MODULE_LABELS, type ClinicaModuleKey } from '../lib/clinicaModules';
 import { applyModuleOverrides } from '../lib/userAccessOverrides';
 import { sendMail } from '../lib/mailer';
-import { syncLedgerMovementToFederation, syncTreatmentPlanToFederation, syncTreatmentItemToFederation } from '../lib/federationSync';
+import {
+  syncLedgerMovementToFederation,
+  syncTreatmentPlanToFederation,
+  syncTreatmentItemToFederation,
+  syncAppointmentToFederation,
+} from '../lib/federationSync';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
 import { assertAiTokenBudget, recordAiTokenUsage, AiTokenLimitError, getAiTokenUsage } from '../lib/aiTokenUsage';
@@ -523,11 +528,18 @@ async function resolvePatient(
 
 // Citas próximas (no canceladas) de un paciente, de la más cercana en adelante.
 // Se usan para mover o anular una cita sin tocar el historial pasado.
-type ApptRow = { id: string; chairId: string | null; startAt: Date; endAt: Date; status: string };
+type ApptRow = {
+  id: string;
+  chairId: string | null;
+  startAt: Date;
+  endAt: Date;
+  status: string;
+  professionalId: string | null;
+};
 async function futureAppointments(patientId: string, clinicaId: string): Promise<ApptRow[]> {
   return prisma.appointment.findMany({
     where: { patientId, clinicaId, status: { not: 'cancelada' }, startAt: { gte: new Date() } },
-    select: { id: true, chairId: true, startAt: true, endAt: true, status: true },
+    select: { id: true, chairId: true, startAt: true, endAt: true, status: true, professionalId: true },
     orderBy: { startAt: 'asc' },
     take: 20,
   });
@@ -541,10 +553,36 @@ async function todaysAppointments(patientId: string, clinicaId: string): Promise
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   return prisma.appointment.findMany({
     where: { patientId, clinicaId, status: { not: 'cancelada' }, startAt: { gte: dayStart, lt: dayEnd } },
-    select: { id: true, chairId: true, startAt: true, endAt: true, status: true },
+    select: { id: true, chairId: true, startAt: true, endAt: true, status: true, professionalId: true },
     orderBy: { startAt: 'asc' },
     take: 20,
   });
+}
+
+// Misma regla que la pantalla de agenda (appointmentsController: remove,
+// markArrival, startAttention): solo un administrador o el profesional dueño
+// de la cita puede cancelarla, moverla o marcar su llegada. El asistente nunca
+// permite más que la pantalla normal.
+function canManageAppointment(req: Request, appt: ApptRow): boolean {
+  const role = req.user?.role;
+  return role === 'admin' || role === 'super_admin' || appt.professionalId === req.user?.sub;
+}
+
+// Deja solo las citas que la cuenta puede tocar. Si el paciente tiene citas
+// pero ninguna es de esta cuenta, devuelve el mensaje de permiso.
+function manageableAppointments(
+  req: Request,
+  appts: ApptRow[],
+  nombre: string,
+  accion: string, // "cancelarla", "moverla", "marcar su llegada"
+): { appts: ApptRow[] } | { error: string } {
+  const own = appts.filter((a) => canManageAppointment(req, a));
+  if (appts.length > 0 && own.length === 0) {
+    return {
+      error: `La cita de ${nombre} es de otro profesional. Solo un administrador o el profesional de la cita puede ${accion}.`,
+    };
+  }
+  return { appts: own };
 }
 
 function sameSantiagoDay(a: Date, b: Date): boolean {
@@ -753,6 +791,7 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   dictar_evolucion: 'evoluciones',
   generar_certificado: 'pacientes',
   recordar_cita: 'agenda',
+  enviar_correo: 'pacientes',
   evolucionar_procedimiento: 'evoluciones',
 };
 
@@ -840,9 +879,9 @@ export async function chat(req: Request, res: Response) {
         const perms = await resolveRequestPermissions(req);
         let allowed = false;
         if (perms === 'full-access') allowed = true;
-        else if (perms !== 'no-clinic') allowed = perms.datosContacto;
+        else if (perms !== 'no-clinic') allowed = Boolean(perms.pacientes && perms.datosContacto); // igual que /api/patients (pacientes) + campos de contacto
         if (!allowed) {
-          return res.json({ denied: true, permiso: PERMISSION_LABELS.datosContacto });
+          return res.json({ denied: true, permiso: `${PERMISSION_LABELS.pacientes} y ${PERMISSION_LABELS.datosContacto}` });
         }
         const patients = await searchPatients(nombre, req);
         return res.json({ patients, query: nombre });
@@ -1664,8 +1703,11 @@ export async function execute(req: Request, res: Response) {
     if (newStart.getTime() < Date.now()) {
       return res.json({ ejecutado: false, mensaje: 'Esa fecha ya pasó; indique una fecha futura.' });
     }
-    const appts = await futureAppointments(p.id, req.user.clinicaId);
-    const picked = pickAppointment(appts, body.fechaActual ? String(body.fechaActual) : undefined);
+    const scoped = manageableAppointments(req, await futureAppointments(p.id, req.user.clinicaId), `${p.firstName} ${p.lastName}`, 'moverla');
+    if ('error' in scoped) {
+      return res.json({ ejecutado: false, mensaje: scoped.error });
+    }
+    const picked = pickAppointment(scoped.appts, body.fechaActual ? String(body.fechaActual) : undefined);
     if (!picked) {
       return res.json({ ejecutado: false, mensaje: `${p.firstName} ${p.lastName} no tiene citas próximas para mover.` });
     }
@@ -1705,7 +1747,10 @@ export async function execute(req: Request, res: Response) {
     if (!chairId) {
       return res.json({ ejecutado: false, mensaje: 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.' });
     }
-    await prisma.appointment.update({ where: { id: appt.id }, data: { startAt: newStart, endAt: newEnd, chairId } });
+    const moved = await prisma.appointment.update({ where: { id: appt.id }, data: { startAt: newStart, endAt: newEnd, chairId } });
+    syncAppointmentToFederation(moved).catch((err) =>
+      console.error('No se pudo sincronizar el cambio de hora de la cita (asistente)', err),
+    );
     const antes = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
     const despues = newStart.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
     return res.json({ ejecutado: true, mensaje: `Listo: moví la cita de ${p.firstName} ${p.lastName} del ${antes} al ${despues}.` });
@@ -1724,8 +1769,11 @@ export async function execute(req: Request, res: Response) {
       return res.json({ ejecutado: false, mensaje: r.error });
     }
     const p = r.patient;
-    const appts = await futureAppointments(p.id, req.user.clinicaId);
-    const picked = pickAppointment(appts, body.fechaHora ? String(body.fechaHora) : undefined);
+    const scoped = manageableAppointments(req, await futureAppointments(p.id, req.user.clinicaId), `${p.firstName} ${p.lastName}`, 'cancelarla');
+    if ('error' in scoped) {
+      return res.json({ ejecutado: false, mensaje: scoped.error });
+    }
+    const picked = pickAppointment(scoped.appts, body.fechaHora ? String(body.fechaHora) : undefined);
     if (!picked) {
       return res.json({ ejecutado: false, mensaje: `${p.firstName} ${p.lastName} no tiene citas próximas para cancelar.` });
     }
@@ -1736,7 +1784,19 @@ export async function execute(req: Request, res: Response) {
       });
     }
     const appt = picked.appt;
-    await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'cancelada' } });
+    // Igual que la pantalla de agenda: deja registrado quién canceló, cuándo y
+    // por qué, reabre la hora publicada y avisa al sistema federado.
+    const motivo = String(body.contenido ?? '').trim() || 'Cancelada desde el asistente';
+    const cancelled = await prisma.appointment.update({
+      where: { id: appt.id },
+      data: { status: 'cancelada', canceladaAt: new Date(), canceladaPorId: req.user.sub, cancelacionMotivo: motivo },
+    });
+    prisma.openSlot
+      .updateMany({ where: { appointmentId: cancelled.id }, data: { status: 'abierta', appointmentId: null } })
+      .catch((err) => console.error('No se pudo reabrir la hora publicada tras cancelar la cita (asistente)', err));
+    syncAppointmentToFederation(cancelled).catch((err) =>
+      console.error('No se pudo sincronizar la cancelación de la cita (asistente)', err),
+    );
     const cuando = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
     return res.json({ ejecutado: true, mensaje: `Listo: cancelé la cita de ${p.firstName} ${p.lastName} del ${cuando}.` });
   }
@@ -1755,7 +1815,11 @@ export async function execute(req: Request, res: Response) {
     }
     const p = r.patient;
     const nombre = `${p.firstName} ${p.lastName}`;
-    const appts = await todaysAppointments(p.id, req.user.clinicaId);
+    const scoped = manageableAppointments(req, await todaysAppointments(p.id, req.user.clinicaId), nombre, 'marcar su llegada');
+    if ('error' in scoped) {
+      return res.json({ ejecutado: false, mensaje: scoped.error });
+    }
+    const appts = scoped.appts;
     if (appts.length === 0) {
       return res.json({ ejecutado: false, mensaje: `${nombre} no tiene una cita para hoy.` });
     }
@@ -1772,7 +1836,10 @@ export async function execute(req: Request, res: Response) {
     if (yaLlego[appt.status]) {
       return res.json({ ejecutado: false, mensaje: `La cita de ${nombre} ya figura como «${yaLlego[appt.status]}».` });
     }
-    await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'llego', arrivedAt: new Date() } });
+    const arrived = await prisma.appointment.update({ where: { id: appt.id }, data: { status: 'llego', arrivedAt: new Date() } });
+    syncAppointmentToFederation(arrived).catch((err) =>
+      console.error('No se pudo sincronizar la llegada de la cita (asistente)', err),
+    );
     const hora = appt.startAt.toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit' });
     return res.json({ ejecutado: true, mensaje: `Listo: registré la llegada de ${nombre} (cita de las ${hora}).` });
   }
@@ -1915,9 +1982,9 @@ export async function execute(req: Request, res: Response) {
     const perms = await resolveRequestPermissions(req);
     let allowed = false;
     if (perms === 'full-access') allowed = true;
-    else if (perms !== 'no-clinic') allowed = perms.datosContacto;
+    else if (perms !== 'no-clinic') allowed = Boolean(perms.pacientes && perms.datosContacto); // igual que /api/patients (pacientes) + campos de contacto
     if (!allowed) {
-      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.datosContacto}».` });
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.pacientes}» y «${PERMISSION_LABELS.datosContacto}».` });
     }
     const r = await resolvePatient(String(body.paciente ?? ''), req);
     if ('error' in r) {
@@ -1944,9 +2011,9 @@ export async function execute(req: Request, res: Response) {
     const perms = await resolveRequestPermissions(req);
     let allowed = false;
     if (perms === 'full-access') allowed = true;
-    else if (perms !== 'no-clinic') allowed = perms.datosContacto;
+    else if (perms !== 'no-clinic') allowed = Boolean(perms.pacientes && perms.datosContacto); // igual que /api/patients (pacientes) + campos de contacto
     if (!allowed) {
-      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.datosContacto}».` });
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.pacientes}» y «${PERMISSION_LABELS.datosContacto}».` });
     }
     const r = await resolvePatient(String(body.paciente ?? ''), req);
     if ('error' in r) {
