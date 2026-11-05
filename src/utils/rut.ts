@@ -30,6 +30,20 @@ export function formatRut(rut: string): string {
   return `${withDots}-${dv}`;
 }
 
+// Todas las formas en que puede venir guardado un mismo RUT ("12.345.678-9",
+// "12345678-9", "123456789" y, si termina en K, también con k minúscula).
+// DentalCloud guarda la forma compacta, pero hay datos que llegaron por la
+// federación con puntos y guion; buscar con esta lista evita crear duplicados.
+// Si no es un RUT válido (DNI, pasaporte), devuelve solo el valor tal cual.
+export function rutEquivalents(rut: string): string[] {
+  const raw = String(rut ?? '').trim();
+  if (!isValidRut(raw)) return raw ? [raw] : [];
+  const clean = cleanRut(raw);
+  const values = [clean, formatRut(clean), dimageRut(clean)];
+  if (clean.endsWith('K')) values.push(...values.map((v) => v.replace(/K$/, 'k')));
+  return [...new Set(values)];
+}
+
 // Para llamadas a la API de Dimage: devuelve el RUT en formato "dígitos-DV"
 // sin puntos, que es como Dimage lo almacena internamente (ej: "205318-K").
 export function dimageRut(rut: string): string {

@@ -11,6 +11,7 @@ import {
   syncTreatmentPlanToFederation,
   syncTreatmentItemToFederation,
   syncAppointmentToFederation,
+  syncPatientToFederation,
 } from '../lib/federationSync';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { isPlanAlta, lifecycleStampsForManualStatusChange } from '../lib/treatmentPlanLifecycle';
@@ -33,6 +34,8 @@ import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
 import { buildGenericDocumentPdf } from '../lib/genericDocumentPdf';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
+import { cleanRut, isValidRut, rutEquivalents } from '../utils/rut';
+import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { recalculatePlan } from '../lib/treatmentPlanLifecycle';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import { getOpenAIClient, isOpenAIConfigured } from '../lib/openai';
@@ -2164,9 +2167,22 @@ export async function execute(req: Request, res: Response) {
       if (parts.length < 2) {
         return res.json({ ejecutado: false, mensaje: 'Indíqueme al menos nombre y apellido del paciente.' });
       }
-      const rut = String(body.rut ?? '').trim();
-      if (!rut) {
+      const rutRaw = String(body.rut ?? '').trim();
+      if (!rutRaw) {
         return res.json({ ejecutado: false, mensaje: 'Necesito el RUT del paciente para registrarlo.' });
+      }
+      // Igual que la pantalla de pacientes: RUT válido, guardado en formato
+      // compacto, y sin duplicar a alguien que ya existe con otro formato.
+      if (!isValidRut(rutRaw)) {
+        return res.json({ ejecutado: false, mensaje: `El RUT ${rutRaw} no es válido. Revíselo, por favor.` });
+      }
+      const rut = cleanRut(rutRaw);
+      const yaExiste = await prisma.patient.findFirst({
+        where: { clinicaId: req.user.clinicaId, rut: { in: rutEquivalents(rut) } },
+        select: { firstName: true, lastName: true },
+      });
+      if (yaExiste) {
+        return res.json({ ejecutado: false, mensaje: `Ya existe un paciente con ese RUT: ${yaExiste.firstName} ${yaExiste.lastName}.` });
       }
       const correo = String(body.correo ?? '').trim();
       if (correo && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)) {
@@ -2174,8 +2190,9 @@ export async function execute(req: Request, res: Response) {
       }
       const firstName = parts[0];
       const lastName = parts.slice(1).join(' ');
+      let nuevo;
       try {
-        await prisma.patient.create({
+        nuevo = await prisma.patient.create({
           data: {
             firstName,
             lastName,
@@ -2189,6 +2206,12 @@ export async function execute(req: Request, res: Response) {
       } catch {
         return res.json({ ejecutado: false, mensaje: 'No pude crear el paciente (¿quizá ya existe uno con ese RUT?).' });
       }
+      // Igual que la pantalla: se espeja en Dental Demo y, si la clínica usa Rx, en RIDS RX.
+      syncPatientToFederation(nuevo).catch((err) => console.error('No se pudo sincronizar el paciente creado por el asistente', err));
+      prisma.clinica
+        .findUnique({ where: { id: req.user.clinicaId }, select: { rxEnabled: true } })
+        .then((c) => (c?.rxEnabled ? syncPatientToDimageIfNeeded(nuevo) : undefined))
+        .catch((err) => console.error('No se pudo sincronizar con RIDS RX el paciente creado por el asistente', err));
       return res.json({ ejecutado: true, mensaje: `Listo: paciente ${firstName} ${lastName} registrado.` });
     }
 

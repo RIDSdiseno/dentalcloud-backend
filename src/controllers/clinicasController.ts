@@ -6,7 +6,7 @@ import cloudinary from '../lib/cloudinary';
 import { parseClinicaModules, type ClinicaModuleKey } from '../lib/clinicaModules';
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries } from '../lib/privacyConsentSummary';
-import { cleanRut, isValidRut } from '../utils/rut';
+import { cleanRut, isValidRut, rutEquivalents } from '../utils/rut';
 import { VALID_PAISES, paisConfig } from '../lib/paises';
 import { isDocumentType, isValidDocument, normalizeDocument, COMPANY_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import {
@@ -840,10 +840,14 @@ export async function mirrorPatient(req: Request, res: Response) {
   }
 
   const validAllergyKeys: readonly string[] = ALLERGY_KEYS;
+  // RUT en el formato de DentalCloud (compacto, K mayúscula). Dental Demo lo
+  // manda con puntos y guion; guardarlo tal cual hacía que el mismo paciente no
+  // se reconociera y se duplicara. DNI/pasaporte se guardan tal cual.
+  const normalizedRut = isValidRut(rut) ? cleanRut(rut) : rut.trim();
   const data = {
     firstName: firstName.trim(),
     lastName: lastName.trim(),
-    rut: rut.trim(),
+    rut: normalizedRut,
     email: email?.trim() || null,
     phone: phone?.trim() || null,
     birthDate: birthDate ? new Date(birthDate) : null,
@@ -857,14 +861,26 @@ export async function mirrorPatient(req: Request, res: Response) {
 
   const existing = await prisma.patient.findUnique({ where: { federatedPatientId: externalId } });
   if (existing) {
-    const updated = await prisma.patient.update({ where: { id: existing.id }, data });
+    // Si OTRO paciente de la clínica ya tiene este RUT normalizado (duplicado
+    // antiguo), no se le cambia el RUT a este: chocaría con la regla de RUT
+    // único por clínica. El resto de los datos se actualiza igual.
+    const taken =
+      existing.rut !== normalizedRut &&
+      (await prisma.patient.findFirst({
+        where: { clinicaId: existing.clinicaId, rut: normalizedRut, id: { not: existing.id } },
+        select: { id: true },
+      }));
+    const updated = await prisma.patient.update({
+      where: { id: existing.id },
+      data: taken ? { ...data, rut: existing.rut } : data,
+    });
     return res.json({ id: updated.id });
   }
 
   // El rut es único por clínica: si ya había un paciente local con ese rut
   // (creado antes de que la clínica se emparejara), lo vinculamos en vez de
-  // duplicar.
-  const byRut = await prisma.patient.findFirst({ where: { clinicaId, rut: data.rut } });
+  // duplicar. Se busca en todos sus formatos (con o sin puntos/guion).
+  const byRut = await prisma.patient.findFirst({ where: { clinicaId, rut: { in: rutEquivalents(rut) } } });
   if (byRut) {
     const linked = await prisma.patient.update({
       where: { id: byRut.id },
@@ -892,12 +908,6 @@ export async function mirrorAppointment(req: Request, res: Response) {
     return res.status(400).json({ error: 'clinicaId, patientId, externalId, startAt y endAt son requeridos' });
   }
 
-  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, include: { chairs: true } });
-  const chairId = clinica?.chairs.find((c) => c.name === 'Sillón externo')?.id ?? clinica?.chairs[0]?.id;
-  if (!chairId) {
-    return res.status(422).json({ error: 'La clínica espejo no tiene un sillón disponible para agendar' });
-  }
-
   const localStatus = status === 'CANCELLED' || status === 'NO_SHOW' ? 'cancelada' : 'agendada';
   const data = {
     startAt: new Date(startAt),
@@ -906,10 +916,25 @@ export async function mirrorAppointment(req: Request, res: Response) {
     notes: notes?.trim() || null,
   };
 
+  // Cita ya espejada: se actualiza (por ejemplo, una cita movida a otra hora
+  // en Dental Demo). Se busca ANTES de resolver el sillón, para que una
+  // actualización no falle si la clínica no tiene sillones. El estado no se
+  // "devuelve" a agendada si acá la cita ya avanzó (llegó / en atención /
+  // finalizada): Dental Demo manda "agendada" para casi todo.
   const existing = await prisma.appointment.findUnique({ where: { federatedAppointmentId: externalId } });
   if (existing) {
-    const updated = await prisma.appointment.update({ where: { id: existing.id }, data });
+    const avanzada = ['llego', 'en_atencion', 'finalizada'].includes(existing.status);
+    const updated = await prisma.appointment.update({
+      where: { id: existing.id },
+      data: localStatus === 'agendada' && avanzada ? { ...data, status: existing.status } : data,
+    });
     return res.json({ id: updated.id });
+  }
+
+  const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, include: { chairs: true } });
+  const chairId = clinica?.chairs.find((c) => c.name === 'Sillón externo')?.id ?? clinica?.chairs[0]?.id;
+  if (!chairId) {
+    return res.status(422).json({ error: 'La clínica espejo no tiene un sillón disponible para agendar' });
   }
 
   const created = await prisma.appointment.create({

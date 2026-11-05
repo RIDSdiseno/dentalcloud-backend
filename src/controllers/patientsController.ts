@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import cloudinary from '../lib/cloudinary';
-import { cleanRut, isValidRut } from '../utils/rut';
+import { cleanRut, isValidRut, rutEquivalents } from '../utils/rut';
 import { isDocumentType, isValidDocument, normalizeDocument, PERSON_DOCUMENT_TYPES, type DocumentType } from '../utils/documento';
 import { ALLERGY_KEYS } from '../lib/allergies';
 import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyConsentSummary } from '../lib/privacyConsentSummary';
@@ -310,7 +310,12 @@ export async function create(req: Request, res: Response) {
 
   const clinicaId = req.user!.clinicaId!;
   const rut = normalizeDocument(documentType, body.rut);
-  const existing = await prisma.patient.findFirst({ where: { clinicaId, rut } });
+  // Para RUT se busca en todos sus formatos: hay pacientes que llegaron por la
+  // federación guardados con puntos y guion, y con la búsqueda exacta se
+  // duplicaban.
+  const existing = await prisma.patient.findFirst({
+    where: { clinicaId, rut: documentType === 'RUT' ? { in: rutEquivalents(rut) } : rut },
+  });
   if (existing) {
     return res.status(409).json({ error: `Ya existe un paciente con el RUT ${rut}` });
   }
