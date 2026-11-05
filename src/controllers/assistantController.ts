@@ -135,6 +135,10 @@ const INSTRUCTIONS = [
   'No inventes datos nunca.',
   'Por defecto responde en una a tres frases y ve al grano; extiéndete solo si el usuario pide más detalle o la tarea lo exige. La brevedad se agradece y es más profesional.',
   'Al proponer enviar un correo, deja claro en el resumen que, al confirmar, el mensaje se enviará al correo registrado del paciente; así el usuario sabe exactamente qué ocurrirá antes de aceptar.',
+  'RAZONAR CON LOS DATOS: después de una consulta recibirás un resumen del resultado (sin RUT, contacto ni texto clínico; el usuario ya ve la tarjeta completa en pantalla). Úsalo para lo que el usuario pidió: responder una pregunta concreta ("¿quién debe más?", "¿a qué hora es la primera cita?", "¿cuánto se facturó?"), comparar, o encadenar el siguiente paso (otra consulta, o "proponer_accion" para que el usuario confirme). Nunca ejecutes nada sin confirmación: las acciones siempre van por "proponer_accion".',
+  'Si la tarjeta ya responde por sí sola lo que el usuario pidió (por ejemplo "busca a X" o "muéstrame la agenda"), responde exactamente LISTO y nada más, para no repetir lo que ya se ve. Si agregas texto, que sea breve (una o dos frases) y basado solo en los datos recibidos; no repitas la lista completa.',
+  'Escribe en texto plano: no uses formato markdown (nada de asteriscos, almohadillas ni guiones de lista), porque el chat lo muestra tal cual.',
+  'Si un resultado viene con "denied" o dice que falta un permiso, no intentes conseguir el dato por otra herramienta: explica con amabilidad que su cuenta no tiene ese permiso.',
 ].join(' ');
 
 // Modelo del asistente. Configurable por ASSISTANT_MODEL; por defecto el modelo
@@ -774,6 +778,55 @@ const TOOL_MODULE: Record<string, ClinicaModuleKey> = {
   ver_documentos_paciente: 'documentosClinicos',
   ver_consentimientos_paciente: 'consentimientos',
 };
+// Consultas de solo lectura: tras correrlas, el modelo puede leer un resumen
+// mínimo y seguir razonando. Acciones y navegación terminan el turno.
+const READ_TOOLS = new Set([
+  'buscar_paciente',
+  'ver_citas_paciente',
+  'ver_presupuestos_paciente',
+  'ver_evoluciones_paciente',
+  'ver_documentos_paciente',
+  'ver_saldo_paciente',
+  'ver_consentimientos_paciente',
+  'buscar_profesional',
+  'buscar_prestacion',
+  'ver_agenda_dia',
+  'buscar_hora_libre',
+  'ver_seguimiento',
+  'ver_reporte',
+  'ver_inventario',
+  'alertas_inventario',
+]);
+const MAX_STEPS = 3;
+
+// Ley 21.719 — minimización: lo que el modelo (Anthropic, EE. UU.) lee de la
+// base es SOLO lo necesario para razonar: nombres, fechas, estados, montos y
+// conteos. Se quitan RUT, contacto, dirección, texto clínico, enlaces, ids y
+// firmas. La tarjeta completa la sigue viendo solo el usuario en pantalla.
+const SENSITIVE_KEY =
+  /(^|_)(id|ids)$|Id$|rut|dni|documento|email|correo|mail|phone|telefono|fono|celular|direcc|address|domicilio|content|contenido|texto|text$|nota|observ|anamnesis|diagn|indicacion|medicament|alergi|url|link|token|firma|signature|foto|photo|imagen|audio|pdf|archivo|nacimiento|birth/i;
+export function minimizeForModel(value: unknown): string {
+  const clean = (v: unknown, depth: number): unknown => {
+    if (v === null || v === undefined) return v;
+    if (typeof v === 'string') return v.length > 120 ? `${v.slice(0, 117)}…` : v;
+    if (typeof v !== 'object') return v;
+    if (v instanceof Date) return v.toISOString();
+    if (depth > 4) return '…';
+    if (Array.isArray(v)) {
+      const arr = v.slice(0, 25).map((x) => clean(x, depth + 1));
+      return v.length > 25 ? [...arr, `(+${v.length - 25} más)`] : arr;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (SENSITIVE_KEY.test(k)) continue;
+      out[k] = clean(val, depth + 1);
+    }
+    return out;
+  };
+  const s = JSON.stringify(clean(value, 0)) ?? 'null';
+  return s.length > 6000 ? `${s.slice(0, 6000)}…(recortado)` : s;
+}
+
 const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   nota_paciente: 'observaciones',
   agendar_cita: 'agenda',
@@ -816,8 +869,10 @@ export async function chat(req: Request, res: Response) {
     if (clinicaId) await assertAiTokenBudget(clinicaId);
 
     // Memoria de la conversación: incluimos los últimos mensajes (solo texto del
-    // chat) para entender preguntas de seguimiento. Ningún dato personal de
-    // paciente se envía al modelo: esos nunca pasaron por el chat.
+    // chat) para entender preguntas de seguimiento. Ojo (Ley 21.719): lo que el
+    // usuario escribe o dicta SÍ llega al modelo, y tras una consulta el modelo
+    // lee un resumen mínimo del resultado (minimizeForModel), nunca RUT,
+    // contacto ni texto clínico de la base.
     const history = Array.isArray(body.history) ? body.history.slice(-10) : [];
     const messages: any[] = [];
     for (const h of history) {
@@ -833,24 +888,34 @@ export async function chat(req: Request, res: Response) {
     // bloque se cobra ~10% y no el 100%, bajando mucho el gasto de tokens. El
     // "context" (fecha y conteos) cambia cada vez, por eso va en bloque aparte y
     // SIN cachear, para no invalidar la caché del manual.
-    const response = await client.messages.create({
-      model: ASSISTANT_MODEL,
-      max_tokens: 1024,
-      system: [
-        { type: 'text', text: INSTRUCTIONS, cache_control: { type: 'ephemeral' } },
-        { type: 'text', text: context },
-      ],
-      messages,
-      tools: TOOLS.map((t, i) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters,
-        ...(i === TOOLS.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
-      })) as any,
-    });
-    if (clinicaId) {
-      await recordAiTokenUsage(clinicaId, (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0));
-    }
+    const callModel = async (msgs: any[]) => {
+      const r = await client.messages.create({
+        model: ASSISTANT_MODEL,
+        max_tokens: 1024,
+        system: [
+          { type: 'text', text: INSTRUCTIONS, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: context },
+        ],
+        messages: msgs,
+        tools: TOOLS.map((t, i) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters,
+          ...(i === TOOLS.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+        })) as any,
+      });
+      if (clinicaId) {
+        // Se cuentan también los tokens de caché (escritura y lectura), para que
+        // el consumo registrado de la clínica sea el real.
+        const u: any = r.usage ?? {};
+        await recordAiTokenUsage(
+          clinicaId,
+          (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+        );
+      }
+      return r;
+    };
+    let response = await callModel(messages);
 
     // Despacha UNA herramienta. El parámetro se llama `res` a propósito: así el
     // cuerpo de abajo (cada `res.json(...)`) escribe en el destino que se le
@@ -1498,24 +1563,39 @@ export async function chat(req: Request, res: Response) {
     // varios pedidos en un mensaje. Una sola: comportamiento de siempre. Varias:
     // se corre cada una recolectando su resultado y se devuelven juntas en
     // `multi`, para que el front muestre una tarjeta por pedido.
-    const rawToolUses = response.content.filter((b) => b.type === 'tool_use');
-    // Seguro contra herramientas duplicadas: si el modelo repite la MISMA
-    // consulta con los mismos parámetros (ej. "ver_agenda_dia" dos veces para
-    // una pregunta), se corre una sola vez. Las acciones (proponer_accion) NO
-    // se deduplican: el usuario podría pedir dos pagos iguales a propósito.
+    // ---- Razonar con los datos (ciclo de herramientas) ----
+    // Cuando el modelo pide solo CONSULTAS, se corren, se le devuelve un
+    // RESUMEN MÍNIMO de cada resultado (ver minimizeForModel: sin RUT, contacto,
+    // texto clínico, enlaces ni ids) y puede seguir: responder con los datos,
+    // pedir otra consulta o proponer una acción (que el usuario igual confirma).
+    // Máximo MAX_STEPS llamadas al modelo por mensaje. Las tarjetas completas
+    // las sigue viendo solo el usuario, en pantalla.
+    const cards: any[] = [];
     const seenTool = new Set<string>();
-    const toolUses = rawToolUses.filter((b: any) => {
-      if (b.name === 'proponer_accion') return true;
-      const key = `${b.name}:${JSON.stringify(b.input ?? {})}`;
-      if (seenTool.has(key)) return false;
-      seenTool.add(key);
-      return true;
-    });
-    if (toolUses.length === 1) {
-      return await handleOneTool(toolUses[0], res);
-    }
-    if (toolUses.length > 1) {
-      const resultados: any[] = [];
+    let finalText = '';
+    for (let step = 1; ; step++) {
+      // Seguro contra herramientas duplicadas: si el modelo repite la MISMA
+      // consulta con los mismos parámetros, se corre una sola vez. Las acciones
+      // (proponer_accion) NO se deduplican: el usuario podría pedir dos pagos
+      // iguales a propósito.
+      const toolUses = response.content.filter((b: any) => {
+        if (b.type !== 'tool_use') return false;
+        if (b.name === 'proponer_accion') return true;
+        const key = `${b.name}:${JSON.stringify(b.input ?? {})}`;
+        if (seenTool.has(key)) return false;
+        seenTool.add(key);
+        return true;
+      }) as any[];
+      const textNow = response.content
+        .filter((b) => b.type === 'text')
+        .map((b) => (b.type === 'text' ? b.text : ''))
+        .join('')
+        .trim();
+      if (toolUses.length === 0) {
+        finalText = textNow;
+        break;
+      }
+      const results: { tu: any; captured: any }[] = [];
       for (const tu of toolUses) {
         let captured: any = null;
         // try/catch POR pedido: si uno falla (p.ej. un hipo de red/DB), no
@@ -1526,16 +1606,30 @@ export async function chat(req: Request, res: Response) {
           console.error('[assistant.chat] error en un pedido del lote:', e);
           captured = { reply: 'No pude completar uno de los pedidos; inténtelo por separado.' };
         }
-        if (captured) resultados.push(captured);
+        results.push({ tu, captured });
+        if (captured) cards.push(captured);
       }
-      return res.json({ multi: resultados });
+      const soloConsultas = toolUses.every((t) => READ_TOOLS.has(t.name));
+      if (!soloConsultas || step >= MAX_STEPS) break;
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({
+        role: 'user',
+        content: results.map((r) => ({
+          type: 'tool_result',
+          tool_use_id: r.tu.id,
+          content: minimizeForModel(r.captured),
+        })),
+      });
+      response = await callModel(messages);
     }
 
-    const reply = response.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b.type === 'text' ? b.text : ''))
-      .join('')
-      .trim();
+    // Si la tarjeta ya responde, el modelo contesta "LISTO" y no se agrega texto.
+    const extra = finalText && !/^LISTO\.?$/i.test(finalText) ? [{ reply: finalText }] : [];
+    const items = [...cards, ...extra];
+    if (items.length === 1) return res.json(items[0]);
+    if (items.length > 1) return res.json({ multi: items });
+
+    const reply = finalText;
     if (!reply) {
       // El modelo a veces devuelve una respuesta vacía (p.ej. ante un mensaje
       // confuso o sin sentido). En vez de un error técnico, respondemos como un
