@@ -68,7 +68,15 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
+// rawBody: lo necesita la verificación de firma de las llamadas desde
+// Dental-Demo (lib/federationSignature.ts).
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: string }).rawBody = buf.toString('utf8');
+    },
+  })
+);
 app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);

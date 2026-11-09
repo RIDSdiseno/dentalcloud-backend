@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { signFederationRequest } from './federationSignature';
 
 export function isFederationConfigured() {
   return Boolean(process.env.DENTALDEMO_API_URL && process.env.FEDERATION_API_KEY);
@@ -6,8 +7,20 @@ export function isFederationConfigured() {
 
 const dentalDemo = axios.create({
   baseURL: process.env.DENTALDEMO_API_URL,
-  headers: { 'X-API-KEY': process.env.FEDERATION_API_KEY ?? '' },
   timeout: 15000,
+});
+
+// La clave no viaja: cada llamada se firma (ver lib/federationSignature.ts).
+// El cuerpo se serializa acá para firmar exactamente lo que se envía.
+dentalDemo.interceptors.request.use((config) => {
+  if (config.data !== undefined && typeof config.data !== 'string') {
+    config.data = JSON.stringify(config.data);
+    config.headers.set('Content-Type', 'application/json');
+  }
+  const url = new URL(dentalDemo.getUri(config));
+  const firma = signFederationRequest(config.method ?? 'get', url.pathname + url.search, typeof config.data === 'string' ? config.data : '');
+  for (const [k, v] of Object.entries(firma)) config.headers.set(k, v);
+  return config;
 });
 
 export type RemoteClinic = {

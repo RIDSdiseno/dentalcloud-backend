@@ -1,18 +1,7 @@
-import crypto from 'crypto';
+import { isValidFederationRequest } from '../lib/federationSignature';
 import type { Request, Response, NextFunction } from 'express';
 import { authenticate } from './authenticate';
 import { requireSuperAdmin } from './requireSuperAdmin';
-
-// Comparación a prueba de timing: un `===` normal corta apenas encuentra la
-// primera diferencia, así que el tiempo de respuesta varía según cuántos
-// caracteres acertó el atacante — se compara el hash (largo fijo) en vez del
-// valor crudo para no exponer eso, y para no tener que lidiar con el caso en
-// que ambos strings midan distinto (timingSafeEqual exige el mismo largo).
-function safeEqual(a: string, b: string): boolean {
-  const hashA = crypto.createHash('sha256').update(a).digest();
-  const hashB = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(hashA, hashB);
-}
 
 // Deja pasar llamadas servidor-a-servidor desde Dental-Demo-Back (misma
 // credencial que usa este backend para llamar hacia allá, ver federationClient.ts)
@@ -21,8 +10,10 @@ function safeEqual(a: string, b: string): boolean {
 // por eso compone authenticate + requireSuperAdmin en vez de asumirlos ya
 // aplicados por el router.
 export function requireFederationOrSuperAdmin(req: Request, res: Response, next: NextFunction) {
-  const apiKey = req.headers['x-api-key'];
-  if (process.env.FEDERATION_API_KEY && typeof apiKey === 'string' && safeEqual(apiKey, process.env.FEDERATION_API_KEY)) {
+  // La llamada debe venir FIRMADA por Dental-Demo-Back (la clave ya no viaja;
+  // ver lib/federationSignature.ts).
+  if (isValidFederationRequest(req as unknown as Parameters<typeof isValidFederationRequest>[0])) {
+    (req as unknown as { isFederationCall?: boolean }).isFederationCall = true;
     return next();
   }
 

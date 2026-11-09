@@ -3,6 +3,7 @@ import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { requireSuperAdmin } from '../middleware/requireSuperAdmin';
 import { requireFederationOrSuperAdmin } from '../middleware/requireFederationOrSuperAdmin';
+import { requireFederationPairedTarget } from '../middleware/requireFederationPairedTarget';
 import {
   connectFederation,
   create,
@@ -44,16 +45,16 @@ router.get('/', requireFederationOrSuperAdmin, list);
 router.get('/pacientes', requireFederationOrSuperAdmin, listAllPatients);
 router.get('/citas', requireFederationOrSuperAdmin, listAllAppointments);
 router.post('/federated/mirror', requireFederationOrSuperAdmin, mirrorClinica);
-router.post('/federated/patients/mirror', requireFederationOrSuperAdmin, mirrorPatient);
-router.post('/federated/users/mirror', requireFederationOrSuperAdmin, mirrorUser);
-router.post('/federated/appointments/mirror', requireFederationOrSuperAdmin, mirrorAppointment);
-router.post('/federated/treatment-plans/mirror', requireFederationOrSuperAdmin, mirrorTreatmentPlan);
-router.post('/federated/treatment-plans/items/mirror', requireFederationOrSuperAdmin, mirrorTreatmentItem);
-router.post('/federated/ledger-movements/mirror', requireFederationOrSuperAdmin, mirrorLedgerMovement);
-router.post('/federated/convenios/mirror', requireFederationOrSuperAdmin, mirrorConvenio);
-router.post('/federated/prestaciones/mirror', requireFederationOrSuperAdmin, mirrorPrestacion);
-router.post('/federated/previsiones/mirror', requireFederationOrSuperAdmin, mirrorPrevision);
-router.post('/federated/sucursales/mirror', requireFederationOrSuperAdmin, mirrorSucursal);
+router.post('/federated/patients/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorPatient);
+router.post('/federated/users/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorUser);
+router.post('/federated/appointments/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorAppointment);
+router.post('/federated/treatment-plans/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorTreatmentPlan);
+router.post('/federated/treatment-plans/items/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorTreatmentItem);
+router.post('/federated/ledger-movements/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorLedgerMovement);
+router.post('/federated/convenios/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorConvenio);
+router.post('/federated/prestaciones/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorPrestacion);
+router.post('/federated/previsiones/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorPrevision);
+router.post('/federated/sucursales/mirror', requireFederationOrSuperAdmin, requireFederationPairedTarget, mirrorSucursal);
 
 router.use(authenticate);
 router.use(requireSuperAdmin);
