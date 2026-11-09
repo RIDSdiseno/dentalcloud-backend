@@ -33,6 +33,7 @@ import consultationPaymentsRoutes from './routes/consultationPayments';
 import assistantRoutes from './routes/assistant';
 import { startFederationRetryLoop } from './lib/federationRetry';
 import { startAppointmentReminders } from './lib/appointmentReminderScheduler';
+import { apiNotFound, errorHandler } from './middleware/errorHandler';
 
 const app = express();
 
@@ -109,6 +110,11 @@ app.use('/api/consultation-payments', consultationPaymentsRoutes);
 app.use('/api/assistant', assistantRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Siempre al final: rutas /api inexistentes y errores, con mensaje simple en
+// JSON (ver middleware/errorHandler.ts).
+app.use('/api', apiNotFound);
+app.use(errorHandler);
 
 const port = process.env.PORT || 4001;
 app.listen(port, () => {

@@ -145,6 +145,15 @@ export async function create(req: Request, res: Response) {
   }
   const clinicaId = req.user!.clinicaId!;
 
+  // Prestaciones: solo del catálogo de ESTA clínica (09-11-2026).
+  const prestacionIds = [...new Set(items.map((i) => i.prestacionId).filter((id): id is string => Boolean(id)))];
+  if (prestacionIds.length > 0) {
+    const propias = await prisma.prestacion.count({ where: { id: { in: prestacionIds }, clinicaId } });
+    if (propias !== prestacionIds.length) {
+      return res.status(400).json({ error: 'Alguna prestación no pertenece al catálogo de su clínica' });
+    }
+  }
+
   // Etapa 08: mismo candado que addItem() — si un ítem trae productoMarcaId,
   // su costo se calcula acá (nunca se confía en el cost/listPrice que mande
   // el frontend para ese ítem).
@@ -333,6 +342,13 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
   // calcula acá — nunca se confía en lo que mande el frontend para cost/
   // listPrice en ese caso, así nadie puede alterar el precio manipulando la
   // petición.
+  if (body.prestacionId) {
+    const prestacion = await prisma.prestacion.findUnique({ where: { id: body.prestacionId } });
+    if (!prestacion || !belongsToRequesterClinica(prestacion, req)) {
+      return res.status(400).json({ error: 'La prestación no pertenece al catálogo de su clínica' });
+    }
+  }
+
   let computedCost: number | null = null;
   let productoMarcaId: string | null = null;
   let productUnitQuantity: number | null = null;

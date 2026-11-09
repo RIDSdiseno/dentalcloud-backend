@@ -102,6 +102,9 @@ export async function create(req: Request, res: Response) {
   if (!name?.trim() || !email?.trim() || !password) {
     return res.status(400).json({ error: 'Nombre, email y contraseña son requeridos' });
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: 'El email no tiene un formato válido' });
+  }
   if (password.length < 8) {
     return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   }

@@ -172,46 +172,52 @@ function toPatientData(body: PatientInput) {
   };
 }
 
+// Un campo enviado como null (o no texto) se guarda vacío en vez de tumbar el
+// servidor con un 500 (09-11-2026).
+function trimOrNull(v: unknown): string | null {
+  return typeof v === 'string' ? v.trim() || null : null;
+}
+
 function toPatientPatch(body: PatientInput) {
   const patch: Record<string, unknown> = {};
-  if (body.firstName !== undefined) patch.firstName = body.firstName.trim();
-  if (body.lastName !== undefined) patch.lastName = body.lastName.trim();
-  if (body.phone !== undefined) patch.phone = body.phone.trim() || null;
-  if (body.email !== undefined) patch.email = body.email.trim() || null;
+  if (body.firstName !== undefined) patch.firstName = String(body.firstName ?? '').trim();
+  if (body.lastName !== undefined) patch.lastName = String(body.lastName ?? '').trim();
+  if (body.phone !== undefined) patch.phone = trimOrNull(body.phone);
+  if (body.email !== undefined) patch.email = trimOrNull(body.email);
   if (body.birthDate !== undefined) patch.birthDate = body.birthDate ? new Date(body.birthDate) : null;
-  if (body.address !== undefined) patch.address = body.address.trim() || null;
-  if (body.gender !== undefined) patch.gender = body.gender.trim() || null;
-  if (body.nationality !== undefined) patch.nationality = body.nationality.trim() || null;
-  if (body.maritalStatus !== undefined) patch.maritalStatus = body.maritalStatus.trim() || null;
-  if (body.occupation !== undefined) patch.occupation = body.occupation.trim() || null;
+  if (body.address !== undefined) patch.address = trimOrNull(body.address);
+  if (body.gender !== undefined) patch.gender = trimOrNull(body.gender);
+  if (body.nationality !== undefined) patch.nationality = trimOrNull(body.nationality);
+  if (body.maritalStatus !== undefined) patch.maritalStatus = trimOrNull(body.maritalStatus);
+  if (body.occupation !== undefined) patch.occupation = trimOrNull(body.occupation);
   if (body.heightCm !== undefined) patch.heightCm = body.heightCm != null ? Math.round(body.heightCm) : null;
   if (body.weightKg !== undefined) patch.weightKg = body.weightKg;
   if (body.allergies !== undefined) patch.allergies = sanitizeAllergies(body.allergies);
-  if (body.allergyNotes !== undefined) patch.allergyNotes = body.allergyNotes.trim() || null;
-  if (body.medicalConditions !== undefined) patch.medicalConditions = body.medicalConditions.trim() || null;
-  if (body.currentMedications !== undefined) patch.currentMedications = body.currentMedications.trim() || null;
-  if (body.chronicDiseases !== undefined) patch.chronicDiseases = body.chronicDiseases.trim() || null;
-  if (body.dentalHistory !== undefined) patch.dentalHistory = body.dentalHistory.trim() || null;
-  if (body.emergencyContactName !== undefined) patch.emergencyContactName = body.emergencyContactName.trim() || null;
-  if (body.emergencyContactPhone !== undefined) patch.emergencyContactPhone = body.emergencyContactPhone.trim() || null;
-  if (body.emergencyContactRelationship !== undefined) patch.emergencyContactRelationship = body.emergencyContactRelationship.trim() || null;
-  if (body.healthInsurance !== undefined) patch.healthInsurance = body.healthInsurance.trim() || null;
-  if (body.healthInsuranceDetail !== undefined) patch.healthInsuranceDetail = body.healthInsuranceDetail.trim() || null;
-  if (body.bloodType !== undefined) patch.bloodType = body.bloodType.trim() || null;
+  if (body.allergyNotes !== undefined) patch.allergyNotes = trimOrNull(body.allergyNotes);
+  if (body.medicalConditions !== undefined) patch.medicalConditions = trimOrNull(body.medicalConditions);
+  if (body.currentMedications !== undefined) patch.currentMedications = trimOrNull(body.currentMedications);
+  if (body.chronicDiseases !== undefined) patch.chronicDiseases = trimOrNull(body.chronicDiseases);
+  if (body.dentalHistory !== undefined) patch.dentalHistory = trimOrNull(body.dentalHistory);
+  if (body.emergencyContactName !== undefined) patch.emergencyContactName = trimOrNull(body.emergencyContactName);
+  if (body.emergencyContactPhone !== undefined) patch.emergencyContactPhone = trimOrNull(body.emergencyContactPhone);
+  if (body.emergencyContactRelationship !== undefined) patch.emergencyContactRelationship = trimOrNull(body.emergencyContactRelationship);
+  if (body.healthInsurance !== undefined) patch.healthInsurance = trimOrNull(body.healthInsurance);
+  if (body.healthInsuranceDetail !== undefined) patch.healthInsuranceDetail = trimOrNull(body.healthInsuranceDetail);
+  if (body.bloodType !== undefined) patch.bloodType = trimOrNull(body.bloodType);
   if (body.tags !== undefined) patch.tags = sanitizeTags(body.tags);
-  if (body.motivoConsulta !== undefined) patch.motivoConsulta = body.motivoConsulta.trim() || null;
+  if (body.motivoConsulta !== undefined) patch.motivoConsulta = trimOrNull(body.motivoConsulta);
   if (body.anamnesisData !== undefined) patch.anamnesisData = sanitizeAnamnesisData(body.anamnesisData);
-  if (body.expectativasPaciente !== undefined) patch.expectativasPaciente = body.expectativasPaciente.trim() || null;
-  if (body.optimoTratamiento !== undefined) patch.optimoTratamiento = body.optimoTratamiento.trim() || null;
-  if (body.examSkinType !== undefined) patch.examSkinType = body.examSkinType.trim() || null;
-  if (body.examSkinQuality !== undefined) patch.examSkinQuality = body.examSkinQuality.trim() || null;
-  if (body.examFitzpatrick !== undefined) patch.examFitzpatrick = body.examFitzpatrick.trim() || null;
-  if (body.examWrinkles !== undefined) patch.examWrinkles = body.examWrinkles.trim() || null;
-  if (body.examFlaccidity !== undefined) patch.examFlaccidity = body.examFlaccidity.trim() || null;
-  if (body.examVolume !== undefined) patch.examVolume = body.examVolume.trim() || null;
+  if (body.expectativasPaciente !== undefined) patch.expectativasPaciente = trimOrNull(body.expectativasPaciente);
+  if (body.optimoTratamiento !== undefined) patch.optimoTratamiento = trimOrNull(body.optimoTratamiento);
+  if (body.examSkinType !== undefined) patch.examSkinType = trimOrNull(body.examSkinType);
+  if (body.examSkinQuality !== undefined) patch.examSkinQuality = trimOrNull(body.examSkinQuality);
+  if (body.examFitzpatrick !== undefined) patch.examFitzpatrick = trimOrNull(body.examFitzpatrick);
+  if (body.examWrinkles !== undefined) patch.examWrinkles = trimOrNull(body.examWrinkles);
+  if (body.examFlaccidity !== undefined) patch.examFlaccidity = trimOrNull(body.examFlaccidity);
+  if (body.examVolume !== undefined) patch.examVolume = trimOrNull(body.examVolume);
   if (body.examAsymmetries !== undefined) patch.examAsymmetries = body.examAsymmetries;
-  if (body.examAsymmetryNotes !== undefined) patch.examAsymmetryNotes = body.examAsymmetryNotes.trim() || null;
-  if (body.examDiagnosis !== undefined) patch.examDiagnosis = body.examDiagnosis.trim() || null;
+  if (body.examAsymmetryNotes !== undefined) patch.examAsymmetryNotes = trimOrNull(body.examAsymmetryNotes);
+  if (body.examDiagnosis !== undefined) patch.examDiagnosis = trimOrNull(body.examDiagnosis);
   return patch;
 }
 
@@ -396,6 +402,22 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   ];
   const invalidatesCorroboration =
     patient.datosCorroboradosAt !== null && IDENTITY_INVALIDATION_FIELDS.some((field) => body[field] !== undefined);
+
+  // Altura y peso: número o vacío; texto no (antes se guardaba vacío sin avisar).
+  for (const campo of ['heightCm', 'weightKg'] as const) {
+    const v = body[campo] as unknown;
+    if (v !== undefined && v !== null && v !== '' && !Number.isFinite(Number(v))) {
+      return res.status(400).json({ error: 'La altura y el peso deben ser números' });
+    }
+  }
+
+  // Un paciente no puede quedar sin nombre ni apellido al editarlo (09-11-2026).
+  if (
+    (body.firstName !== undefined && !String(body.firstName ?? '').trim()) ||
+    (body.lastName !== undefined && !String(body.lastName ?? '').trim())
+  ) {
+    return res.status(400).json({ error: 'El nombre y el apellido no pueden quedar vacíos' });
+  }
 
   const updated = await prisma.patient.update({
     where: { id: req.params.id },
