@@ -460,6 +460,10 @@ export async function remove(req: Request<{ id: string }>, res: Response) {
   if (appointment.status === 'cancelada') {
     return res.status(409).json({ error: 'Esta cita ya está cancelada' });
   }
+  // Una cita ya atendida no se cancela (09-11-2026).
+  if (appointment.status === 'finalizada') {
+    return res.status(409).json({ error: 'Esta cita ya fue atendida; no se puede cancelar' });
+  }
 
   const cancelled = await prisma.appointment.update({
     where: { id: req.params.id },

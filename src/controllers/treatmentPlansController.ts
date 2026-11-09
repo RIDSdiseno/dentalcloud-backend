@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { isInvalidMoney, INVALID_MONEY_ERROR } from '../utils/money';
 import { TREATMENT_STATUSES } from '../utils/treatmentStatus';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import {
@@ -139,6 +140,9 @@ export async function create(req: Request, res: Response) {
   }
 
   const items = (body.items ?? []).filter((i) => i.description?.trim());
+  if (items.some((i) => isInvalidMoney(i.cost) || isInvalidMoney(i.listPrice))) {
+    return res.status(400).json({ error: INVALID_MONEY_ERROR });
+  }
   const clinicaId = req.user!.clinicaId!;
 
   // Etapa 08: mismo candado que addItem() — si un ítem trae productoMarcaId,
@@ -312,6 +316,9 @@ export async function addItem(req: Request<{ id: string }>, res: Response) {
   const body = req.body as ItemInput;
   if (!body.description?.trim()) {
     return res.status(400).json({ error: 'La descripción del procedimiento es requerida' });
+  }
+  if (isInvalidMoney(body.cost) || isInvalidMoney(body.listPrice)) {
+    return res.status(400).json({ error: INVALID_MONEY_ERROR });
   }
 
   const plan = await prisma.treatmentPlan.findUnique({ where: { id: req.params.id } });

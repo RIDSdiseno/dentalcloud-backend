@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { isInvalidMoney, INVALID_MONEY_ERROR } from '../utils/money';
 import { recalculatePlan, isPlanAlta } from '../lib/treatmentPlanLifecycle';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
@@ -30,6 +31,9 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     productoMarcaId?: string | null;
     productUnitQuantity?: number | null;
   };
+  if (isInvalidMoney(body.cost)) {
+    return res.status(400).json({ error: INVALID_MONEY_ERROR });
+  }
   const item = await prisma.treatmentItem.findUnique({
     where: { id: req.params.id },
     include: { treatmentPlan: { select: { status: true, patientId: true } } },
