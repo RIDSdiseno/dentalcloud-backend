@@ -12,6 +12,22 @@ export interface AccessTokenPayload {
 
 export interface RefreshTokenPayload {
   sub: string;
+  // Huella de la contraseña vigente (09-11-2026). Si la contraseña cambia, la
+  // huella deja de coincidir y todas las sesiones abiertas de esa persona
+  // dejan de renovarse. Tokens anteriores a este cambio no la traen.
+  pv?: string;
+}
+
+export function passwordFingerprint(user: Pick<User, 'passwordHash'>) {
+  return crypto
+    .createHmac('sha256', process.env.JWT_REFRESH_SECRET as string)
+    .update(user.passwordHash)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function refreshTokenMatchesUser(payload: RefreshTokenPayload, user: Pick<User, 'passwordHash'>) {
+  return payload.pv === undefined || payload.pv === passwordFingerprint(user);
 }
 
 export function signAccessToken(user: User) {
@@ -23,7 +39,7 @@ export function signAccessToken(user: User) {
 }
 
 export function signRefreshToken(user: User) {
-  return jwt.sign({ sub: user.id }, process.env.JWT_REFRESH_SECRET as string, {
+  return jwt.sign({ sub: user.id, pv: passwordFingerprint(user) }, process.env.JWT_REFRESH_SECRET as string, {
     expiresIn: process.env.JWT_REFRESH_EXPIRES_IN,
   } as SignOptions);
 }

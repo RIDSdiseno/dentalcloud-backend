@@ -267,7 +267,7 @@ export async function create(req: Request, res: Response) {
     // primero hay que esperar a que la clínica misma termine de federarse
     // (recién ahí queda con federatedClinicId) antes de sincronizarlas —
     // por eso acá SÍ se espera esta llamada, a diferencia del caso de abajo.
-    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword })
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, passwordHash })
       .then(async () => {
         for (const { record } of sucursalesToSync) {
           const fresh = await prisma.sucursal.findUnique({ where: { id: record.id } });
@@ -281,7 +281,7 @@ export async function create(req: Request, res: Response) {
     // Comportamiento sin cambios respecto a antes de este cambio: la clínica
     // se sincroniza sola, best-effort, sin bloquear la respuesta. Las
     // sucursales creadas sin el switch activado quedan solo en DentalCloud.
-    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, password: adminPassword }).catch((err) => {
+    syncClinicaToFederation(clinica, { name: adminName.trim(), email: normalizedEmail, passwordHash }).catch((err) => {
       console.error('No se pudo sincronizar la clínica recién creada con Dental-Demo-Back', err);
     });
   }
@@ -735,13 +735,14 @@ const REMOTE_CLINIC_TYPE_MAP: Record<string, 'dental' | 'estetica' | 'ambas'> = 
 };
 
 export async function mirrorClinica(req: Request, res: Response) {
-  const { externalId, name, pais, adminName, adminEmail, adminPassword, active, clinicType } = req.body as {
+  const { externalId, name, pais, adminName, adminEmail, adminPassword, adminPasswordHash, active, clinicType } = req.body as {
     externalId?: string;
     name?: string;
     pais?: string;
     adminName?: string | null;
     adminEmail?: string | null;
     adminPassword?: string | null;
+    adminPasswordHash?: string | null;
     active?: boolean;
     clinicType?: string;
   };
@@ -795,8 +796,9 @@ export async function mirrorClinica(req: Request, res: Response) {
   if (normalizedAdminEmail) {
     const existingUser = await prisma.user.findUnique({ where: { email: normalizedAdminEmail } });
     if (!existingUser) {
-      const passwordToUse = adminPassword?.trim() || randomBytes(12).toString('hex');
-      const passwordHash = await bcrypt.hash(passwordToUse, 10);
+      const passwordHash =
+        (await resolveMirroredPasswordHash(adminPasswordHash, adminPassword)) ??
+        (await bcrypt.hash(randomBytes(12).toString('hex'), 10));
       await prisma.user.create({
         data: {
           name: adminName?.trim() || name.trim(),
@@ -1348,15 +1350,27 @@ function mapRemoteRoleToLocal(remoteRole: string | undefined): string {
   }
 }
 
+// Las contraseñas viajan entre sistemas ya cifradas (hash bcrypt), nunca en
+// texto plano (09-11-2026). `password` en texto plano se sigue aceptando solo
+// por compatibilidad mientras el otro sistema se actualiza.
+const BCRYPT_HASH_RE = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+async function resolveMirroredPasswordHash(passwordHash: unknown, password: unknown): Promise<string | null> {
+  if (typeof passwordHash === 'string' && BCRYPT_HASH_RE.test(passwordHash)) return passwordHash;
+  if (typeof password === 'string' && password.trim()) return bcrypt.hash(password.trim(), 10);
+  return null;
+}
+
 export async function mirrorUser(req: Request, res: Response) {
-  const { clinicaId, externalId, name, email, password, role, rut } = req.body as {
+  const { clinicaId, externalId, name, email, password, passwordHash: incomingHash, role, rut, active } = req.body as {
     clinicaId?: string;
     externalId?: string;
     name?: string;
     email?: string;
     password?: string | null;
+    passwordHash?: string | null;
     role?: string;
     rut?: string | null;
+    active?: boolean;
   };
 
   if (!clinicaId || !externalId || !name?.trim() || !email?.trim()) {
@@ -1366,13 +1380,23 @@ export async function mirrorUser(req: Request, res: Response) {
   const normalizedEmail = email.trim().toLowerCase();
   const localRole = mapRemoteRoleToLocal(role);
   const cleanedRut = rut?.trim() && isValidRut(rut) ? cleanRut(rut) : null;
+  const mirroredHash = await resolveMirroredPasswordHash(incomingHash, password);
+  // Solo se actualiza lo que viene en el envío: un aviso de "desactivado" no
+  // trae rol ni RUT y no debe borrarlos.
+  const updateData = {
+    name: name.trim(),
+    ...(role !== undefined ? { role: localRole } : {}),
+    ...(rut !== undefined ? { rut: cleanedRut } : {}),
+    ...(typeof active === 'boolean' ? { active } : {}),
+    ...(mirroredHash ? { passwordHash: mirroredHash } : {}),
+  };
 
   const existing = await prisma.user.findUnique({ where: { federatedUserId: externalId } });
   if (existing) {
-    const updated = await prisma.user.update({
-      where: { id: existing.id },
-      data: { name: name.trim(), role: localRole, rut: cleanedRut },
-    });
+    if (existing.clinicaId !== clinicaId) {
+      return res.status(409).json({ error: 'El usuario pertenece a otra clínica' });
+    }
+    const updated = await prisma.user.update({ where: { id: existing.id }, data: updateData });
     return res.json({ id: updated.id });
   }
 
@@ -1385,18 +1409,18 @@ export async function mirrorUser(req: Request, res: Response) {
     if (byEmail.clinicaId !== clinicaId) {
       return res.status(409).json({ error: `El email ${normalizedEmail} ya está en uso por un usuario de otra clínica` });
     }
+    // Al vincular una cuenta que ya existía no se le cambia la contraseña.
+    const { passwordHash: _ignored, ...linkData } = updateData;
     const linked = await prisma.user.update({
       where: { id: byEmail.id },
-      data: { name: name.trim(), role: localRole, rut: cleanedRut, federatedUserId: externalId },
+      data: { ...linkData, federatedUserId: externalId },
     });
     return res.json({ id: linked.id });
   }
 
-  // Si no llega password en texto plano (reintento posterior a un primer
-  // intento fallido), se genera uno temporal — el profesional puede pedir
-  // "olvidé mi contraseña" o el admin se la puede compartir manualmente.
-  const passwordToUse = password?.trim() || randomBytes(12).toString('hex');
-  const passwordHash = await bcrypt.hash(passwordToUse, 10);
+  // Si no llega la contraseña, se genera una temporal — el profesional puede
+  // pedir "olvidé mi contraseña" o el admin se la puede compartir.
+  const passwordHash = mirroredHash ?? (await bcrypt.hash(randomBytes(12).toString('hex'), 10));
 
   const created = await prisma.user.create({
     data: {
@@ -1405,6 +1429,7 @@ export async function mirrorUser(req: Request, res: Response) {
       passwordHash,
       role: localRole,
       rut: cleanedRut,
+      ...(typeof active === 'boolean' ? { active } : {}),
       clinicaId,
       federatedUserId: externalId,
     },

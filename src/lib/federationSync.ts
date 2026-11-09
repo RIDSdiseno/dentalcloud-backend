@@ -58,14 +58,12 @@ function isSyncKeyEnabled(settings: unknown, key: FederationSyncKey): boolean {
 
 export async function syncClinicaToFederation(
   clinica: Clinica,
-  admin: { name: string; email: string; password?: string }
+  admin: { name: string; email: string; passwordHash?: string }
 ): Promise<void> {
   if (!isFederationConfigured()) return;
 
-  // El password en texto plano sólo viaja en la llamada saliente (mismo
-  // momento en que ya está en texto plano localmente, antes de hashearlo) —
-  // nunca se persiste. Si falla y hay que reintentar más tarde, el
-  // reintento ya no lo tiene y el otro lado genera uno temporal.
+  // La contraseña del admin viaja ya cifrada (hash bcrypt), nunca en texto
+  // plano (09-11-2026). El hash no se guarda en la tabla de fallas.
   const clinicType: 'DENTAL' | 'ESTHETIC' | 'BOTH' =
     clinica.tipo === 'estetica' ? 'ESTHETIC' : clinica.tipo === 'ambas' ? 'BOTH' : 'DENTAL';
   const loggablePayload = {
@@ -76,7 +74,7 @@ export async function syncClinicaToFederation(
     adminName: admin.name,
     adminEmail: admin.email,
   };
-  const payload = { ...loggablePayload, adminPassword: admin.password };
+  const payload = { ...loggablePayload, adminPasswordHash: admin.passwordHash };
 
   try {
     const mirror = await mirrorClinicToDentalDemo(payload);
@@ -144,10 +142,9 @@ export async function syncPatientToFederation(patient: Patient): Promise<void> {
   }
 }
 
-// `plainPassword` sólo está disponible en el momento de la creación (antes
-// de hashearla) — en un reintento posterior ya no la tenemos y el otro lado
-// genera una temporal (mismo trato que syncClinicaToFederation con el admin).
-export async function syncUserToFederation(user: User, plainPassword?: string): Promise<void> {
+// `includePassword`: manda la contraseña (ya cifrada, hash bcrypt) — al crear
+// la cuenta, al cambiarla y en los reintentos. Nunca viaja en texto plano.
+export async function syncUserToFederation(user: User, includePassword = false): Promise<void> {
   if (!isFederationConfigured() || !user.clinicaId) return;
 
   const clinica = await prisma.clinica.findUnique({
@@ -166,8 +163,9 @@ export async function syncUserToFederation(user: User, plainPassword?: string): 
     email: user.email,
     role: user.role,
     rut: user.rut,
+    active: user.active,
   };
-  const payload = { ...loggablePayload, password: plainPassword };
+  const payload = { ...loggablePayload, ...(includePassword ? { passwordHash: user.passwordHash } : {}) };
 
   try {
     const mirror = await mirrorUserToDentalDemo(payload);
@@ -629,7 +627,7 @@ export async function retryFederationSync(entityType: string, localId: string): 
     const admin = await prisma.user.findFirst({
       where: { clinicaId: localId, role: 'admin' },
       orderBy: { name: 'asc' },
-      select: { name: true, email: true },
+      select: { name: true, email: true, passwordHash: true },
     });
     if (!admin) return; // no hay admin todavía para reintentar con sus datos de contacto
     return syncClinicaToFederation(clinica, admin);
@@ -686,7 +684,7 @@ export async function retryFederationSync(entityType: string, localId: string): 
   if (entityType === 'USER') {
     const user = await prisma.user.findUnique({ where: { id: localId } });
     if (!user) return clearSyncFailure('USER', localId);
-    return syncUserToFederation(user); // sin plainPassword: el otro lado genera una temporal
+    return syncUserToFederation(user, true);
   }
 
   if (entityType === 'SUCURSAL') {

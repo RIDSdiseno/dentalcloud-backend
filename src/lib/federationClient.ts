@@ -83,7 +83,7 @@ export type MirrorClinicInput = {
   clinicType?: 'DENTAL' | 'ESTHETIC' | 'BOTH';
   adminName?: string | null;
   adminEmail?: string | null;
-  adminPassword?: string | null;
+  adminPasswordHash?: string | null;
   active?: boolean;
 };
 
@@ -287,10 +287,8 @@ export type MirrorUserInput = {
   externalId: string;
   name: string;
   email: string;
-  // Sólo viaja en el intento original (mismo momento en que ya está en texto
-  // plano localmente, antes de hashearla) — un reintento posterior ya no la
-  // tiene y el otro lado genera una temporal (ver federationSync.ts).
-  password?: string | null;
+  // Contraseña ya cifrada (hash bcrypt); nunca en texto plano.
+  passwordHash?: string | null;
   role: string;
   rut?: string | null;
   active?: boolean;

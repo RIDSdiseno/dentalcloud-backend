@@ -18,6 +18,7 @@ import {
 } from '../lib/userAccessOverrides';
 import type { ClinicaModuleKey } from '../lib/clinicaModules';
 import { syncUserToFederation } from '../lib/federationSync';
+import { reissueRefreshCookie } from './authController';
 import { isPngDataUrl, uploadUserSignature } from '../lib/userSignature';
 
 const DIMAGE_SYNCED_ROLES = ['odontologo', 'radiologo'];
@@ -151,7 +152,7 @@ export async function create(req: Request, res: Response) {
 
   const { dimageGeneratedPassword, dimageSyncError } = await tryDimageSync(user);
 
-  syncUserToFederation(user, password).catch((err) => {
+  syncUserToFederation(user, true).catch((err) => {
     console.error('No se pudo sincronizar el profesional recién creado con Dental-Demo-Back', err);
   });
 
@@ -202,6 +203,14 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     },
   });
 
+  // Activar/desactivar también se avisa a Dental Demo (09-11-2026): antes la
+  // cuenta espejo seguía entrando allá.
+  if (active !== undefined && active !== user.active && updated.federatedUserId) {
+    syncUserToFederation(updated).catch((err) => {
+      console.error('No se pudo avisar el cambio de estado del usuario a Dental-Demo-Back', err);
+    });
+  }
+
   const gainedRut = !user.rut && cleanedRut;
   const { dimageGeneratedPassword, dimageSyncError } = gainedRut
     ? await tryDimageSync(updated)
@@ -241,6 +250,9 @@ export async function updatePassword(req: Request<{ id: string }>, res: Response
     where: { id: user.id },
     data: { passwordHash },
   });
+  // Cambiar la contraseña cierra las demás sesiones de esa persona (ver
+  // refreshTokenMatchesUser); si se la cambió uno mismo, esta sigue abierta.
+  if (updated.id === req.user!.sub) reissueRefreshCookie(res, updated);
 
   // Se espera el resultado (a diferencia de otras sincronizaciones, que van en
   // segundo plano) para poder decir en la respuesta si quedó igualada en los dos
@@ -248,7 +260,7 @@ export async function updatePassword(req: Request<{ id: string }>, res: Response
   // nueva ya sirve acá, y se puede reintentar.
   let federationSynced = true;
   try {
-    await syncUserToFederation(updated, password);
+    await syncUserToFederation(updated, true);
   } catch (err) {
     federationSynced = false;
     console.error('No se pudo sincronizar la contraseña con Dental-Demo-Back', err);

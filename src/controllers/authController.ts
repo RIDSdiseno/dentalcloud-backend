@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import type { CookieOptions } from 'express';
 import type { User, Clinica } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
+import { refreshTokenMatchesUser, signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { parseClinicaModules } from '../lib/clinicaModules';
 import { paisConfig } from '../lib/paises';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
@@ -109,8 +109,10 @@ export async function refresh(req: Request, res: Response) {
   }
 
   const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { clinica: true } });
-  if (!user) {
-    return res.status(401).json({ error: 'Sesión inválida' });
+  if (!user || !refreshTokenMatchesUser(payload, user)) {
+    const { maxAge, ...clearOptions } = refreshCookieOptions();
+    res.clearCookie(REFRESH_COOKIE_NAME, clearOptions);
+    return res.status(401).json({ error: 'Sesión inválida, vuelve a iniciar sesión' });
   }
   if (user.clinica && !user.clinica.active) {
     return res.status(403).json({ error: 'Tu clínica está desactivada. Contacta al administrador de la plataforma.' });
@@ -120,6 +122,12 @@ export async function refresh(req: Request, res: Response) {
   const newRefreshToken = signRefreshToken(user);
   res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, refreshCookieOptions());
   return res.json({ accessToken, user: toPublicUser(user) });
+}
+
+// Tras cambiar la propia contraseña: renueva la cookie de esta sesión para que
+// quien la cambió no quede afuera (las demás sesiones sí se cierran).
+export function reissueRefreshCookie(res: Response, user: User) {
+  res.cookie(REFRESH_COOKIE_NAME, signRefreshToken(user), refreshCookieOptions());
 }
 
 export function logout(req: Request, res: Response) {
