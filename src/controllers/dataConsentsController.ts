@@ -256,6 +256,13 @@ export async function send(req: Request, res: Response) {
   }
   const professional = resolved.professional;
 
+  // Un consentimiento ya firmado no se reenvía (09-11-2026): reenviarlo lo
+  // dejaba otra vez "pendiente" y borraba la firma del paciente.
+  const previo = await findConsent(patientId, consentTypeId, professional?.id ?? null);
+  if (previo?.status === 'firmado') {
+    return res.status(409).json({ error: 'Este consentimiento ya está firmado por el paciente; no se puede reenviar.' });
+  }
+
   const clinica = await prisma.clinica.findUnique({ where: { id: patient.clinicaId } });
 
   const token = crypto.randomBytes(32).toString('hex');
@@ -283,7 +290,6 @@ export async function send(req: Request, res: Response) {
     return res.status(502).json({ error: 'No se pudo enviar el correo. Intenta nuevamente.' });
   }
 
-  const previo = await findConsent(patientId, consentTypeId, professional?.id ?? null);
   const datos = {
     status: 'pendiente',
     token,

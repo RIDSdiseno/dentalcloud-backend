@@ -41,6 +41,9 @@ import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
 import { getOpenAIClient, isOpenAIConfigured } from '../lib/openai';
 import { toFile } from 'openai';
 import crypto from 'node:crypto';
+import type { Prisma } from '@prisma/client';
+import { findChairConflict, lockChair } from '../lib/appointmentConflicts';
+import { sendAppointmentBookedEmail, include as appointmentInclude } from './appointmentsController';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -89,7 +92,7 @@ const INSTRUCTIONS = [
   'Para datos de un PROFESIONAL o empleado (no un paciente) usa "buscar_profesional". Un paciente y un profesional son cosas distintas: no busques a un profesional como paciente.',
   'Si el usuario pide cambiar, conceder o quitar PERMISOS de alguien, no uses ninguna herramienta ni lo propongas: responde con amabilidad que, por seguridad, los permisos NO se cambian desde el asistente y que debe hacerlo un administrador en el panel de Configuración → Permisos.',
   'Usa cada herramienta SOLO cuando el usuario lo pida de verdad; no busques en saludos, agradecimientos ni preguntas generales, y no repitas una consulta que ya mostraste. Si piden algo que aún no puedes consultar (por ejemplo el saldo o la cartola detallada), dilo en texto, sin usar una herramienta que no corresponde.',
-  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "registrar_pago" (con "paciente" y "monto" en pesos; opcionalmente "metodo" de pago); "estado_presupuesto" (con "presupuesto" = número y "estado" = el nuevo estado del plan); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
+  'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada; si el usuario lo dice, añade "sillon", "duracion_min", "profesional" y el motivo en "contenido"); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "registrar_pago" (con "paciente" y "monto" en pesos; opcionalmente "metodo" de pago); "estado_presupuesto" (con "presupuesto" = número y "estado" = el nuevo estado del plan); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
   'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
   'Si el usuario dice que un paciente LLEGÓ a la clínica, llegó a su hora, está en recepción, o "marca la llegada" (ej. "llegó Juan", "ya llegó la señora Rojas", "marca que llegó Bruno"), usa "proponer_accion" tipo "marcar_llegada" con el "paciente". El sistema busca la cita de HOY de ese paciente y la deja registrada como llegada al confirmar.',
   'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, "¿tengo hora el martes?" o "¿tengo espacio/cupo hoy?", usa la herramienta "buscar_hora_libre". Para hoy/mañana/pasado mañana pásale "dia" (hoy | manana | pasado_manana), NO calcules la fecha tú; para una fecha concreta pásale "fecha" (YYYY-MM-DD). El sistema le mostrará los horarios disponibles. No inventes horas: deja que la herramienta las calcule. Ojo: "¿tengo cupo/espacio?" pide HORAS LIBRES (buscar_hora_libre), NO la agenda de citas ya tomadas (ver_agenda_dia).',
@@ -406,6 +409,9 @@ const TOOLS = [
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
         fecha_hora: { type: 'string', description: 'Para agendar_cita: fecha y hora en hora de Chile, formato "YYYY-MM-DDTHH:MM". Para reagendar_cita: la NUEVA fecha y hora. Para cancelar_cita (opcional): la fecha y hora de la cita a cancelar si el paciente tiene varias.' },
         fecha_actual: { type: 'string', description: 'Para reagendar_cita, solo si el paciente tiene varias citas próximas: la fecha y hora ACTUAL de la cita que se mueve, formato "YYYY-MM-DDTHH:MM".' },
+        sillon: { type: 'string', description: 'Para agendar_cita (opcional): el sillón que pidió el usuario, número o nombre (ej. "2"). Si no lo dice, omítelo y el sistema elige uno libre.' },
+        duracion_min: { type: 'number', description: 'Para agendar_cita (opcional): duración en minutos si el usuario la dice (ej. "una hora" → 60). Si no la dice, omítela (por defecto 30).' },
+        profesional: { type: 'string', description: 'Para agendar_cita (opcional): nombre del profesional con quien es la cita, si el usuario lo dice.' },
         campo: { type: 'string', description: 'Para editar_ficha: qué dato cambiar (teléfono, correo o dirección).' },
         valor: { type: 'string', description: 'Para editar_ficha: el nuevo valor.' },
         rut: { type: 'string', description: 'Para crear_paciente: el RUT del paciente.' },
@@ -1524,6 +1530,9 @@ export async function chat(req: Request, res: Response) {
             contenido: args.contenido ? String(args.contenido) : null,
             fechaHora: args.fecha_hora ? String(args.fecha_hora) : null,
             fechaActual: args.fecha_actual ? String(args.fecha_actual) : null,
+            sillon: args.sillon != null && args.sillon !== '' ? String(args.sillon) : null,
+            duracionMin: args.duracion_min != null && Number.isFinite(Number(args.duracion_min)) ? Number(args.duracion_min) : null,
+            profesional: args.profesional ? String(args.profesional) : null,
             campo: args.campo ? String(args.campo) : null,
             valor: args.valor ? String(args.valor) : null,
             rut: args.rut ? String(args.rut) : null,
@@ -1661,6 +1670,9 @@ export async function execute(req: Request, res: Response) {
     contenido?: string;
     fechaHora?: string;
     fechaActual?: string;
+    sillon?: string;
+    duracionMin?: number;
+    profesional?: string;
     campo?: string;
     valor?: string;
     rut?: string;
@@ -1739,43 +1751,106 @@ export async function execute(req: Request, res: Response) {
     if (start.getTime() < Date.now()) {
       return res.json({ ejecutado: false, mensaje: 'Esa fecha ya pasó; indique una fecha futura.' });
     }
-    const end = new Date(start.getTime() + 30 * 60 * 1000);
-    const chairs = await prisma.chair.findMany({
+    // 09-11-2026: respeta sillón, duración, motivo y profesional pedidos; no
+    // choca con horas publicadas para el portal; sincroniza con Dental Demo y
+    // avisa al paciente por correo, igual que agendar desde la agenda.
+    const duracion = Number(body.duracionMin);
+    const minutos = Number.isFinite(duracion) && duracion >= 5 && duracion <= 480 ? Math.round(duracion) : 30;
+    const end = new Date(start.getTime() + minutos * 60 * 1000);
+    const allChairs = await prisma.chair.findMany({
       where: { clinicaId: req.user.clinicaId, active: true },
       orderBy: { number: 'asc' },
-      select: { id: true },
+      select: { id: true, number: true, name: true },
     });
-    if (chairs.length === 0) {
+    if (allChairs.length === 0) {
       return res.json({ ejecutado: false, mensaje: 'No hay sillones configurados en la clínica.' });
     }
-    let chairId: string | null = null;
-    for (const c of chairs) {
-      const conflict = await prisma.appointment.count({
-        where: { chairId: c.id, status: { not: 'cancelada' }, startAt: { lt: end }, endAt: { gt: start } },
-      });
-      if (conflict === 0) {
-        chairId = c.id;
-        break;
+    let chairs = allChairs;
+    const pedido = String(body.sillon ?? '').trim();
+    if (pedido) {
+      const num = Number(pedido.replace(/D/g, ''));
+      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+      const match = allChairs.filter(
+        (c) => (num && c.number === num) || (c.name && norm(c.name) === norm(pedido))
+      );
+      if (match.length === 0) {
+        return res.json({ ejecutado: false, mensaje: `No encontré el sillón «${pedido}» en la clínica.` });
       }
+      chairs = match;
     }
-    if (!chairId) {
-      return res.json({ ejecutado: false, mensaje: 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.' });
+
+    let professionalId: string | null =
+      req.user.role === 'odontologo' || req.user.role === 'radiologo' ? req.user.sub : null;
+    const profPedido = String(body.profesional ?? '').trim();
+    if (profPedido && (req.user.role === 'admin' || req.user.role === 'super_admin')) {
+      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      const pros = await prisma.user.findMany({
+        where: { clinicaId: req.user.clinicaId, active: true, role: { in: ['odontologo', 'admin'] } },
+        select: { id: true, name: true },
+      });
+      const hits = pros.filter((u) => norm(u.name).includes(norm(profPedido)));
+      if (hits.length !== 1) {
+        return res.json({
+          ejecutado: false,
+          mensaje: hits.length === 0
+            ? `No encontré al profesional «${profPedido}».`
+            : `Hay más de un profesional que coincide con «${profPedido}»: ${hits.map((h) => h.name).join(', ')}. Indique cuál.`,
+        });
+      }
+      professionalId = hits[0].id;
     }
-    const professionalId = req.user.role === 'odontologo' || req.user.role === 'radiologo' ? req.user.sub : null;
-    await prisma.appointment.create({
-      data: {
-        chairId,
-        patientId: p.id,
-        startAt: start,
-        endAt: end,
-        status: 'agendada',
-        type: 'cita',
-        clinicaId: req.user.clinicaId,
-        professionalId,
-      },
+
+    const clinicaId = req.user.clinicaId;
+    const motivo = String(body.contenido ?? '').trim() || null;
+    let created: Awaited<ReturnType<typeof createAppt>> | null = null;
+    let ultimoChoque = '';
+    function createAppt(tx: Prisma.TransactionClient, chairId: string) {
+      return tx.appointment.create({
+        data: {
+          chairId,
+          patientId: p.id,
+          startAt: start!,
+          endAt: end,
+          status: 'agendada',
+          type: 'cita',
+          notes: motivo,
+          clinicaId,
+          professionalId,
+          confirmationToken: crypto.randomBytes(24).toString('hex'),
+        },
+        include: appointmentInclude,
+      });
+    }
+    for (const c of chairs) {
+      created = await prisma.$transaction(async (tx) => {
+        await lockChair(tx, c.id);
+        const choque = await findChairConflict(tx, c.id, start!, end);
+        if (choque) {
+          ultimoChoque = choque;
+          return null;
+        }
+        return createAppt(tx, c.id);
+      });
+      if (created) break;
+    }
+    if (!created) {
+      return res.json({
+        ejecutado: false,
+        mensaje: pedido ? `${ultimoChoque}. Pruebe con otra hora u otro sillón.` : 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.',
+      });
+    }
+    syncAppointmentToFederation(created).catch((err) => {
+      console.error('No se pudo sincronizar con Dental-Demo-Back la cita agendada por el asistente', err);
+    });
+    sendAppointmentBookedEmail(created).catch((err) => {
+      console.error('No se pudo enviar el correo de la cita agendada por el asistente', err);
     });
     const txt = start.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
-    return res.json({ ejecutado: true, mensaje: `Listo: cita agendada para ${p.firstName} ${p.lastName} el ${txt}.` });
+    const sillonTxt = created.chair?.name || (created.chair ? `sillón ${created.chair.number}` : '');
+    return res.json({
+      ejecutado: true,
+      mensaje: `Listo: cita agendada para ${p.firstName} ${p.lastName} el ${txt} (${minutos} min${sillonTxt ? ', ' + sillonTxt : ''}${created.professional ? ', con ' + created.professional.name : ''}).`,
+    });
   }
 
   if (body.tipo === 'reagendar_cita') {

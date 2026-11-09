@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
+import { findChairConflict, lockChair } from '../lib/appointmentConflicts';
 import { syncAppointmentToFederation } from '../lib/federationSync';
 import { sendAppointmentConfirmation } from '../lib/emailService';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
@@ -47,7 +49,7 @@ const CONSULTA_TIPOS = ['primera_vez', 'tratamiento'];
 const TRIAGE_LEVELS = ['leve', 'moderada', 'grave'];
 const DEFAULT_URGENCY_DURATION_MINUTES = 30;
 
-async function sendAppointmentBookedEmail(appointment: {
+export async function sendAppointmentBookedEmail(appointment: {
   clinicaId: string;
   startAt: Date;
   confirmationToken: string | null;
@@ -74,7 +76,7 @@ async function sendAppointmentBookedEmail(appointment: {
   });
 }
 
-const include = {
+export const include = {
   patient: {
     select: { id: true, rut: true, firstName: true, lastName: true, phone: true, email: true },
   },
@@ -167,6 +169,18 @@ function validateConsulta(body: AppointmentInput): string | null {
   return null;
 }
 
+// Choques de agenda: ver lib/appointmentConflicts.ts.
+async function assertChairFree(
+  tx: Prisma.TransactionClient,
+  chairId: string,
+  startAt: Date,
+  endAt: Date,
+  exceptOpenSlotId?: string
+) {
+  const conflict = await findChairConflict(tx, chairId, startAt, endAt, exceptOpenSlotId);
+  if (conflict) throw new HttpError(409, conflict);
+}
+
 export async function create(req: Request, res: Response) {
   const body = req.body as AppointmentInput;
 
@@ -192,54 +206,56 @@ export async function create(req: Request, res: Response) {
     return res.status(400).json({ error: consultaError });
   }
 
+  const clinicaId = req.user!.clinicaId!;
   const [chair, patient] = await Promise.all([
     prisma.chair.findUnique({ where: { id: body.chairId } }),
     prisma.patient.findUnique({ where: { id: body.patientId } }),
   ]);
-  if (!chair || !chair.active) {
+  // Sillón, paciente y profesional deben ser de la misma clínica (09-11-2026).
+  if (!chair || !chair.active || chair.clinicaId !== clinicaId) {
     return res.status(400).json({ error: 'El sillón seleccionado no existe o no está activo' });
   }
-  if (!patient) {
+  if (!patient || patient.clinicaId !== clinicaId) {
     return res.status(400).json({ error: 'El paciente seleccionado no existe' });
   }
 
   let professionalId = req.user!.sub;
   if (req.user!.role === 'admin' && body.professionalId) {
     const professional = await prisma.user.findUnique({ where: { id: body.professionalId } });
-    if (!professional) {
+    if (!professional || professional.clinicaId !== clinicaId) {
       return res.status(400).json({ error: 'El profesional seleccionado no existe' });
     }
     professionalId = body.professionalId;
   }
 
-  const overlapping = await prisma.appointment.findFirst({
-    where: {
-      chairId: body.chairId,
-      status: { not: 'cancelada' },
-      startAt: { lt: endAt },
-      endAt: { gt: startAt },
-    },
-  });
-  if (overlapping) {
-    return res.status(409).json({ error: 'Ese sillón ya tiene una cita en ese horario' });
+  let appointment;
+  try {
+    appointment = await prisma.$transaction(async (tx) => {
+      // Un candado por sillón: dos reservas simultáneas del mismo sillón no
+      // pueden pasar las dos el chequeo de choque.
+      await lockChair(tx, body.chairId!);
+      await assertChairFree(tx, body.chairId!, startAt, endAt);
+      return tx.appointment.create({
+        data: {
+          chairId: body.chairId!,
+          patientId: body.patientId!,
+          professionalId,
+          startAt,
+          endAt,
+          notes: body.notes?.trim() || null,
+          type: body.type || 'cita',
+          consultaTipo: body.consultaTipo || null,
+          motivoConsulta: consultaMotivoFor(body),
+          clinicaId,
+          confirmationToken: crypto.randomBytes(24).toString('hex'),
+        },
+        include,
+      });
+    });
+  } catch (err) {
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    throw err;
   }
-
-  const appointment = await prisma.appointment.create({
-    data: {
-      chairId: body.chairId,
-      patientId: body.patientId,
-      professionalId,
-      startAt,
-      endAt,
-      notes: body.notes?.trim() || null,
-      type: body.type || 'cita',
-      consultaTipo: body.consultaTipo || null,
-      motivoConsulta: consultaMotivoFor(body),
-      clinicaId: req.user!.clinicaId!,
-      confirmationToken: crypto.randomBytes(24).toString('hex'),
-    },
-    include,
-  });
 
   syncAppointmentToFederation(appointment).catch((err) => {
     console.error('No se pudo sincronizar la cita recién creada con Dental-Demo-Back', err);
@@ -293,6 +309,11 @@ async function createFromOpenSlot(req: Request, res: Response, openSlotId: strin
       if (!patient || patient.clinicaId !== clinicaId) {
         throw new HttpError(400, 'El paciente seleccionado no existe');
       }
+
+      // La hora publicada pudo quedar tapada por una cita agendada directo:
+      // se revisa igual que en el portal del paciente (09-11-2026).
+      await lockChair(tx, openSlot.chairId);
+      await assertChairFree(tx, openSlot.chairId, openSlot.startAt, openSlot.endAt, openSlot.id);
 
       const created = await tx.appointment.create({
         data: {
