@@ -42,3 +42,24 @@ export const publicAppointmentRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Demasiadas solicitudes. Espera unos minutos antes de volver a intentar.' },
 });
+
+// Asistente (09-11-2026): límite por USUARIO (no por IP), generoso para el uso
+// normal, que frena scripts o bucles que gasten tokens o ejecuten acciones sin
+// parar. 40 mensajes y 40 acciones por minuto por persona.
+const porUsuario = (req: import('express').Request) => `u:${req.user?.sub ?? 'anon'}`;
+export const assistantChatRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 40,
+  keyGenerator: porUsuario,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Está enviando muchos mensajes seguidos al asistente. Espere un minuto.' },
+});
+export const assistantExecuteRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 40,
+  keyGenerator: porUsuario,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas acciones seguidas. Espere un minuto.' },
+});

@@ -5,7 +5,6 @@ import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 import { PERMISSION_LABELS, type PermissionKey } from '../lib/rolePermissions';
 import { parseClinicaModules, CLINICA_MODULE_LABELS, type ClinicaModuleKey } from '../lib/clinicaModules';
 import { applyModuleOverrides } from '../lib/userAccessOverrides';
-import { sendMail } from '../lib/mailer';
 import {
   syncLedgerMovementToFederation,
   syncTreatmentPlanToFederation,
@@ -34,7 +33,7 @@ import { buildConsentEmailHtml } from '../lib/emailTemplates/consentEmail';
 import { buildExamRequestPdf } from '../lib/examRequestPdf';
 import { buildGenericDocumentPdf } from '../lib/genericDocumentPdf';
 import { sanitizeHtml } from '../lib/sanitizeHtml';
-import { cleanRut, isValidRut, rutEquivalents } from '../utils/rut';
+import { cleanRut, formatRut, isValidRut, rutEquivalents } from '../utils/rut';
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { recalculatePlan } from '../lib/treatmentPlanLifecycle';
 import { getUnsignedProductConsentError } from '../lib/productConsentGuard';
@@ -514,29 +513,52 @@ async function findOnePatient(nombre: string, req: Request) {
 
 // Para ACCIONES reales: busca hasta 3 coincidencias y exige precisión si hay
 // más de una, para nunca ejecutar sobre el paciente equivocado.
+// Paciente de una acción del asistente (09-11-2026):
+// - Al ejecutar, si la tarjeta confirmada trae `pacienteId`, se usa ESE
+//   paciente (el que el usuario vio con su RUT), no se vuelve a buscar.
+// - Acepta nombre o RUT. Si hay varios, prefiere el nombre completo exacto;
+//   si sigue habiendo varios, los lista con su RUT para que el usuario elija.
 async function resolvePatient(
   nombre: string,
   req: Request
-): Promise<{ error: string } | { patient: { id: string; firstName: string; lastName: string } }> {
-  const terms = nombre.trim().split(/\s+/).filter(Boolean).slice(0, 4);
-  if (terms.length === 0) return { error: 'Indíqueme el nombre del paciente.' };
+): Promise<{ error: string } | { patient: { id: string; firstName: string; lastName: string; rut: string } }> {
+  const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
+  const select = { id: true, firstName: true, lastName: true, rut: true } as const;
+  const fixedId = typeof (req.body as { pacienteId?: unknown } | undefined)?.pacienteId === 'string'
+    ? String((req.body as { pacienteId: string }).pacienteId)
+    : '';
+  if (fixedId) {
+    const p = await prisma.patient.findFirst({ where: { ...scope, id: fixedId }, select });
+    return p ? { patient: p } : { error: 'No encontré a ese paciente en su clínica.' };
+  }
+  const texto = nombre.trim();
+  if (!texto) return { error: 'Indíqueme el nombre del paciente.' };
+  if (isValidRut(texto)) {
+    const porRut = await prisma.patient.findMany({ where: { ...scope, rut: { in: rutEquivalents(texto) } }, select, take: 2 });
+    if (porRut.length === 1) return { patient: porRut[0] };
+  }
+  const terms = texto.split(/\s+/).filter(Boolean).slice(0, 4);
   const AND = terms.map((t) => ({
     OR: [
       { firstName: { contains: t, mode: 'insensitive' as const } },
       { lastName: { contains: t, mode: 'insensitive' as const } },
     ],
   }));
-  const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
-  const matches = await prisma.patient.findMany({
-    where: { ...scope, AND },
-    select: { id: true, firstName: true, lastName: true },
-    take: 3,
-  });
+  const matches = await prisma.patient.findMany({ where: { ...scope, AND }, select, take: 6 });
   if (matches.length === 0) return { error: 'No encontré a ese paciente en su clínica.' };
-  if (matches.length > 1) {
-    return { error: 'Hay varios pacientes con ese nombre. Sea más específico (nombre y apellido completos).' };
-  }
-  return { patient: matches[0] };
+  if (matches.length === 1) return { patient: matches[0] };
+  const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const exactos = matches.filter((m) => norm(`${m.firstName} ${m.lastName}`) === norm(texto));
+  if (exactos.length === 1) return { patient: exactos[0] };
+  const perms = await resolveRequestPermissions(req);
+  const verRut = perms === 'full-access' || (perms !== 'no-clinic' && perms.pacientes);
+  const lista = matches
+    .slice(0, 5)
+    .map((m) => `${m.firstName} ${m.lastName}${verRut ? ` (RUT ${formatRut(m.rut)})` : ''}`)
+    .join('; ');
+  return {
+    error: `Hay varios pacientes que calzan: ${lista}. ${verRut ? 'Dígame cuál (puede decirme el RUT).' : 'Dígame el nombre completo.'}`,
+  };
 }
 
 // Citas próximas (no canceladas) de un paciente, de la más cercana en adelante.
@@ -1522,11 +1544,28 @@ export async function chat(req: Request, res: Response) {
 
       // Proponer acción: se devuelve al front para que el usuario confirme.
       if (toolUse.name === 'proponer_accion') {
+        // Se identifica al paciente ANTES de confirmar: la tarjeta muestra su
+        // nombre completo y RUT, y al ejecutar se usa ese mismo paciente.
+        const tipoProp = String(args.tipo ?? 'otro');
+        let pacienteNombre: string | null = args.paciente ? String(args.paciente) : null;
+        let pacienteId: string | null = null;
+        let pacienteRut: string | null = null;
+        if (pacienteNombre && tipoProp !== 'crear_paciente') {
+          const rp = await resolvePatient(pacienteNombre, req);
+          if ('error' in rp) return res.json({ reply: rp.error });
+          pacienteId = rp.patient.id;
+          pacienteNombre = `${rp.patient.firstName} ${rp.patient.lastName}`;
+          const permsProp = await resolveRequestPermissions(req);
+          const verRut = permsProp === 'full-access' || (permsProp !== 'no-clinic' && permsProp.pacientes);
+          pacienteRut = verRut ? formatRut(rp.patient.rut) : null;
+        }
         return res.json({
           proposal: {
-            tipo: String(args.tipo ?? 'otro'),
+            tipo: tipoProp,
             resumen: String(args.resumen ?? ''),
-            paciente: args.paciente ? String(args.paciente) : null,
+            paciente: pacienteNombre,
+            pacienteId,
+            pacienteRut,
             contenido: args.contenido ? String(args.contenido) : null,
             fechaHora: args.fecha_hora ? String(args.fecha_hora) : null,
             fechaActual: args.fecha_actual ? String(args.fecha_actual) : null,
@@ -1768,8 +1807,8 @@ export async function execute(req: Request, res: Response) {
     let chairs = allChairs;
     const pedido = String(body.sillon ?? '').trim();
     if (pedido) {
-      const num = Number(pedido.replace(/D/g, ''));
-      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+      const num = Number(pedido.replace(/\D/g, ''));
+      const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
       const match = allChairs.filter(
         (c) => (num && c.number === num) || (c.name && norm(c.name) === norm(pedido))
       );
@@ -1783,7 +1822,7 @@ export async function execute(req: Request, res: Response) {
       req.user.role === 'odontologo' || req.user.role === 'radiologo' ? req.user.sub : null;
     const profPedido = String(body.profesional ?? '').trim();
     if (profPedido && (req.user.role === 'admin' || req.user.role === 'super_admin')) {
-      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const pros = await prisma.user.findMany({
         where: { clinicaId: req.user.clinicaId, active: true, role: { in: ['odontologo', 'admin'] } },
         select: { id: true, name: true },
@@ -1904,22 +1943,38 @@ export async function execute(req: Request, res: Response) {
     if (ordered.length === 0) {
       return res.json({ ejecutado: false, mensaje: 'No hay sillones configurados en la clínica.' });
     }
-    let chairId: string | null = null;
-    for (const c of ordered) {
-      const conflict = await prisma.appointment.count({
-        where: { chairId: c, id: { not: appt.id }, status: { not: 'cancelada' }, startAt: { lt: newEnd }, endAt: { gt: newStart } },
+    // 09-11-2026: también respeta las horas publicadas para el portal, con
+    // candado por sillón (igual que agendar), y avisa al paciente la nueva hora.
+    let moved: Awaited<ReturnType<typeof moveTo>> | null = null;
+    function moveTo(tx: Prisma.TransactionClient, chairId: string) {
+      return tx.appointment.update({
+        where: { id: appt.id },
+        data: { startAt: newStart!, endAt: newEnd, chairId },
+        include: appointmentInclude,
       });
-      if (conflict === 0) {
-        chairId = c;
-        break;
-      }
     }
-    if (!chairId) {
+    for (const c of ordered) {
+      moved = await prisma.$transaction(async (tx) => {
+        await lockChair(tx, c);
+        const [cita, publicada] = await Promise.all([
+          tx.appointment.count({
+            where: { chairId: c, id: { not: appt.id }, status: { not: 'cancelada' }, startAt: { lt: newEnd }, endAt: { gt: newStart! } },
+          }),
+          tx.openSlot.count({ where: { chairId: c, status: 'abierta', startAt: { lt: newEnd }, endAt: { gt: newStart! } } }),
+        ]);
+        if (cita > 0 || publicada > 0) return null;
+        return moveTo(tx, c);
+      });
+      if (moved) break;
+    }
+    if (!moved) {
       return res.json({ ejecutado: false, mensaje: 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.' });
     }
-    const moved = await prisma.appointment.update({ where: { id: appt.id }, data: { startAt: newStart, endAt: newEnd, chairId } });
     syncAppointmentToFederation(moved).catch((err) =>
       console.error('No se pudo sincronizar el cambio de hora de la cita (asistente)', err),
+    );
+    sendAppointmentBookedEmail(moved).catch((err) =>
+      console.error('No se pudo avisar al paciente la nueva hora (asistente)', err),
     );
     const antes = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
     const despues = newStart.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
@@ -2222,7 +2277,9 @@ export async function execute(req: Request, res: Response) {
     const firma = `<p style="color:#64748b;font-size:12px;margin-top:16px">— Equipo de ${escapeHtml(nombreClinica)}</p>`;
     const html = `<p>${escapeHtml(texto)}</p>${firma}`;
     try {
-      await sendMail({ to: destino, subject: `Mensaje de ${nombreClinica}`, html });
+      // Misma vía que el resto de los correos (09-11-2026): usa el SMTP propio
+      // de la clínica si lo tiene y omite los dominios de prueba.
+      await sendRecetaEmail({ to: destino, subject: `Mensaje de ${nombreClinica}`, html, clinicaId: req.user.clinicaId });
     } catch {
       return res.json({ ejecutado: false, mensaje: 'No se pudo enviar el correo (revise la configuración de correo).' });
     }
