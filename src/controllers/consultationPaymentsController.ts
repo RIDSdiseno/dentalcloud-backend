@@ -35,7 +35,10 @@ export async function create(req: Request, res: Response) {
   if (!body.firstName?.trim() || !body.lastName?.trim()) {
     return res.status(400).json({ error: 'Nombre y apellido son requeridos' });
   }
-  if (body.amount === undefined || body.amount <= 0) {
+  // Se redondea a pesos enteros y se valida el resultado: 0,4 redondea a 0 y
+  // antes quedaba guardado un pago de $0; texto daba error 500 (10-11-2026).
+  const amount = Math.round(Number(body.amount));
+  if (body.amount === undefined || body.amount === null || !Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ error: 'El monto debe ser mayor a 0' });
   }
 
@@ -47,7 +50,7 @@ export async function create(req: Request, res: Response) {
       firstName: body.firstName.trim(),
       lastName: body.lastName.trim(),
       email: body.email?.trim() || null,
-      amount: Math.round(body.amount),
+      amount,
       paymentMethod: body.paymentMethod?.trim() || null,
       registeredById: req.user!.sub,
     },
