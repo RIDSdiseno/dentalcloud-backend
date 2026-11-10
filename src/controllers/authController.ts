@@ -4,6 +4,17 @@ import type { CookieOptions } from 'express';
 import type { User, Clinica } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { refreshTokenMatchesUser, signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/tokens';
+import { sendMail } from '../lib/mailer';
+import {
+  buildCodeEmailHtml,
+  createChallenge,
+  isStaffMfaEnabled,
+  isTrustedDevice,
+  maskEmail,
+  renewChallenge,
+  setTrustedDevice,
+  verifyChallenge,
+} from '../lib/staffMfa';
 import { parseClinicaModules } from '../lib/clinicaModules';
 import { paisConfig } from '../lib/paises';
 import { isPermissionedRole, parseRolePermissions, PERMISSION_KEYS, type PermissionKey } from '../lib/rolePermissions';
@@ -88,11 +99,92 @@ export async function login(req: Request, res: Response) {
     return res.status(403).json({ error: 'Tu clínica está desactivada. Contacta al administrador de la plataforma.' });
   }
 
+  // Doble verificación del personal (10-11-2026): si está prendida y este
+  // computador no está recordado, se manda un código al correo y la sesión se
+  // abre recién en loginVerify().
+  if (isStaffMfaEnabled() && !isTrustedDevice(req, user)) {
+    const { challengeId, code } = createChallenge(user.id);
+    const enviado = await sendStaffCode(user.email, user.name, code);
+    if (!enviado) {
+      return res.status(502).json({ error: 'No se pudo enviar el código a tu correo. Intenta de nuevo en unos minutos.' });
+    }
+    console.info('[staff-mfa] código enviado', JSON.stringify({ userId: user.id, at: new Date().toISOString() }));
+    return res.json({ mfaRequired: true, challengeId, emailHint: maskEmail(user.email) });
+  }
+
+  return issueSession(res, user);
+}
+
+function issueSession(res: Response, user: User & { clinica: Clinica | null }) {
   const accessToken = signAccessToken(user);
   const refreshToken = signRefreshToken(user);
 
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions());
   return res.json({ accessToken, user: toPublicUser(user) });
+}
+
+// Manda el código. En desarrollo (sin correo configurado) lo deja en el log del
+// servidor para poder probar; en producción, si el correo falla, no se entra.
+async function sendStaffCode(to: string, name: string, code: string) {
+  // Dominios de prueba (.invalid/.test/.example): nunca se manda (rebotaría a
+  // soporte@rids.cl). En producción eso cuenta como "no se pudo enviar".
+  const dominio = to.toLowerCase().split('@')[1] ?? '';
+  if (['.invalid', '.test', '.example'].some((tld) => dominio.endsWith(tld))) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[DEV] Código de acceso del personal para ${to}: ${code}`);
+      return true;
+    }
+    return false;
+  }
+  try {
+    await sendMail({ to, subject: 'Tu código de acceso a fordentcloud', html: buildCodeEmailHtml(name, code) });
+    return true;
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[DEV] Código de acceso del personal para ${to}: ${code}`);
+      return true;
+    }
+    console.error('[staff-mfa] no se pudo enviar el código', err);
+    return false;
+  }
+}
+
+export async function loginVerify(req: Request, res: Response) {
+  const { challengeId, code, remember } = req.body as { challengeId?: string; code?: string; remember?: boolean };
+  if (!challengeId || !code) return res.status(400).json({ error: 'Falta el código' });
+  const r = verifyChallenge(String(challengeId), String(code).trim());
+  if ('error' in r) return res.status(401).json({ error: r.error });
+  const user = await prisma.user.findUnique({ where: { id: r.userId }, include: { clinica: true } });
+  if (!user) return res.status(401).json({ error: 'Sesión inválida' });
+  if (user.clinica && !user.clinica.active) {
+    return res.status(403).json({ error: 'Tu clínica está desactivada. Contacta al administrador de la plataforma.' });
+  }
+  if (remember === true) setTrustedDevice(res, user);
+  console.info('[staff-mfa] verificado', JSON.stringify({ userId: user.id, recordar: remember === true, at: new Date().toISOString() }));
+  return issueSession(res, user);
+}
+
+export async function loginResend(req: Request, res: Response) {
+  const { challengeId } = req.body as { challengeId?: string };
+  if (!challengeId) return res.status(400).json({ error: 'Falta el identificador' });
+  const r = renewChallenge(String(challengeId));
+  if ('error' in r) return res.status(400).json({ error: r.error });
+  const user = await prisma.user.findUnique({ where: { id: r.userId }, select: { email: true, name: true } });
+  if (!user) return res.status(400).json({ error: 'Vuelve a iniciar sesión.' });
+  const enviado = await sendStaffCode(user.email, user.name, r.code);
+  if (!enviado) return res.status(502).json({ error: 'No se pudo enviar el código. Intenta de nuevo en unos minutos.' });
+  return res.json({ ok: true });
+}
+
+// Solo para Dental-Demo (llamada firmada): ¿son correctos el correo y la
+// contraseña del super admin federado? No abre sesión ni manda códigos; Dental
+// Demo aplica su propia doble verificación después.
+export async function verifyCredentials(req: Request, res: Response) {
+  const { email, password } = req.body as { email?: string; password?: string };
+  if (!email || !password) return res.status(400).json({ ok: false });
+  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  const ok = Boolean(user && user.active !== false && (await bcrypt.compare(password, user.passwordHash)));
+  return res.status(ok ? 200 : 401).json({ ok });
 }
 
 export async function refresh(req: Request, res: Response) {
