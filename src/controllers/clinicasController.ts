@@ -1456,11 +1456,18 @@ export async function mirrorSucursal(req: Request, res: Response) {
 
   const existing = await prisma.sucursal.findUnique({ where: { federatedSucursalId: externalId } });
   if (existing) {
+    // La sede espejo debe ser de la misma clínica (09-11-2026).
+    if (existing.clinicaId !== clinicaId) {
+      return res.status(409).json({ error: 'La sede pertenece a otra clínica' });
+    }
     const updated = await prisma.sucursal.update({ where: { id: existing.id }, data });
     return res.json({ id: updated.id });
   }
 
-  const byName = await prisma.sucursal.findFirst({ where: { clinicaId, name: data.name } });
+  // Sin distinguir mayúsculas: "Sede Centro" y "sede centro" son la misma sede.
+  const byName = await prisma.sucursal.findFirst({
+    where: { clinicaId, name: { equals: data.name, mode: 'insensitive' }, federatedSucursalId: null },
+  });
   if (byName) {
     const linked = await prisma.sucursal.update({
       where: { id: byName.id },
