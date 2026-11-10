@@ -19,6 +19,17 @@ const RESEND_WAIT_MS = 30 * 1000;
 const TRUST_DAYS = 30;
 export const TRUST_COOKIE = 'staffTrustedDevice';
 
+// Cuentas que entran sin código aunque la doble verificación esté prendida.
+// Se ponen en Railway: STAFF_MFA_EXEMPT_EMAILS=correo1,correo2 (pedido del
+// usuario el 10-11-2026). Si la variable no está, nadie queda exento.
+export function isStaffMfaExempt(email: string) {
+  const lista = String(process.env.STAFF_MFA_EXEMPT_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return lista.includes(String(email || '').trim().toLowerCase());
+}
+
 export function isStaffMfaEnabled() {
   return process.env.STAFF_MFA_ENABLED === 'true';
 }

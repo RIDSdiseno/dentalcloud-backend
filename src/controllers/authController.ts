@@ -9,6 +9,7 @@ import {
   buildCodeEmailHtml,
   createChallenge,
   isStaffMfaEnabled,
+  isStaffMfaExempt,
   isTrustedDevice,
   maskEmail,
   renewChallenge,
@@ -102,7 +103,7 @@ export async function login(req: Request, res: Response) {
   // Doble verificación del personal (10-11-2026): si está prendida y este
   // computador no está recordado, se manda un código al correo y la sesión se
   // abre recién en loginVerify().
-  if (isStaffMfaEnabled() && !isTrustedDevice(req, user)) {
+  if (isStaffMfaEnabled() && !isStaffMfaExempt(user.email) && !isTrustedDevice(req, user)) {
     const { challengeId, code } = createChallenge(user.id);
     const enviado = await sendStaffCode(user.email, user.name, code);
     if (!enviado) {
