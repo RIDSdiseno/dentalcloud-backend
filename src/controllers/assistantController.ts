@@ -135,7 +135,8 @@ const INSTRUCTIONS = [
   'Si el usuario pide un SEGUIMIENTO general de la clínica (a quién contactar o recuperar, quién quedó pendiente, "citas vencidas", "pacientes que no volvieron", "quién debe", "pagos pendientes", "deudores/morosos", "presupuestos o planes abandonados o sin avanzar"), usa la herramienta "ver_seguimiento" con el "tipo" adecuado: "citas" (citas pasadas sin reagendar), "pagos" (saldos pendientes), "planes" (presupuestos sin avanzar) o "todos". El sistema le mostrará las listas directamente; no inventes nombres ni cifras, y resume brevemente sin repetir la lista.',
   'Cuando, tras un seguimiento, el usuario pida contactar o enviar un recordatorio a uno de esos pacientes, redacta un mensaje breve, cordial y profesional de parte de la clínica, adecuado al motivo (cita no reagendada → invitar a retomar su control o reagendar; pago pendiente → recordar con tacto el saldo; presupuesto detenido → ofrecer continuar el tratamiento). Propónlo con "proponer_accion" tipo "enviar_correo" (con "paciente" y "contenido"); al confirmar, el correo se enviará de verdad al correo del paciente, así que mantén un tono respetuoso y sin datos clínicos sensibles. Si el paciente no tuviera correo, el sistema lo avisará. Trata un paciente a la vez, salvo que el usuario pida explícitamente varios.',
   'Si el usuario pide ir, entrar, abrir o que lo lleves a una sección del sistema (Pacientes, Agenda, Presupuestos, Catálogo, Configuración, etc.), usa la herramienta "navegar"; el sistema lo llevará allá si su cuenta tiene permiso para esa sección.',
-  'Para llevar a la FICHA de un paciente CONCRETO (ej. "llévame al paciente Bruno", "abre la ficha de X"), usa "ir_a_ficha_paciente" con el nombre, en vez de "navegar".',
+  'Para llevar a la FICHA de un paciente CONCRETO (ej. "llévame al paciente Bruno", "abre la ficha de X"), usa "ir_a_ficha_paciente" con el nombre, en vez de "navegar". Si piden una parte de la ficha ("la cartola de Bruno", "las evoluciones de X"), añade "pestana".',
+  'El inventario/stock/insumos está en Catálogo › Inventario: para llevar ahí usa "navegar" con "inventario". Lo mismo con convenios, previsiones y productos y marcas (Catálogo) y con compañía, notificaciones y formatos (Configuración).',
   'El sistema tiene un botón "Instrucciones" en la barra superior (arriba a la derecha): es una guía/recorrido que explica cada módulo a medida que el usuario navega. Cuando pregunten por un manual, tutorial, instructivo o "cómo se usa la aplicación", menciónalo además de orientarlos tú directamente.',
   'No inventes datos nunca.',
   'Por defecto responde en una a tres frases y ve al grano; extiéndete solo si el usuario pide más detalle o la tarea lo exige. La brevedad se agradece y es más profesional.',
@@ -152,9 +153,24 @@ const ASSISTANT_MODEL = process.env.ASSISTANT_MODEL || getAnthropicModel();
 
 // Secciones del sistema a las que el asistente puede redirigir, con su ruta y
 // el permiso que requieren (adminOnly = solo admin/super_admin).
-const SECTIONS: { keys: string[]; path: string; label: string; perm?: PermissionKey; adminOnly?: boolean }[] = [
+// 11-11-2026: todas las pantallas del menú y las pestañas de Catálogo y
+// Configuración (las que funcionan). Las más específicas van primero, porque
+// se elige la primera que coincide. Mismos permisos que el menú lateral.
+const SECTIONS: { keys: string[]; path: string; label: string; perm?: PermissionKey; adminOnly?: boolean; superAdminOnly?: boolean }[] = [
+  { keys: ['agenda diaria', 'diaria', 'citas del dia', 'citas de hoy', 'lista de citas'], path: '/agenda/diaria', label: 'Agenda diaria', perm: 'agenda' },
+  { keys: ['sillones libres', 'sillon libre', 'sillones disponibles', 'horas libres', 'disponibilidad'], path: '/agenda/sillones-libres', label: 'Sillones libres', perm: 'agenda' },
+  { keys: ['inventario', 'stock', 'insumo', 'insumos', 'bodega', 'lote', 'lotes', 'materiales'], path: '/catalogo?tab=inventario', label: 'Inventario (Catálogo)', adminOnly: true },
+  { keys: ['convenio', 'convenios', 'descuento', 'descuentos'], path: '/catalogo?tab=convenios', label: 'Convenios (Catálogo)', adminOnly: true },
+  { keys: ['prevision', 'previsiones', 'previsión', 'fonasa', 'isapre'], path: '/catalogo?tab=previsiones', label: 'Previsiones (Catálogo)', adminOnly: true },
+  { keys: ['marca', 'marcas', 'productos y marcas'], path: '/catalogo?tab=productos-marca', label: 'Productos y Marcas (Catálogo)', adminOnly: true },
+  { keys: ['clinicas de derivacion', 'clínicas de derivación', 'clinicas del catalogo'], path: '/catalogo?tab=clinicas', label: 'Clínicas (Catálogo)', adminOnly: true },
+  { keys: ['compania', 'compañía', 'empresa', 'datos de la clinica', 'datos de la clínica', 'logo'], path: '/configuracion?seccion=compania', label: 'Compañía (Configuración)', adminOnly: true },
+  { keys: ['notificacion', 'notificaciones', 'correo de la clinica', 'correo de la clínica', 'smtp'], path: '/configuracion?seccion=notificaciones', label: 'Notificaciones (Configuración)', adminOnly: true },
+  { keys: ['formato', 'formatos', 'plantilla', 'plantillas'], path: '/configuracion?seccion=formatos', label: 'Formatos (Configuración)', adminOnly: true },
+  { keys: ['termino', 'términos', 'terminos', 'politica', 'políticas', 'politicas'], path: '/terminos', label: 'Términos y políticas' },
+  { keys: ['clinicas', 'clínicas', 'super admin', 'superadmin'], path: '/admin/clinicas', label: 'Clínicas (Super Admin)', superAdminOnly: true },
   { keys: ['inicio', 'dashboard', 'panel', 'home'], path: '/', label: 'Inicio' },
-  { keys: ['agenda', 'citas', 'calendario'], path: '/agenda', label: 'Agenda', perm: 'agenda' },
+  { keys: ['agenda', 'citas', 'calendario', 'agenda general'], path: '/agenda', label: 'Agenda', perm: 'agenda' },
   { keys: ['paciente', 'pacientes', 'ficha', 'fichas'], path: '/pacientes', label: 'Pacientes', perm: 'pacientes' },
   { keys: ['presupuesto', 'presupuestos', 'tratamiento', 'tratamientos', 'plan', 'planes'], path: '/presupuestos', label: 'Presupuestos', perm: 'tratamientos' },
   { keys: ['pago', 'pagos', 'cobro'], path: '/pagos-consulta', label: 'Pagos de Consulta' },
@@ -374,7 +390,7 @@ const TOOLS = [
       properties: {
         seccion: {
           type: 'string',
-          description: 'Sección: inicio, agenda, pacientes, presupuestos, pagos, perfil, profesionales, catálogo o configuración.',
+          description: 'Sección: inicio, agenda (general), agenda diaria, sillones libres, pacientes, presupuestos, pagos de consulta, perfil, profesionales, catálogo, inventario, convenios, previsiones, productos y marcas, configuración, compañía, notificaciones (correo), formatos, términos y políticas, o clínicas (solo super admin).',
         },
       },
       required: ['seccion'],
@@ -388,7 +404,13 @@ const TOOLS = [
     strict: false,
     parameters: {
       type: 'object',
-      properties: { nombre: { type: 'string', description: 'Nombre del paciente.' } },
+      properties: {
+        nombre: { type: 'string', description: 'Nombre del paciente.' },
+        pestana: {
+          type: 'string',
+          description: 'Opcional: pestaña de la ficha si la piden (datos, horas/citas, tratamientos/presupuestos, evoluciones, cartola/pagos, observaciones, documentos, rx/radiografías, consentimientos, examen estético).',
+        },
+      },
       required: ['nombre'],
       additionalProperties: false,
     },
@@ -1511,8 +1533,11 @@ export async function chat(req: Request, res: Response) {
         if (!section) {
           return res.json({
             reply:
-              'No reconozco esa sección. Puedo llevarle a: Inicio, Agenda, Pacientes, Presupuestos, Pagos de Consulta, Profesionales, Catálogo o Configuración.',
+              'No reconozco esa sección. Puedo llevarle a: Inicio, Agenda (general o diaria), Sillones libres, Pacientes, Presupuestos, Pagos de Consulta, Mi Perfil, Profesionales, Catálogo (prestaciones, inventario, convenios, previsiones, productos y marcas), Configuración (compañía, notificaciones, formatos) o Términos y políticas.',
           });
+        }
+        if (section.superAdminOnly && req.user?.role !== 'super_admin') {
+          return res.json({ denied: true, permiso: `la sección ${section.label}` });
         }
         const perms = await resolveRequestPermissions(req);
         if (section.adminOnly) {
@@ -1536,9 +1561,25 @@ export async function chat(req: Request, res: Response) {
         if (!allowed) return res.json({ denied: true, permiso: PERMISSION_LABELS.pacientes });
         const r = await resolvePatient(String(args.nombre ?? ''), req);
         if ('error' in r) return res.json({ reply: r.error });
+        // Pestaña pedida (opcional). La ficha la abre solo si el usuario puede
+        // verla (permisos/módulos); si no, abre "Datos paciente".
+        const PESTANAS: [RegExp, string, string][] = [
+          [/hora|cita/, 'horas', 'Horas'],
+          [/tratamiento|presupuesto|plan/, 'tratamiento', 'Tratamientos'],
+          [/evoluci/, 'evoluciones', 'Evoluciones'],
+          [/cartola|pago|abono|saldo|deuda/, 'cartola', 'Cartola'],
+          [/observaci/, 'observaciones', 'Observaciones'],
+          [/documento/, 'documentos', 'Documentos clínicos'],
+          [/\brx\b|radiograf/, 'rx', 'Módulo Rx'],
+          [/consentimiento/, 'consentimientos', 'Consentimientos'],
+          [/examen|estetic|estétic/, 'examen', 'Examen Estético'],
+          [/dato/, 'datos', 'Datos paciente'],
+        ];
+        const pq = String(args.pestana ?? '').toLowerCase();
+        const pest = pq ? PESTANAS.find(([re]) => re.test(pq)) : undefined;
         return res.json({
-          navigate: `/pacientes/${r.patient.id}`,
-          seccion: `la ficha de ${r.patient.firstName} ${r.patient.lastName}`,
+          navigate: `/pacientes/${r.patient.id}${pest ? `?tab=${pest[1]}` : ''}`,
+          seccion: `${pest ? pest[2] + ' de ' : ''}la ficha de ${r.patient.firstName} ${r.patient.lastName}`,
         });
       }
 
