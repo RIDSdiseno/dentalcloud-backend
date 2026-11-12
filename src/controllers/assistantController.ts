@@ -43,6 +43,9 @@ import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { findChairConflict, lockChair } from '../lib/appointmentConflicts';
 import { sendAppointmentBookedEmail, include as appointmentInclude } from './appointmentsController';
+import { createOpenSlotCore } from './openSlotsController';
+import { createConsultationPaymentCore } from './consultationPaymentsController';
+import { sendCartolaEmailCore } from './ledgerController';
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -104,6 +107,9 @@ const INSTRUCTIONS = [
   'Si un profesional DICTA una evolución o nota clínica ("evoluciona a Juan: llegó con dolor, se revisó y...", "registra una evolución de la señora Rojas: control post operatorio sin novedades"), usa "proponer_accion" tipo "dictar_evolucion" con "paciente" y "contenido" = el texto de la evolución TAL CUAL lo dicta, sin agregar ni inventar nada clínico. Esta es una NOTA de evolución; si además quiere ligarla a un procedimiento del presupuesto, cobrar o descontar inventario, eso se hace desde la ficha (el asistente solo registra la nota).',
   'Si quieren EVOLUCIONAR UN PROCEDIMIENTO de un presupuesto — marcar que una prestación del plan SE REALIZÓ y dejar su evolución ("evoluciona la limpieza del presupuesto 5 de Juan: sin novedad", "marca como hecha la extracción del plan 3 de María: ...") — usa "proponer_accion" tipo "evolucionar_procedimiento" con "paciente", "presupuesto" (su número), "procedimiento" (la prestación del plan) y "contenido" (el texto de la evolución). Esto COMPLETA ese ítem del presupuesto. Si es solo una nota general SIN ligar a un procedimiento, usa "dictar_evolucion". Para COBRAR usa "registrar_pago" aparte; descontar un insumo puntual se hace en la ficha.',
   'Si piden un CERTIFICADO, INDICACIONES o una CONSTANCIA ("hazle un certificado de atención a Juan", "redacta indicaciones post operatorias para la señora Rojas: reposo 3 días...", "genera una constancia de que vino hoy"), usa "proponer_accion" tipo "generar_certificado" con "paciente", "titulo" (el tipo de documento) y "contenido" (el texto del documento tal como lo dicta el usuario). No inventes contenido clínico que no haya dicho. El sistema genera el PDF y lo guarda en la ficha.',
+  'Si piden PUBLICAR HORAS disponibles para el Portal de Pacientes ("publica horas el viernes desde las 10, tres horas de 30 minutos en el sillón 2", "abre una hora mañana a las 15 para la Dra. Pérez"), usa "proponer_accion" tipo "publicar_horas" con "fecha_hora" (inicio de la PRIMERA hora, "YYYY-MM-DDTHH:MM"), "duracion_min" (largo de cada hora; por defecto 30), "cantidad" (cuántas horas seguidas; por defecto 1, máximo 12), y si lo dicen "sillon" y "profesional". No lleva paciente. Solo un administrador puede publicar a nombre de otro profesional; si no, se publican a nombre de quien habla.',
+  'Si piden REGISTRAR EL PAGO DE UNA CONSULTA (la persona paga su consulta antes de ser paciente: "registra el pago de consulta de Juan Pérez, RUT 12.345.678-5, 25 mil en efectivo"), usa "proponer_accion" tipo "registrar_pago_consulta" con "paciente" (nombre y apellido), "rut", "monto" (entero en pesos), y si lo dicen "metodo" y "correo". Es distinto de "registrar_pago" (abono a la cartola de un paciente ya registrado). Si falta el RUT, el nombre completo o el monto, pregúntalo; nunca lo inventes. Para VER los pagos de consulta usa "ver_reporte" tipo "pagos_consulta".',
+  'Si piden ENVIARLE LA CARTOLA o estado de cuenta a un paciente ("mándale la cartola a Juan", "envíale su estado de cuenta a la señora Rojas"), usa "proponer_accion" tipo "enviar_cartola" con el "paciente". El sistema le envía por correo el PDF de su cartola con el saldo; el paciente debe tener correo registrado.',
   'Si piden RECORDARLE la cita a un paciente ("recuérdale la cita a Juan", "mándale un recordatorio de su hora a la señora Rojas", "avísale a Bruno de su cita"), usa "proponer_accion" tipo "recordar_cita" con el "paciente". El sistema busca su próxima cita y le envía el recordatorio por correo. El paciente debe tener correo y una cita próxima.',
   'Si piden un RESUMEN o REPORTE de la clínica — "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?", "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay?", "¿cuántos presupuestos sin iniciar?" — usa la herramienta "ver_reporte" con el "tipo" correcto (facturacion | deudores | pacientes_nuevos | citas | presupuestos) y el "periodo" (hoy | semana | mes) cuando aplique. No inventes números: deja que la herramienta los calcule. Si la cuenta no tiene el permiso, el sistema lo niega.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
@@ -360,20 +366,20 @@ const TOOLS = [
     type: 'function' as const,
     name: 'ver_reporte',
     description:
-      'Entrega un RESUMEN/REPORTE de la clínica. Úsala para "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?" / "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay esta semana?", "¿cuántos presupuestos sin iniciar?". Cada reporte respeta el permiso que corresponde; si la cuenta no lo tiene, el sistema lo niega. Los resultados se muestran al usuario.',
+      'Entrega un RESUMEN/REPORTE de la clínica. Úsala para "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?" / "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay esta semana?", "¿cuántos presupuestos sin iniciar?", "¿qué pagos de consulta hubo hoy?" / "pagos de consulta". Cada reporte respeta el permiso que corresponde; si la cuenta no lo tiene, el sistema lo niega. Los resultados se muestran al usuario.',
     strict: false,
     parameters: {
       type: 'object',
       properties: {
         tipo: {
           type: 'string',
-          enum: ['facturacion', 'deudores', 'pacientes_nuevos', 'citas', 'presupuestos'],
-          description: 'Qué reporte: "facturacion" (ingresos/abonos del período), "deudores" (quién debe más), "pacientes_nuevos", "citas" (cuántas citas) o "presupuestos" (cuántos por estado).',
+          enum: ['facturacion', 'deudores', 'pacientes_nuevos', 'citas', 'presupuestos', 'pagos_consulta'],
+          description: 'Qué reporte: "facturacion" (ingresos/abonos del período), "deudores" (quién debe más), "pacientes_nuevos", "citas" (cuántas citas), "presupuestos" (cuántos por estado) o "pagos_consulta" (pagos de consulta registrados en el período).',
         },
         periodo: {
           type: 'string',
           enum: ['hoy', 'semana', 'mes'],
-          description: 'Período para facturacion, pacientes_nuevos y citas (por defecto "mes"). No aplica a deudores ni presupuestos.',
+          description: 'Período para facturacion, pacientes_nuevos, citas y pagos_consulta (por defecto "mes"). No aplica a deudores ni presupuestos.',
         },
       },
       required: ['tipo'],
@@ -424,7 +430,7 @@ const TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        tipo: { type: 'string', description: 'nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada, NOTA suelta) | evolucionar_procedimiento (marcar que una prestación de un presupuesto SE REALIZÓ y dejar su evolución) | generar_certificado (generar un certificado, indicaciones o constancia de texto libre) | recordar_cita (enviarle al paciente un recordatorio por correo de su próxima cita) | recordatorio | mensaje | otro' },
+        tipo: { type: 'string', description: 'publicar_horas (publicar horas disponibles para que los pacientes las tomen en el Portal) | registrar_pago_consulta (registrar el pago de la consulta de una persona, con RUT, nombre y monto) | enviar_cartola (enviarle al paciente su cartola/estado de cuenta por correo) | nota_paciente | agendar_cita | reagendar_cita (mover una cita a otra hora) | cancelar_cita (anular una cita) | editar_ficha (teléfono/correo/dirección) | enviar_correo | crear_paciente (registrar un paciente nuevo) | descontar_stock (registrar una salida/consumo de un insumo del inventario) | ingresar_stock (registrar una ENTRADA de stock: un lote nuevo de un insumo existente) | generar_receta (crear una receta con los medicamentos que DICTA el profesional) | crear_presupuesto (crear un presupuesto/plan de tratamiento con una lista de prestaciones) | enviar_consentimiento (enviar al paciente un consentimiento para que lo firme por correo) | solicitud_examen (generar una solicitud de exámenes para el paciente) | dictar_evolucion (registrar una evolución/nota clínica dictada, NOTA suelta) | evolucionar_procedimiento (marcar que una prestación de un presupuesto SE REALIZÓ y dejar su evolución) | generar_certificado (generar un certificado, indicaciones o constancia de texto libre) | recordar_cita (enviarle al paciente un recordatorio por correo de su próxima cita) | recordatorio | mensaje | otro' },
         resumen: { type: 'string', description: 'En una frase, qué se haría (para mostrar al usuario).' },
         paciente: { type: 'string', description: 'Nombre del paciente al que afecta la acción, si aplica.' },
         contenido: { type: 'string', description: 'El texto de la nota o mensaje, si aplica.' },
@@ -899,6 +905,9 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   recordar_cita: 'agenda',
   enviar_correo: 'pacientes',
   evolucionar_procedimiento: 'evoluciones',
+  publicar_horas: 'agenda',
+  enviar_cartola: 'cartola',
+  // registrar_pago_consulta: sin módulo, igual que la pantalla Pagos de Consulta.
 };
 
 export async function chat(req: Request, res: Response) {
@@ -1524,6 +1533,32 @@ export async function chat(req: Request, res: Response) {
           return res.json({ reporte: { tipo, sinIniciar, enTratamiento, terminados } });
         }
 
+        // Pagos de consulta: la pantalla "Pagos de Consulta" la ve cualquier
+        // usuario de la clínica (sin permiso ni módulo aparte); acá igual.
+        if (tipo === 'pagos_consulta') {
+          if (!clinicaId) return res.json({ reply: 'Su cuenta no está asociada a una clínica.' });
+          const pagos = await prisma.consultationPayment.findMany({
+            where: { clinicaId, ...(start ? { createdAt: { gte: start } } : {}) },
+            orderBy: { createdAt: 'desc' },
+            take: 200,
+            select: { firstName: true, lastName: true, amount: true, paymentMethod: true, createdAt: true },
+          });
+          return res.json({
+            reporte: {
+              tipo,
+              periodoTxt,
+              count: pagos.length,
+              total: pagos.reduce((s, p) => s + p.amount, 0),
+              pagos: pagos.slice(0, 15).map((p) => ({
+                paciente: `${p.firstName} ${p.lastName}`,
+                monto: p.amount,
+                metodo: p.paymentMethod,
+                fecha: p.createdAt,
+              })),
+            },
+          });
+        }
+
         return res.json({ reply: 'No reconozco ese tipo de reporte.' });
       }
 
@@ -1591,7 +1626,13 @@ export async function chat(req: Request, res: Response) {
         let pacienteNombre: string | null = args.paciente ? String(args.paciente) : null;
         let pacienteId: string | null = null;
         let pacienteRut: string | null = null;
-        if (pacienteNombre && tipoProp !== 'crear_paciente') {
+        // El pago de consulta es de alguien que aún puede no ser paciente: no se
+        // busca en la clínica; se muestra el RUT que dictaron (12-11-2026).
+        if (tipoProp === 'registrar_pago_consulta') {
+          pacienteRut = args.rut && isValidRut(String(args.rut)) ? formatRut(cleanRut(String(args.rut))) : args.rut ? String(args.rut) : null;
+        } else if (tipoProp === 'publicar_horas') {
+          pacienteNombre = null;
+        } else if (pacienteNombre && tipoProp !== 'crear_paciente') {
           const rp = await resolvePatient(pacienteNombre, req);
           if ('error' in rp) return res.json({ reply: rp.error });
           pacienteId = rp.patient.id;
@@ -1781,6 +1822,150 @@ export async function execute(req: Request, res: Response) {
   const actionMod = ACTION_MODULE[body.tipo ?? ''];
   if (actionMod && !(await moduleOn(req, actionMod))) {
     return res.json({ ejecutado: false, mensaje: `El módulo «${CLINICA_MODULE_LABELS[actionMod]}» no está habilitado para su clínica.` });
+  }
+
+  // Publicar horas para el Portal (12-11-2026): misma lógica que la pantalla
+  // (createOpenSlotCore) y mismos candados que su ruta (módulo y permiso Agenda).
+  if (body.tipo === 'publicar_horas') {
+    const perms = await resolveRequestPermissions(req);
+    const allowed = perms === 'full-access' || (perms !== 'no-clinic' && perms.agenda);
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.agenda}».` });
+    }
+    const start = parseSantiago(String(body.fechaHora ?? ''));
+    if (!start) return res.json({ ejecutado: false, mensaje: 'No entendí la fecha y hora desde la que publico las horas.' });
+    if (start.getTime() < Date.now()) return res.json({ ejecutado: false, mensaje: 'Esa fecha ya pasó; indique una fecha futura.' });
+    const dur = Number(body.duracionMin);
+    const minutos = Number.isFinite(dur) && dur >= 10 && dur <= 240 ? Math.round(dur) : 30;
+    const cant = Number(body.cantidad);
+    const cuantas = Number.isFinite(cant) && cant >= 1 ? Math.min(12, Math.round(cant)) : 1;
+
+    const allChairs = await prisma.chair.findMany({
+      where: { clinicaId: req.user.clinicaId, active: true },
+      orderBy: { number: 'asc' },
+      select: { id: true, number: true, name: true },
+    });
+    if (allChairs.length === 0) return res.json({ ejecutado: false, mensaje: 'No hay sillones configurados en la clínica.' });
+    let chairs = allChairs;
+    const pedido = String(body.sillon ?? '').trim();
+    if (pedido) {
+      const num = Number(pedido.replace(/\D/g, ''));
+      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+      chairs = allChairs.filter((c) => (num && c.number === num) || (c.name && norm(c.name) === norm(pedido)));
+      if (chairs.length === 0) return res.json({ ejecutado: false, mensaje: `No encontré el sillón «${pedido}» en la clínica.` });
+    }
+
+    // Profesional: igual que la pantalla, solo el administrador publica a
+    // nombre de otro; cualquier otro perfil publica las suyas.
+    let professionalId: string | undefined;
+    let profNombre: string | null = null;
+    const profPedido = String(body.profesional ?? '').trim();
+    if (profPedido) {
+      if (req.user.role !== 'admin') {
+        return res.json({ ejecutado: false, mensaje: 'Solo un administrador puede publicar horas a nombre de otro profesional; las publico a su nombre si lo pide sin indicar profesional.' });
+      }
+      const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      const pros = await prisma.user.findMany({
+        where: { clinicaId: req.user.clinicaId, active: true, role: { in: ['odontologo', 'admin'] } },
+        select: { id: true, name: true },
+      });
+      const hits = pros.filter((u) => norm(u.name).includes(norm(profPedido)));
+      if (hits.length !== 1) {
+        return res.json({
+          ejecutado: false,
+          mensaje: hits.length === 0
+            ? `No encontré al profesional «${profPedido}».`
+            : `Hay más de un profesional que coincide con «${profPedido}»: ${hits.map((h) => h.name).join(', ')}. Indique cuál.`,
+        });
+      }
+      professionalId = hits[0].id;
+      profNombre = hits[0].name;
+    }
+
+    const hecho: string[] = [];
+    const fallas: string[] = [];
+    const hhmm = (d: Date) => d.toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit' });
+    for (let k = 0; k < cuantas; k++) {
+      const a = new Date(start.getTime() + k * minutos * 60000);
+      const b = new Date(a.getTime() + minutos * 60000);
+      let ok = false;
+      let ultimoError = '';
+      for (const c of chairs) {
+        const out = await createOpenSlotCore({
+          clinicaId: req.user.clinicaId,
+          userId: req.user.sub,
+          role: req.user.role,
+          chairId: c.id,
+          professionalId,
+          startAt: a.toISOString(),
+          endAt: b.toISOString(),
+        });
+        if (out.status === 201) {
+          hecho.push(`${hhmm(a)} (${c.name || `sillón ${c.number}`})`);
+          ok = true;
+          break;
+        }
+        ultimoError = String((out.json as { error?: string }).error ?? 'no se pudo publicar');
+      }
+      if (!ok) fallas.push(`${hhmm(a)}: ${ultimoError}`);
+    }
+    const dia = start.toLocaleDateString('es-CL', { timeZone: 'America/Santiago', weekday: 'long', day: 'numeric', month: 'long' });
+    if (hecho.length === 0) {
+      return res.json({ ejecutado: false, mensaje: `No pude publicar ninguna hora el ${dia}. ${fallas.join(' · ')}` });
+    }
+    return res.json({
+      ejecutado: true,
+      mensaje:
+        `Listo: publiqué ${hecho.length} hora(s) de ${minutos} min el ${dia}${profNombre ? ` para ${profNombre}` : ''}: ${hecho.join(', ')}. Ya aparecen en el Portal de Pacientes.` +
+        (fallas.length ? ` No se pudieron publicar: ${fallas.join(' · ')}.` : ''),
+    });
+  }
+
+  // Pago de consulta (12-11-2026): misma lógica que la pantalla "Pagos de
+  // Consulta" (createConsultationPaymentCore), que usa cualquier usuario de la clínica.
+  if (body.tipo === 'registrar_pago_consulta') {
+    const nombre = String(body.paciente ?? '').trim().split(/\s+/).filter(Boolean);
+    if (nombre.length < 2) {
+      return res.json({ ejecutado: false, mensaje: 'Necesito el nombre y el apellido de la persona que pagó.' });
+    }
+    const out = await createConsultationPaymentCore(req.user.clinicaId, req.user.sub, {
+      documentType: 'RUT',
+      rut: String(body.rut ?? ''),
+      firstName: nombre[0],
+      lastName: nombre.slice(1).join(' '),
+      email: body.correo ? String(body.correo) : undefined,
+      amount: Number(body.monto),
+      paymentMethod: body.metodo ? String(body.metodo) : undefined,
+    });
+    if (out.status !== 201) {
+      return res.json({ ejecutado: false, mensaje: String((out.json as { error?: string }).error ?? 'No se pudo registrar el pago.') });
+    }
+    const monto = Math.round(Number(body.monto)).toLocaleString('es-CL');
+    return res.json({
+      ejecutado: true,
+      mensaje: `Listo: registré el pago de consulta de ${nombre.join(' ')} por $${monto}${body.metodo ? ` (${body.metodo})` : ''}. Cuando se cree su ficha, el formulario autocompleta sus datos con el RUT.`,
+    });
+  }
+
+  // Enviar cartola por correo (12-11-2026): misma lógica que el botón de la
+  // cartola (sendCartolaEmailCore) y el mismo permiso Cartola de su ruta.
+  if (body.tipo === 'enviar_cartola') {
+    const perms = await resolveRequestPermissions(req);
+    const allowed = perms === 'full-access' || (perms !== 'no-clinic' && perms.cartola);
+    if (!allowed) {
+      return res.json({ ejecutado: false, mensaje: `Usted no tiene permiso para «${PERMISSION_LABELS.cartola}».` });
+    }
+    const r = await resolvePatient(String(body.paciente ?? ''), req);
+    if ('error' in r) return res.json({ ejecutado: false, mensaje: r.error });
+    const out = await sendCartolaEmailCore(req, r.patient.id);
+    if (out.status !== 200) {
+      return res.json({ ejecutado: false, mensaje: String((out.json as { error?: string }).error ?? 'No se pudo enviar la cartola.') });
+    }
+    const saldo = out.saldoTotal ?? 0;
+    return res.json({
+      ejecutado: true,
+      mensaje: `Listo: le envié la cartola por correo a ${r.patient.firstName} ${r.patient.lastName}${saldo > 0 ? ` (saldo pendiente $${saldo.toLocaleString('es-CL')})` : ' (sin saldo pendiente)'}.`,
+    });
   }
 
   if (body.tipo === 'nota_paciente') {

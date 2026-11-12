@@ -232,20 +232,31 @@ export async function balance(req: Request, res: Response) {
 // botón "Enviar por correo" directamente en la pestaña Cartola.
 export async function sendCartolaEmail(req: Request, res: Response) {
   const patientId = typeof req.body.patientId === 'string' ? req.body.patientId : undefined;
+  const out = await sendCartolaEmailCore(req, patientId);
+  return res.status(out.status).json(out.json);
+}
+
+// Lógica única de "enviar la cartola por correo al paciente": la usan la
+// pantalla (sendCartolaEmail) y el asistente, con las mismas reglas (12-11-2026).
+export async function sendCartolaEmailCore(
+  req: Request,
+  patientId: string | undefined
+): Promise<{ status: number; json: Record<string, unknown>; saldoTotal?: number }> {
   if (!patientId) {
-    return res.status(400).json({ error: 'Se requiere patientId' });
+    return { status: 400, json: { error: 'Se requiere patientId' } };
   }
   const patient = await assertPatientAccess(req, patientId);
   if (!patient) {
-    return res.status(404).json({ error: 'Paciente no encontrado' });
+    return { status: 404, json: { error: 'Paciente no encontrado' } };
   }
   if (!patient.email) {
-    return res.status(400).json({ error: 'El paciente no tiene un correo registrado' });
+    return { status: 400, json: { error: 'El paciente no tiene un correo registrado' } };
   }
   if (await cartolaScope(req)) {
-    return res.status(403).json({
-      error: 'La cartola que se le envía al paciente lleva el total; tu perfil sólo puede ver sus propios presupuestos',
-    });
+    return {
+      status: 403,
+      json: { error: 'La cartola que se le envía al paciente lleva el total; tu perfil sólo puede ver sus propios presupuestos' },
+    };
   }
 
   const data = await computeSummaryData(patientId);
@@ -291,10 +302,12 @@ export async function sendCartolaEmail(req: Request, res: Response) {
     });
   } catch (err) {
     console.error('No se pudo enviar el recordatorio de pago', err);
-    return res.status(502).json({ error: 'No se pudo enviar el correo. Intenta nuevamente.' });
+    return { status: 502, json: { error: 'No se pudo enviar el correo. Intenta nuevamente.' } };
   }
 
-  return res.status(200).json({ sent: true });
+  // La pantalla recibe lo mismo de siempre ({ sent: true }); saldoTotal es solo
+  // para el mensaje del asistente.
+  return { status: 200, json: { sent: true }, saldoTotal: data.saldoTotal };
 }
 
 export async function createMovement(req: Request, res: Response) {

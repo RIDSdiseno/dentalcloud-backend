@@ -13,33 +13,34 @@ export async function list(req: Request, res: Response) {
   return res.json({ payments });
 }
 
-export async function create(req: Request, res: Response) {
-  const clinicaId = req.user!.clinicaId!;
-  const body = req.body as {
-    documentType?: string;
-    rut?: string;
-    firstName?: string;
-    lastName?: string;
-    email?: string;
-    amount?: number;
-    paymentMethod?: string;
-  };
+export type ConsultationPaymentInput = {
+  documentType?: string;
+  rut?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  amount?: number;
+  paymentMethod?: string;
+};
 
+// Lógica única de "registrar pago de consulta": la usan la pantalla (create) y
+// el asistente, para que ambos validen y guarden exactamente igual (11-11-2026).
+export async function createConsultationPaymentCore(clinicaId: string, userId: string, body: ConsultationPaymentInput) {
   const documentType: DocumentType = isDocumentType(body.documentType) ? body.documentType : 'RUT';
   if (!PERSON_DOCUMENT_TYPES.includes(documentType)) {
-    return res.status(400).json({ error: 'Tipo de documento no válido' });
+    return { status: 400, json: { error: 'Tipo de documento no válido' } };
   }
   if (!body.rut || !isValidDocument(documentType, body.rut)) {
-    return res.status(400).json({ error: 'El RUT ingresado no es válido' });
+    return { status: 400, json: { error: 'El RUT ingresado no es válido' } };
   }
   if (!body.firstName?.trim() || !body.lastName?.trim()) {
-    return res.status(400).json({ error: 'Nombre y apellido son requeridos' });
+    return { status: 400, json: { error: 'Nombre y apellido son requeridos' } };
   }
   // Se redondea a pesos enteros y se valida el resultado: 0,4 redondea a 0 y
   // antes quedaba guardado un pago de $0; texto daba error 500 (10-11-2026).
   const amount = Math.round(Number(body.amount));
   if (body.amount === undefined || body.amount === null || !Number.isFinite(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'El monto debe ser mayor a 0' });
+    return { status: 400, json: { error: 'El monto debe ser mayor a 0' } };
   }
 
   const payment = await prisma.consultationPayment.create({
@@ -52,11 +53,16 @@ export async function create(req: Request, res: Response) {
       email: body.email?.trim() || null,
       amount,
       paymentMethod: body.paymentMethod?.trim() || null,
-      registeredById: req.user!.sub,
+      registeredById: userId,
     },
   });
 
-  return res.status(201).json({ payment });
+  return { status: 201, json: { payment } };
+}
+
+export async function create(req: Request, res: Response) {
+  const out = await createConsultationPaymentCore(req.user!.clinicaId!, req.user!.sub, req.body as ConsultationPaymentInput);
+  return res.status(out.status).json(out.json);
 }
 
 // Usado por el formulario de "Nuevo paciente": si el RUT ya pagó su
