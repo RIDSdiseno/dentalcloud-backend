@@ -489,8 +489,11 @@ const TOOLS = [
 ];
 
 // La búsqueda SIEMPRE se acota a la clínica del usuario (super_admin ve todas).
-// Importante: los resultados se devuelven al FRONT del propio sistema, NUNCA se
-// envían a OpenAI — los datos del paciente no salen a un servicio externo.
+// Los resultados completos (con RUT, contacto, etc.) se muestran solo en el FRONT.
+// Ojo: el texto que escribe o dicta el usuario sí va a Anthropic (y el audio a
+// OpenAI para transcribir), y a la IA le llega un resumen reducido de cada
+// resultado (minimizeForModel: sin RUT, contacto, texto clínico ni ids). Está
+// declarado en la política de privacidad, sección 8 (12-11-2026).
 async function searchPatients(nombre: string, req: Request) {
   const terms = nombre.trim().split(/\s+/).filter(Boolean).slice(0, 4);
   if (terms.length === 0) return [];
