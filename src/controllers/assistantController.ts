@@ -95,7 +95,7 @@ const INSTRUCTIONS = [
   'Si el usuario pide cambiar, conceder o quitar PERMISOS de alguien, no uses ninguna herramienta ni lo propongas: responde con amabilidad que, por seguridad, los permisos NO se cambian desde el asistente y que debe hacerlo un administrador en el panel de Configuración → Permisos.',
   'Usa cada herramienta SOLO cuando el usuario lo pida de verdad; no busques en saludos, agradecimientos ni preguntas generales, y no repitas una consulta que ya mostraste. Si piden algo que aún no puedes consultar (por ejemplo el saldo o la cartola detallada), dilo en texto, sin usar una herramienta que no corresponde.',
   'Cuando el usuario pida EJECUTAR una acción, usa "proponer_accion" con el "tipo" correcto: "nota_paciente" (con "paciente" y "contenido"); "agendar_cita" (con "paciente" y "fecha_hora" ISO 8601 según la fecha actual indicada; si el usuario lo dice, añade "sillon", "duracion_min", "profesional" y el motivo en "contenido"); "reagendar_cita" (con "paciente" y "fecha_hora" = la NUEVA fecha y hora; si el paciente tiene más de una cita próxima, añade "fecha_actual" con la fecha y hora de la cita que se mueve); "cancelar_cita" (con "paciente"; si tiene más de una cita próxima, añade "fecha_hora" con la fecha y hora de la cita a cancelar); "marcar_llegada" (con "paciente"; registra que el paciente YA LLEGÓ a su cita de hoy); "editar_ficha" (con "paciente", "campo" y "valor"; solo teléfono, correo o dirección); "enviar_correo" (con "paciente" y "contenido"); "registrar_pago" (con "paciente" y "monto" en pesos; opcionalmente "metodo" de pago); "estado_presupuesto" (con "presupuesto" = número y "estado" = el nuevo estado del plan); "crear_paciente" (con "paciente" = nombre y apellido, "rut", y opcionalmente "telefono" y "correo"). El usuario confirmará antes de ejecutar; nunca afirmes que ya la hiciste.',
-  'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
+  'Para mover o cambiar la hora de una cita usa "reagendar_cita"; para anularla usa "cancelar_cita". Si para mover la cita solo dicen la HORA nueva sin el día ("muévele la hora a las 12"), NO preguntes el día: propón "reagendar_cita" con "fecha_hora" = hoy a esa hora; el sistema la pasa al mismo día de la cita. Si el paciente tiene una sola cita próxima, el sistema la toma sola; si tiene varias y no sabes cuál, pregunta brevemente por la fecha y hora de la cita en cuestión antes de proponer. Nunca inventes la cita.',
   'Si el usuario dice que un paciente LLEGÓ a la clínica, llegó a su hora, está en recepción, o "marca la llegada" (ej. "llegó Juan", "ya llegó la señora Rojas", "marca que llegó Bruno"), usa "proponer_accion" tipo "marcar_llegada" con el "paciente". El sistema busca la cita de HOY de ese paciente y la deja registrada como llegada al confirmar.',
   'Si preguntan qué HORAS LIBRES o cupos hay, cuándo pueden atender a alguien, "¿tengo hora el martes?" o "¿tengo espacio/cupo hoy?", usa la herramienta "buscar_hora_libre". Para hoy/mañana/pasado mañana pásale "dia" (hoy | manana | pasado_manana), NO calcules la fecha tú; para una fecha concreta pásale "fecha" (YYYY-MM-DD). El sistema le mostrará los horarios disponibles. No inventes horas: deja que la herramienta las calcule. Ojo: "¿tengo cupo/espacio?" pide HORAS LIBRES (buscar_hora_libre), NO la agenda de citas ya tomadas (ver_agenda_dia).',
   'Si el usuario dice que un paciente PAGÓ o ABONÓ un monto ("Juan pagó 20 mil", "abónale 15.000 a la señora", "registra un pago de 30000 de Bruno"), usa "proponer_accion" tipo "registrar_pago" con el "paciente" y el "monto" en pesos chilenos como número entero (ej. "20 mil" → 20000, "$15.000" → 15000). Si mencionan el medio de pago (efectivo, tarjeta, transferencia), ponlo en "metodo". Si no te dan el monto, pregúntalo; nunca lo inventes. Registra solo ingresos (abonos), no cobros ni deudas. Si aclaran que el pago es de un presupuesto o tratamiento específico, incluye "presupuesto" con su número (ej. "del presupuesto 74" → presupuesto: "74"); si no lo mencionan, el abono queda libre (sin presupuesto).',
@@ -114,7 +114,7 @@ const INSTRUCTIONS = [
   'Si piden un RESUMEN o REPORTE de la clínica — "¿cuánto facturé/ingresó este mes?", "¿quién me debe más?", "deudores", "¿cuántos pacientes nuevos esta semana?", "¿cuántas citas hay?", "¿cuántos presupuestos sin iniciar?" — usa la herramienta "ver_reporte" con el "tipo" correcto (facturacion | deudores | pacientes_nuevos | citas | presupuestos) y el "periodo" (hoy | semana | mes) cuando aplique. No inventes números: deja que la herramienta los calcule. Si la cuenta no tiene el permiso, el sistema lo niega.',
   'MUY IMPORTANTE: para las acciones (agendar_cita, reagendar_cita, cancelar_cita, marcar_llegada, registrar_pago, estado_presupuesto, editar_ficha, enviar_correo, crear_paciente, nota_paciente) llama a "proponer_accion" DIRECTAMENTE, en un solo paso. NO uses antes "buscar_paciente", "ver_citas_paciente" ni ninguna otra herramienta de consulta para "ubicar" o "confirmar" al paciente: el sistema lo busca, lo valida y, si hay más de un paciente con ese nombre o más de una cita, te lo avisará al momento de confirmar. Buscar primero NO sirve, porque deja la acción a medio camino: pasa directo a "proponer_accion" con el nombre que te dio el usuario. Solo si de verdad falta un dato imprescindible (la fecha y hora para agendar, el valor nuevo para editar) haz UNA pregunta breve; el nombre del paciente NO es motivo para buscar antes.',
   'Si el usuario junta VARIOS pedidos en un mismo mensaje (por ejemplo "busca a Pedro, muéstrame sus presupuestos y agéndale el viernes a las 10"), identifícalos TODOS y atiéndelos TODOS en la misma respuesta: emite UNA herramienta por CADA pedido, aunque sean tres, cuatro o más. Cuéntalos mentalmente y revisa que no dejas ninguno afuera; no te quedes con el primero ni con solo algunos, y no juntes dos pedidos distintos en una sola herramienta. Si cada pedido necesita una herramienta distinta, usa todas las que hagan falta a la vez. Cada acción que ejecuta algo (proponer_accion) se propone por separado para que el usuario confirme una por una. Pero NO emitas la misma herramienta dos veces con los mismos parámetros en una respuesta: un pedido = una sola llamada a esa herramienta (ej. no llames "ver_agenda_dia" dos veces para la misma pregunta).',
-  'La herramienta "ver_agenda_dia" es SOLO para cuando preguntan explícitamente por el día de HOY ("¿qué hay hoy?", "agenda de hoy", "citas de hoy"). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
+  'La herramienta "ver_agenda_dia" es para cuando preguntan por las citas YA AGENDADAS de un día o de unos días concretos ("¿qué hay hoy?", "citas de mañana", "¿qué tenemos el jueves?", "agenda de la próxima semana"); pásale "dia", "fecha" y/o "dias" (máximo 7). Si preguntan en general si la clínica o un paciente "tiene citas" SIN decir hoy, NO uses "ver_agenda_dia": para un paciente concreto usa "ver_citas_paciente"; si no nombran a nadie, pide el nombre del paciente o aclara qué necesita. No confundas "¿tiene citas?" con "¿qué hay hoy?".',
   'El usuario puede escribir nombres de forma informal o con errores de tipeo; usa el contexto de la conversación para entender a quién o a qué se refiere, sobre todo en preguntas de seguimiento como "¿y tiene cita?" o "¿pero él tiene?".',
   'Si la petición es ambigua o falta un dato clave (el nombre exacto, la fecha, qué dato cambiar, a qué persona te refieres), haz UNA pregunta breve para aclarar, en vez de adivinar, inventar o usar una herramienta a ciegas. Vale más preguntar que equivocarse.',
   'Antes de usar una herramienta, verifica que sea la correcta para lo que se pide. Si una consulta no devuelve resultados, dilo con naturalidad y ofrece una alternativa concreta; no repitas la misma búsqueda.',
@@ -289,9 +289,17 @@ const TOOLS = [
   {
     type: 'function' as const,
     name: 'ver_agenda_dia',
-    description: 'Muestra las citas de HOY de la clínica (hora, paciente y estado). Úsala SOLO cuando pregunten explícitamente por hoy ("¿qué hay hoy?", "agenda de hoy"). NO la uses para "¿tiene citas?" de un paciente ni para preguntas generales sobre citas: para un paciente usa ver_citas_paciente.',
+    description: 'Muestra las citas YA AGENDADAS de la clínica (hora, paciente y estado) de un día o de varios días seguidos. Úsala cuando pregunten qué citas hay hoy, mañana, el martes, una fecha concreta o "la próxima semana". Para hoy/mañana/pasado mañana usa "dia" (no calcules la fecha); para una fecha concreta usa "fecha"; para varios días añade "dias" (ej. la próxima semana = fecha del lunes próximo y dias 7). NO la uses para las citas de UN paciente (usa ver_citas_paciente) ni para horas LIBRES (usa buscar_hora_libre).',
     strict: false,
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    parameters: {
+      type: 'object',
+      properties: {
+        dia: { type: 'string', enum: ['hoy', 'manana', 'pasado_manana'], description: 'Día relativo. Si no se indica ni dia ni fecha, es hoy.' },
+        fecha: { type: 'string', description: 'Fecha de calendario YYYY-MM-DD (primer día del rango).' },
+        dias: { type: 'number', description: 'Cantidad de días a mostrar desde ese día, de 1 a 7. Por defecto 1.' },
+      },
+      additionalProperties: false,
+    },
   },
   {
     type: 'function' as const,
@@ -494,6 +502,46 @@ const TOOLS = [
 // OpenAI para transcribir), y a la IA le llega un resumen reducido de cada
 // resultado (minimizeForModel: sin RUT, contacto, texto clínico ni ids). Está
 // declarado en la política de privacidad, sección 8 (12-11-2026).
+// Búsqueda tolerante (12-11-2026): si la búsqueda normal no encuentra a nadie
+// ("martin espinosa" vs "Martín Espinoza", "agustin" vs "Agustín"), se compara
+// sin tildes y aceptando una letra de diferencia por palabra. Solo dentro de la
+// clínica del usuario.
+const normTxt = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+function unaLetraDeDiferencia(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1 || Math.min(a.length, b.length) < 4) return false;
+  let i = 0;
+  let j = 0;
+  let dif = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++dif > 1) return false;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else { i++; j++; }
+  }
+  return dif + (a.length - i) + (b.length - j) <= 1;
+}
+function palabraCalza(term: string, palabras: string[]): boolean {
+  return palabras.some((p) => p.startsWith(term) || unaLetraDeDiferencia(term, p));
+}
+async function busquedaTolerante<T extends { firstName: string; lastName: string }>(
+  texto: string,
+  scope: Record<string, unknown>,
+  select: Record<string, true>,
+  take: number,
+): Promise<T[]> {
+  const terms = normTxt(texto).split(' ').filter((t) => t.length >= 2).slice(0, 4);
+  if (terms.length === 0) return [];
+  const todos = (await prisma.patient.findMany({ where: scope, select: { ...select, firstName: true, lastName: true }, take: 5000 })) as unknown as T[];
+  return todos
+    .filter((p) => {
+      const palabras = normTxt(`${p.firstName} ${p.lastName}`).split(' ');
+      return terms.every((t) => palabraCalza(t, palabras));
+    })
+    .slice(0, take);
+}
+
 async function searchPatients(nombre: string, req: Request) {
   const terms = nombre.trim().split(/\s+/).filter(Boolean).slice(0, 4);
   if (terms.length === 0) return [];
@@ -504,11 +552,10 @@ async function searchPatients(nombre: string, req: Request) {
     ],
   }));
   const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
-  return prisma.patient.findMany({
-    where: { ...scope, AND },
-    select: { id: true, firstName: true, lastName: true, phone: true, email: true, rut: true },
-    take: 5,
-  });
+  const select = { id: true, firstName: true, lastName: true, phone: true, email: true, rut: true } as const;
+  const rows = await prisma.patient.findMany({ where: { ...scope, AND }, select, take: 5 });
+  if (rows.length) return rows;
+  return busquedaTolerante<(typeof rows)[number]>(nombre, scope, select, 5);
 }
 
 // Busca profesionales/empleados por nombre, acotado a la clínica del usuario.
@@ -536,10 +583,13 @@ async function findOnePatient(nombre: string, req: Request) {
     ],
   }));
   const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
-  return prisma.patient.findFirst({
+  const p = await prisma.patient.findFirst({
     where: { ...scope, AND },
     select: { id: true, firstName: true, lastName: true },
   });
+  if (p) return p;
+  const tol = await busquedaTolerante<{ id: string; firstName: string; lastName: string }>(nombre, scope, { id: true }, 2);
+  return tol.length === 1 ? tol[0] : null;
 }
 
 // Para ACCIONES reales: busca hasta 3 coincidencias y exige precisión si hay
@@ -575,7 +625,8 @@ async function resolvePatient(
       { lastName: { contains: t, mode: 'insensitive' as const } },
     ],
   }));
-  const matches = await prisma.patient.findMany({ where: { ...scope, AND }, select, take: 6 });
+  let matches = await prisma.patient.findMany({ where: { ...scope, AND }, select, take: 6 });
+  if (matches.length === 0) matches = await busquedaTolerante<(typeof matches)[number]>(texto, scope, select, 6);
   if (matches.length === 0) return { error: 'No encontré a ese paciente en su clínica.' };
   if (matches.length === 1) return { patient: matches[0] };
   const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -684,14 +735,14 @@ function pickAppointment(
 // Lista corta de citas (fecha y hora de Chile) para pedir al usuario que elija.
 function listarCitas(appts: ApptRow[]): string {
   return appts
-    .map((a) => a.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' }))
+    .map((a) => a.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short', hour12: false }))
     .join('; ');
 }
 
 // Contexto seguro: solo conteos agregados de la clínica del usuario.
 async function buildClinicContext(req: Request): Promise<string> {
   const now = new Date();
-  const ahoraChile = now.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short' });
+  const ahoraChile = now.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short', hour12: false });
   const isoHoy = now.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }); // YYYY-MM-DD en hora de Chile
   const fecha =
     ` HOY es exactamente ${isoHoy} en hora de Chile (${ahoraChile}). "hoy" = ${isoHoy}; calcula "mañana", "el lunes", etc. a partir de ${isoHoy}, sin restar ni sumar días de más.` +
@@ -1145,23 +1196,37 @@ export async function chat(req: Request, res: Response) {
         if (perms === 'full-access') allowed = true;
         else if (perms !== 'no-clinic') allowed = perms.agenda;
         if (!allowed) return res.json({ denied: true, permiso: PERMISSION_LABELS.agenda });
-        const diaCl = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+        // 12-11-2026: cualquier día (hoy, mañana, una fecha) y hasta 7 días
+        // seguidos; antes solo hoy, y "¿qué citas hay mañana?" no tenía respuesta.
+        const DAY_MS_AG = 24 * 60 * 60 * 1000;
+        const diaRelAg = typeof args.dia === 'string' ? args.dia : null;
+        let baseAg: Date | null = null;
+        if (diaRelAg === 'manana') baseAg = new Date(Date.now() + DAY_MS_AG);
+        else if (diaRelAg === 'pasado_manana') baseAg = new Date(Date.now() + 2 * DAY_MS_AG);
+        else if (diaRelAg !== 'hoy' && typeof args.fecha === 'string' && /^\d{4}-\d{2}-\d{2}/.test(args.fecha)) baseAg = parseSantiago(`${args.fecha.slice(0, 10)}T12:00`);
+        const diaCl = (baseAg ?? new Date()).toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+        const nDias = Math.min(7, Math.max(1, Math.round(Number(args.dias) || 1)));
         const dayStart = parseSantiago(`${diaCl}T00:00`);
         if (!dayStart) return res.json({ agenda: [] });
-        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+        const dayEnd = new Date(dayStart.getTime() + nDias * DAY_MS_AG);
+        const hoyCl = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+        const fmtDia = (d: Date) => d.toLocaleDateString('es-CL', { timeZone: 'America/Santiago', weekday: 'long', day: 'numeric', month: 'long' });
+        const agendaTitulo = nDias > 1
+          ? `Agenda del ${fmtDia(dayStart)} al ${fmtDia(new Date(dayEnd.getTime() - DAY_MS_AG / 2))}`
+          : diaCl === hoyCl ? 'Agenda de hoy' : `Agenda del ${fmtDia(new Date(dayStart.getTime() + DAY_MS_AG / 2))}`;
         const scope = req.user?.role === 'super_admin' ? {} : { clinicaId: req.user?.clinicaId ?? '__sin_clinica__' };
         const rows = await prisma.appointment.findMany({
           where: { ...scope, status: { not: 'cancelada' }, startAt: { gte: dayStart, lt: dayEnd } },
           select: { startAt: true, status: true, patient: { select: { firstName: true, lastName: true } } },
           orderBy: { startAt: 'asc' },
-          take: 30,
+          take: nDias > 1 ? 80 : 30,
         });
         const agenda = rows.map((a) => ({
           hora: a.startAt.toISOString(),
           estado: a.status,
           paciente: `${a.patient.firstName} ${a.patient.lastName}`,
         }));
-        return res.json({ agenda });
+        return res.json({ agenda, agendaTitulo, agendaVariosDias: nDias > 1 });
       }
 
       // Horas libres de un día: recorre la ventana de atención en pasos de 30
@@ -1644,6 +1709,18 @@ export async function chat(req: Request, res: Response) {
           const verRut = permsProp === 'full-access' || (permsProp !== 'no-clinic' && permsProp.pacientes);
           pacienteRut = verRut ? formatRut(rp.patient.rut) : null;
         }
+        // Reagendar con solo la hora: si quedó "hoy" a una hora que ya pasó y el
+        // paciente tiene una sola cita futura en otro día, es ese día (12-11-2026).
+        let fechaHoraProp: string | null = args.fecha_hora ? String(args.fecha_hora) : null;
+        if (tipoProp === 'reagendar_cita' && pacienteId && fechaHoraProp && !args.fecha_actual && req.user?.clinicaId) {
+          const hoyClR = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+          const nuevo = parseSantiago(fechaHoraProp);
+          if (nuevo && nuevo.getTime() < Date.now() && fechaHoraProp.slice(0, 10) === hoyClR && /T\d{2}:\d{2}/.test(fechaHoraProp)) {
+            const futuras = await futureAppointments(pacienteId, req.user.clinicaId);
+            const diaCita = futuras.length === 1 ? futuras[0].startAt.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }) : null;
+            if (diaCita && diaCita !== hoyClR) fechaHoraProp = `${diaCita}T${fechaHoraProp.slice(11, 16)}`;
+          }
+        }
         return res.json({
           proposal: {
             tipo: tipoProp,
@@ -1652,7 +1729,7 @@ export async function chat(req: Request, res: Response) {
             pacienteId,
             pacienteRut,
             contenido: args.contenido ? String(args.contenido) : null,
-            fechaHora: args.fecha_hora ? String(args.fecha_hora) : null,
+            fechaHora: fechaHoraProp,
             fechaActual: args.fecha_actual ? String(args.fecha_actual) : null,
             sillon: args.sillon != null && args.sillon !== '' ? String(args.sillon) : null,
             duracionMin: args.duracion_min != null && Number.isFinite(Number(args.duracion_min)) ? Number(args.duracion_min) : null,
@@ -2113,7 +2190,7 @@ export async function execute(req: Request, res: Response) {
     sendAppointmentBookedEmail(created).catch((err) => {
       console.error('No se pudo enviar el correo de la cita agendada por el asistente', err);
     });
-    const txt = start.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    const txt = start.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short', hour12: false });
     const sillonTxt = created.chair?.name || (created.chair ? `sillón ${created.chair.number}` : '');
     return res.json({
       ejecutado: true,
@@ -2205,8 +2282,8 @@ export async function execute(req: Request, res: Response) {
     sendAppointmentBookedEmail(moved).catch((err) =>
       console.error('No se pudo avisar al paciente la nueva hora (asistente)', err),
     );
-    const antes = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
-    const despues = newStart.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    const antes = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short', hour12: false });
+    const despues = newStart.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short', hour12: false });
     return res.json({ ejecutado: true, mensaje: `Listo: moví la cita de ${p.firstName} ${p.lastName} del ${antes} al ${despues}.` });
   }
 
@@ -2251,7 +2328,7 @@ export async function execute(req: Request, res: Response) {
     syncAppointmentToFederation(cancelled).catch((err) =>
       console.error('No se pudo sincronizar la cancelación de la cita (asistente)', err),
     );
-    const cuando = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short' });
+    const cuando = appt.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'short', timeStyle: 'short', hour12: false });
     return res.json({ ejecutado: true, mensaje: `Listo: cancelé la cita de ${p.firstName} ${p.lastName} del ${cuando}.` });
   }
 
@@ -3281,7 +3358,7 @@ export async function execute(req: Request, res: Response) {
         return res.json({ ejecutado: false, mensaje: `${nombre} no tiene una cita próxima para recordarle.` });
       }
       const clinica = await prisma.clinica.findUnique({ where: { id: req.user.clinicaId }, select: { name: true } });
-      const fechaTxt = cita.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short' });
+      const fechaTxt = cita.startAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'full', timeStyle: 'short', hour12: false });
       try {
         await sendRecetaEmail({
           to: full.email,
