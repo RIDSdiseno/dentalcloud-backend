@@ -75,7 +75,7 @@ export async function buildExamRequestPdf({
   doc.moveDown(0.5);
 
   doc.font('Helvetica-Bold').fontSize(8).fillColor(MUTED).text('FECHA', { characterSpacing: 0.4 });
-  doc.font('Helvetica').fontSize(10.5).fillColor(INK).text(createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
+  doc.font('Helvetica').fontSize(10.5).fillColor(INK).text(createdAt.toLocaleDateString('es-CL', { dateStyle: 'long', timeZone: 'America/Santiago' }));
   doc.moveDown(0.5);
 
   if (professional) {

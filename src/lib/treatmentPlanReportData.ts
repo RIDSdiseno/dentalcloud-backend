@@ -49,5 +49,5 @@ export function formatCLP(amount: number, pais: string): string {
 }
 
 export function formatReportDate(value: Date): string {
-  return value.toLocaleDateString('es-CL');
+  return value.toLocaleDateString('es-CL', { timeZone: 'America/Santiago' });
 }

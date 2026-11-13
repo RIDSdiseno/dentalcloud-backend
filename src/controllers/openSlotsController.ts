@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { clinicTimeZone, dayRange } from '../utils/clinicTime';
 
 const include = {
   chair: { select: { id: true, number: true, name: true } },
@@ -13,11 +14,13 @@ export async function list(req: Request, res: Response) {
   let rangeStart: Date | undefined;
   let rangeEnd: Date | undefined;
   if (dateParam) {
-    rangeStart = new Date(`${dateParam}T00:00:00`);
-    rangeEnd = new Date(`${dateParam}T23:59:59.999`);
-    if (Number.isNaN(rangeStart.getTime())) {
+    // El día se corta en la hora de la clínica, no en UTC (13-11-2026).
+    const range = dayRange(dateParam, dateParam, await clinicTimeZone(req.user!.clinicaId));
+    if (!range) {
       return res.status(400).json({ error: 'Fecha inválida' });
     }
+    rangeStart = range.start;
+    rangeEnd = range.end;
   }
 
   const openSlots = await prisma.openSlot.findMany({

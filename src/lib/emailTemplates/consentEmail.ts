@@ -11,6 +11,7 @@ export function buildConsentEmailHtml(params: {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
+    timeZone: 'America/Santiago',
   });
 
   return `

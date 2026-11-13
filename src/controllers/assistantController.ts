@@ -41,7 +41,7 @@ import { getOpenAIClient, isOpenAIConfigured } from '../lib/openai';
 import { toFile } from 'openai';
 import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
-import { findChairConflict, lockChair } from '../lib/appointmentConflicts';
+import { findChairConflict, findProfessionalConflict, lockChair, lockProfessional } from '../lib/appointmentConflicts';
 import { sendAppointmentBookedEmail, include as appointmentInclude } from './appointmentsController';
 import { createOpenSlotCore } from './openSlotsController';
 import { createConsultationPaymentCore } from './consultationPaymentsController';
@@ -2232,9 +2232,15 @@ export async function execute(req: Request, res: Response) {
         include: appointmentInclude,
       });
     }
+    // El profesional tampoco puede estar en otra cita a esa hora (13-11-2026):
+    // si lo está, probar otro sillón no sirve.
+    let profOcupado: string | null = null;
     for (const c of chairs) {
       created = await prisma.$transaction(async (tx) => {
         await lockChair(tx, c.id);
+        await lockProfessional(tx, professionalId);
+        profOcupado = await findProfessionalConflict(tx, professionalId, start!, end);
+        if (profOcupado) return null;
         const choque = await findChairConflict(tx, c.id, start!, end);
         if (choque) {
           ultimoChoque = choque;
@@ -2242,7 +2248,10 @@ export async function execute(req: Request, res: Response) {
         }
         return createAppt(tx, c.id);
       });
-      if (created) break;
+      if (created || profOcupado) break;
+    }
+    if (!created && profOcupado) {
+      return res.json({ ejecutado: false, mensaje: `${profOcupado}. Pruebe con otra hora.` });
     }
     if (!created) {
       return res.json({
@@ -2325,9 +2334,14 @@ export async function execute(req: Request, res: Response) {
         include: appointmentInclude,
       });
     }
+    // El profesional de la cita no puede quedar en dos citas a la vez (13-11-2026).
+    let profOcupadoMov: string | null = null;
     for (const c of ordered) {
       moved = await prisma.$transaction(async (tx) => {
         await lockChair(tx, c);
+        await lockProfessional(tx, appt.professionalId);
+        profOcupadoMov = await findProfessionalConflict(tx, appt.professionalId, newStart!, newEnd, appt.id);
+        if (profOcupadoMov) return null;
         const [cita, publicada] = await Promise.all([
           tx.appointment.count({
             where: { chairId: c, id: { not: appt.id }, status: { not: 'cancelada' }, startAt: { lt: newEnd }, endAt: { gt: newStart! } },
@@ -2337,7 +2351,10 @@ export async function execute(req: Request, res: Response) {
         if (cita > 0 || publicada > 0) return null;
         return moveTo(tx, c);
       });
-      if (moved) break;
+      if (moved || profOcupadoMov) break;
+    }
+    if (!moved && profOcupadoMov) {
+      return res.json({ ejecutado: false, mensaje: `${profOcupadoMov}. Pruebe con otra hora.` });
     }
     if (!moved) {
       return res.json({ ejecutado: false, mensaje: 'Ese horario está ocupado en todos los sillones. Pruebe con otra hora.' });

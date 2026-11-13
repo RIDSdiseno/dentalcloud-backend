@@ -76,7 +76,7 @@ const TOTALS_BG = '#dbeafe';
 
 
 function formatDate(value: Date): string {
-  return value.toLocaleDateString('es-CL');
+  return value.toLocaleDateString('es-CL', { timeZone: 'America/Santiago' });
 }
 
 async function downloadLogo(logoUrl: string): Promise<Buffer | null> {

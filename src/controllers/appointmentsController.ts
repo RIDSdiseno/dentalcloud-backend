@@ -2,7 +2,8 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { findChairConflict, lockChair } from '../lib/appointmentConflicts';
+import { clinicTimeZone, dayRange } from '../utils/clinicTime';
+import { findChairConflict, findProfessionalConflict, lockChair, lockProfessional } from '../lib/appointmentConflicts';
 import { syncAppointmentToFederation } from '../lib/federationSync';
 import { sendAppointmentConfirmation } from '../lib/emailService';
 import { belongsToRequesterClinica } from '../lib/tenantGuard';
@@ -110,18 +111,15 @@ export async function list(req: Request, res: Response) {
   let rangeStart: Date | undefined;
   let rangeEnd: Date | undefined;
 
-  if (dateParam) {
-    rangeStart = new Date(`${dateParam}T00:00:00`);
-    rangeEnd = new Date(`${dateParam}T23:59:59.999`);
-  } else if (fromParam && toParam) {
-    rangeStart = new Date(`${fromParam}T00:00:00`);
-    rangeEnd = new Date(`${toParam}T23:59:59.999`);
+  // Los días se cortan en la hora de la clínica, no en UTC (13-11-2026).
+  if (dateParam || (fromParam && toParam)) {
+    const tz = await clinicTimeZone(req.user!.clinicaId);
+    const range = dayRange(dateParam ?? fromParam!, dateParam ?? toParam!, tz);
+    if (!range) return res.status(400).json({ error: 'Fecha inválida' });
+    rangeStart = range.start;
+    rangeEnd = range.end;
   } else if (!patientId) {
     return res.status(400).json({ error: 'Se requiere date, from y to, o patientId' });
-  }
-
-  if (rangeStart && (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd!.getTime()))) {
-    return res.status(400).json({ error: 'Fecha inválida' });
   }
 
   const restrictToOwn = mineOnly && req.user!.role !== 'admin';
@@ -181,6 +179,17 @@ async function assertChairFree(
   if (conflict) throw new HttpError(409, conflict);
 }
 
+async function assertProfessionalFree(
+  tx: Prisma.TransactionClient,
+  professionalId: string | null | undefined,
+  startAt: Date,
+  endAt: Date
+) {
+  await lockProfessional(tx, professionalId);
+  const conflict = await findProfessionalConflict(tx, professionalId, startAt, endAt);
+  if (conflict) throw new HttpError(409, conflict);
+}
+
 export async function create(req: Request, res: Response) {
   const body = req.body as AppointmentInput;
 
@@ -235,6 +244,7 @@ export async function create(req: Request, res: Response) {
       // pueden pasar las dos el chequeo de choque.
       await lockChair(tx, body.chairId!);
       await assertChairFree(tx, body.chairId!, startAt, endAt);
+      await assertProfessionalFree(tx, professionalId, startAt, endAt);
       return tx.appointment.create({
         data: {
           chairId: body.chairId!,
@@ -314,6 +324,7 @@ async function createFromOpenSlot(req: Request, res: Response, openSlotId: strin
       // se revisa igual que en el portal del paciente (09-11-2026).
       await lockChair(tx, openSlot.chairId);
       await assertChairFree(tx, openSlot.chairId, openSlot.startAt, openSlot.endAt, openSlot.id);
+      await assertProfessionalFree(tx, openSlot.professionalId, openSlot.startAt, openSlot.endAt);
 
       const created = await tx.appointment.create({
         data: {

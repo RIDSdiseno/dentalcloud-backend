@@ -1,3 +1,5 @@
+import { DEFAULT_TZ } from '../../utils/clinicTime';
+
 export function buildAppointmentConfirmationEmailHtml(params: {
   patientFirstName: string;
   professionalName: string;
@@ -5,15 +7,19 @@ export function buildAppointmentConfirmationEmailHtml(params: {
   clinicaNombre: string;
   clinicaLogoUrl?: string | null;
   confirmUrl?: string | null;
+  // Zona de la clínica (13-11-2026): sin ella el servidor (UTC) mostraba la hora corrida.
+  timeZone?: string;
 }): string {
   const { patientFirstName, professionalName, startAt, clinicaNombre, clinicaLogoUrl, confirmUrl } = params;
+  const timeZone = params.timeZone ?? DEFAULT_TZ;
   const dateLabel = startAt.toLocaleDateString('es-CL', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
     year: 'numeric',
+    timeZone,
   });
-  const timeLabel = startAt.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const timeLabel = startAt.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone });
 
   return `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">

@@ -116,7 +116,7 @@ export async function buildRecetaManualPdf({
   );
   if (patient.address) leftY = fieldAt(0, leftY, 'Dirección', patient.address);
 
-  let rightY = fieldAt(1, rowTop, 'Fecha', createdAt.toLocaleDateString('es-CL', { dateStyle: 'long' }));
+  let rightY = fieldAt(1, rowTop, 'Fecha', createdAt.toLocaleDateString('es-CL', { dateStyle: 'long', timeZone: 'America/Santiago' }));
   if (professional) {
     rightY = fieldAt(1, rightY, 'Prescrito por', professionalLine(professional));
   }

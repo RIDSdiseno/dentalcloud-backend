@@ -129,7 +129,7 @@ export async function buildConsentPdf({
     doc.text(`Firmado por: ${consent.signerName}${documento}`);
   }
   if (consent.respondedAt) {
-    doc.text(`Fecha: ${consent.respondedAt.toLocaleString('es-CL')}`);
+    doc.text(`Fecha: ${consent.respondedAt.toLocaleString('es-CL', { timeZone: 'America/Santiago', hour12: false })}`);
   }
   if (consent.method) {
     doc.text(`Método: ${METHOD_LABELS[consent.method] ?? consent.method}`);

@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { sendMail as sendViaGlobalGraph } from './mailer';
 import { getEmailConfigForClinica, type ResolvedEmailConfig } from './emailConfigService';
 import { buildAppointmentConfirmationEmailHtml } from './emailTemplates/appointmentEmail';
+import { clinicTimeZone } from '../utils/clinicTime';
 
 // Mismo formato que ya esperaba mailer.ts (Graph): contenido en base64 —
 // así los llamadores existentes (cartola, consentimiento firmado) no tienen
@@ -92,6 +93,7 @@ export async function sendAppointmentConfirmation(params: {
     clinicaNombre: params.clinicaNombre,
     clinicaLogoUrl: params.clinicaLogoUrl,
     confirmUrl: params.confirmUrl,
+    timeZone: await clinicTimeZone(params.clinicaId),
   });
   await send({
     to: params.patientEmail,
