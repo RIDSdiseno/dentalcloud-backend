@@ -19,6 +19,19 @@ async function retryPendingFederationSyncs() {
       where: { id: failure.id },
       data: { attempts: { increment: 1 } },
     });
+    // Aviso cuando una copia se abandona (13-11-2026): antes quedaba en la
+    // tabla sin que nadie se enterara. Sale una sola vez, en los logs de
+    // Railway, con lo necesario para revisarla a mano.
+    if (failure.attempts + 1 >= MAX_ATTEMPTS) {
+      const still = await prisma.federationSyncFailure.findFirst({ where: { id: failure.id }, select: { lastError: true } });
+      if (still) {
+        console.error('[federacion] copia ABANDONADA tras ' + MAX_ATTEMPTS + ' intentos', {
+          entityType: failure.entityType,
+          localId: failure.localId,
+          lastError: still.lastError,
+        });
+      }
+    }
   }
 }
 

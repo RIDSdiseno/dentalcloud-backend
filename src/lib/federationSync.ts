@@ -296,7 +296,19 @@ export async function syncLedgerMovementToFederation(movement: LedgerMovement): 
         })
       : Promise.resolve(null),
   ]);
-  if (!patient?.federatedPatientId) return; // paciente sin espejo: nada que colgar
+  // Paciente (o presupuesto, si el abono paga uno) todavía sin espejo: queda
+  // PENDIENTE y el reintento lo resuelve cuando ya exista (13-11-2026). Antes,
+  // sin paciente se perdía en silencio y, si el presupuesto se estaba copiando
+  // en ese mismo momento, el abono llegaba a Gestión SIN presupuesto.
+  if (!patient?.federatedPatientId || (movement.treatmentPlanId && !plan?.federatedTreatmentPlanId)) {
+    await recordSyncFailure(
+      'LEDGER_MOVEMENT',
+      movement.id,
+      { reason: 'patient or plan not yet federated' },
+      new Error('Paciente o presupuesto sin espejo todavía'),
+    );
+    return;
+  }
 
   const payload = {
     clinicId: clinica.federatedClinicId,
@@ -691,6 +703,25 @@ export async function retryFederationSync(entityType: string, localId: string): 
     const sucursal = await prisma.sucursal.findUnique({ where: { id: localId } });
     if (!sucursal) return clearSyncFailure('SUCURSAL', localId);
     return syncSucursalToFederation(sucursal);
+  }
+
+  // Reintentos que faltaban (13-11-2026): estos tipos se registraban como
+  // pendientes pero el reintento no los conocía, así que se "reintentaban" 10
+  // veces sin hacer nada y se abandonaban.
+  if (entityType === 'LEDGER_MOVEMENT') {
+    const movement = await prisma.ledgerMovement.findUnique({ where: { id: localId } });
+    if (!movement) return clearSyncFailure('LEDGER_MOVEMENT', localId);
+    return syncLedgerMovementToFederation(movement);
+  }
+
+  if (entityType === 'TREATMENT_ITEM_PHOTO') {
+    const photo = await prisma.treatmentItemPhoto.findUnique({ where: { id: localId } });
+    if (!photo) return clearSyncFailure('TREATMENT_ITEM_PHOTO', localId);
+    return syncTreatmentItemPhotoToFederation(photo);
+  }
+
+  if (entityType === 'TREATMENT_ITEM_PHOTO_REMOVAL') {
+    return syncTreatmentItemPhotoRemovalToFederation(localId);
   }
 
   if (entityType === 'TREATMENT_ITEM_REMOVAL') {
