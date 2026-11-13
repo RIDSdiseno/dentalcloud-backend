@@ -202,7 +202,7 @@ export async function refresh(req: Request, res: Response) {
   }
 
   const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { clinica: true } });
-  if (!user || !refreshTokenMatchesUser(payload, user)) {
+  if (!user || !refreshTokenMatchesUser(payload, user) || (await refreshTokenRevoked(payload.jti))) {
     const { maxAge, ...clearOptions } = refreshCookieOptions();
     res.clearCookie(REFRESH_COOKIE_NAME, clearOptions);
     return res.status(401).json({ error: 'Sesión inválida, vuelve a iniciar sesión' });
@@ -212,7 +212,7 @@ export async function refresh(req: Request, res: Response) {
   }
 
   const accessToken = signAccessToken(user);
-  const newRefreshToken = signRefreshToken(user);
+  const newRefreshToken = signRefreshToken(user, payload.jti);
   res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, refreshCookieOptions());
   return res.json({ accessToken, user: toPublicUser(user) });
 }
@@ -223,7 +223,38 @@ export function reissueRefreshCookie(res: Response, user: User) {
   res.cookie(REFRESH_COOKIE_NAME, signRefreshToken(user), refreshCookieOptions());
 }
 
-export function logout(req: Request, res: Response) {
+// Sesiones cerradas (13-11-2026): antes cerrar sesión solo borraba la cookie
+// del navegador, y un token de refresco copiado seguía sirviendo 7 días. Ahora
+// se anota su identificador (jti) hasta que venza. Solo esa sesión: las de
+// otros dispositivos del mismo usuario siguen abiertas, igual que antes.
+// Si la tabla no existiera (despliegue a medias), no se bloquea a nadie.
+async function refreshTokenRevoked(jti?: string): Promise<boolean> {
+  if (!jti) return false;
+  try {
+    return Boolean(await prisma.revokedRefreshToken.findUnique({ where: { jti } }));
+  } catch (err) {
+    console.error('[auth] no se pudo revisar revoked_refresh_tokens', err);
+    return false;
+  }
+}
+
+export async function logout(req: Request, res: Response) {
+  const token = req.cookies?.[REFRESH_COOKIE_NAME];
+  if (token) {
+    try {
+      const payload = verifyRefreshToken(token);
+      if (payload.jti) {
+        // La sesión se renueva sola (cada renovación alarga su vencimiento), así
+        // que se guarda con margen: 30 días desde que se cerró.
+        const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+        await prisma.revokedRefreshToken.upsert({ where: { jti: payload.jti }, update: {}, create: { jti: payload.jti, expiresAt } });
+        // Limpieza: las anotaciones vencidas ya no sirven para nada.
+        await prisma.revokedRefreshToken.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+      }
+    } catch {
+      // Token vencido o inválido, o tabla aún no creada: no hay nada más que hacer.
+    }
+  }
   const { maxAge, ...clearOptions } = refreshCookieOptions();
   res.clearCookie(REFRESH_COOKIE_NAME, clearOptions);
   return res.status(204).send();

@@ -16,6 +16,10 @@ export interface RefreshTokenPayload {
   // huella deja de coincidir y todas las sesiones abiertas de esa persona
   // dejan de renovarse. Tokens anteriores a este cambio no la traen.
   pv?: string;
+  // Identificador de ESTA sesión (13-11-2026). Al cerrar sesión se anota en
+  // revoked_refresh_tokens y el token deja de servir aunque no haya vencido.
+  jti?: string;
+  exp?: number;
 }
 
 export function passwordFingerprint(user: Pick<User, 'passwordHash'>) {
@@ -38,8 +42,10 @@ export function signAccessToken(user: User) {
   );
 }
 
-export function signRefreshToken(user: User) {
-  return jwt.sign({ sub: user.id, pv: passwordFingerprint(user) }, process.env.JWT_REFRESH_SECRET as string, {
+// `sessionId` se mantiene en cada renovación (refresh) para que, al cerrar
+// sesión, queden inválidas también las copias anteriores de esa misma sesión.
+export function signRefreshToken(user: User, sessionId: string = crypto.randomUUID()) {
+  return jwt.sign({ sub: user.id, pv: passwordFingerprint(user), jti: sessionId }, process.env.JWT_REFRESH_SECRET as string, {
     expiresIn: process.env.JWT_REFRESH_EXPIRES_IN,
   } as SignOptions);
 }

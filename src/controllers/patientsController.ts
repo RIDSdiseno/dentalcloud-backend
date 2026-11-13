@@ -8,7 +8,7 @@ import { fetchPrivacyConsentSummaries, fetchPrivacyConsentSummary, withPrivacyCo
 import { syncPatientToDimageIfNeeded } from '../lib/dimagePatientSync';
 import { syncPatientToFederation } from '../lib/federationSync';
 import { VOICE_RECORDING_CONSENT_CODE, PHOTO_USAGE_CONSENT_CODE } from '../lib/consentTypes';
-import { PERMISSION_LABELS, type GeneralPatientPermissionKey } from '../lib/rolePermissions';
+import { PERMISSION_LABELS, type GeneralPatientPermissionKey, type PermissionKey } from '../lib/rolePermissions';
 import { resolveRequestPermissions } from '../middleware/requireRolePermission';
 import { sanitizeAnamnesisData } from '../lib/anamnesisData';
 import { generateAnamnesisSummary } from '../lib/anamnesisSummaryAi';
@@ -232,6 +232,35 @@ function toPatientPatch(body: PatientInput) {
 //
 // Se devuelven en null en vez de omitir la propiedad para no romper a quien
 // espera que el campo exista; "sin acceso" se ve igual que "sin dato".
+// Campos clínicos que no estaban en ningún grupo (13-11-2026): la anamnesis va
+// con "Antecedentes médicos" y las expectativas / óptimo tratamiento con
+// "Motivo de consulta" (lo conversa el profesional). El examen estético
+// (exam*) va con la pestaña "Examen Estético".
+const EXTRA_FIELD_PERMS: { key: PermissionKey; fields: string[] }[] = [
+  { key: 'antecedentesMedicos', fields: ['anamnesisData'] },
+  { key: 'motivoConsulta', fields: ['expectativasPaciente', 'optimoTratamiento'] },
+];
+
+// Quita del cuerpo los campos que el perfil no puede escribir. Se usa al CREAR
+// y al EDITAR (antes solo al editar: al crear se podía llenar cualquier campo
+// mandándolo directo a la API).
+function stripFieldsWithoutPermission(
+  body: PatientInput,
+  permissions: Awaited<ReturnType<typeof resolveRequestPermissions>>
+) {
+  if (permissions === 'full-access' || permissions === 'no-clinic') return;
+  const b = body as Record<string, unknown>;
+  for (const [key, fields] of Object.entries(PATIENT_FIELD_GROUPS) as [GeneralPatientPermissionKey, (keyof PatientInput)[]][]) {
+    if (!permissions[key]) for (const field of fields) delete b[field];
+  }
+  for (const { key, fields } of EXTRA_FIELD_PERMS) {
+    if (!permissions[key]) for (const field of fields) delete b[field];
+  }
+  if (!permissions.fichaExamenEstetico) {
+    for (const field of Object.keys(b)) if (field.startsWith('exam')) delete b[field];
+  }
+}
+
 function hidePatientFieldsWithoutPermission<T extends Record<string, unknown>>(
   patient: T,
   permissions: Awaited<ReturnType<typeof resolveRequestPermissions>>
@@ -255,6 +284,10 @@ function hidePatientFieldsWithoutPermission<T extends Record<string, unknown>>(
     for (const field of Object.keys(result)) {
       if (field.startsWith('exam')) result[field] = Array.isArray(result[field]) ? [] : null;
     }
+  }
+  for (const { key, fields } of EXTRA_FIELD_PERMS) {
+    if (permissions[key]) continue;
+    for (const field of fields) if (field in result) result[field] = null;
   }
   return result as T;
 }
@@ -326,6 +359,8 @@ export async function create(req: Request, res: Response) {
     return res.status(409).json({ error: `Ya existe un paciente con el RUT ${rut}` });
   }
 
+  const permissions = await resolveRequestPermissions(req);
+  stripFieldsWithoutPermission(body, permissions);
   const patient = await prisma.patient.create({ data: { rut, documentType, clinicaId, ...toPatientData(body) } });
 
   const clinica = await prisma.clinica.findUnique({ where: { id: clinicaId }, select: { rxEnabled: true } });
@@ -345,7 +380,7 @@ export async function create(req: Request, res: Response) {
     console.error('No se pudo sincronizar el paciente recién creado con Dental-Demo-Back', err);
   });
 
-  return res.status(201).json({ patient });
+  return res.status(201).json({ patient: hidePatientFieldsWithoutPermission(patient, permissions) });
 }
 
 export async function update(req: Request<{ id: string }>, res: Response) {
@@ -373,19 +408,14 @@ export async function update(req: Request<{ id: string }>, res: Response) {
   // bloquear SOLO, por ejemplo, "Motivo de consulta" sin bloquear el resto de
   // la ficha (así recepción sigue pudiendo cargar nombre/RUT/contacto).
   const permissions = await resolveRequestPermissions(req);
-  if (permissions !== 'full-access' && permissions !== 'no-clinic') {
-    for (const [key, fields] of Object.entries(PATIENT_FIELD_GROUPS) as [GeneralPatientPermissionKey, (keyof PatientInput)[]][]) {
-      if (permissions[key]) continue;
-      // Los campos sin permiso se descartan del cuerpo en vez de rechazar la
-      // petición completa. Antes esto devolvía 403 apenas el cuerpo mencionara
-      // uno de estos campos, y el formulario SIEMPRE manda estatura, peso,
-      // alergias y etiquetas aunque vayan vacías — así que apagar un permiso
-      // dejaba a ese perfil sin poder guardar absolutamente nada del paciente,
-      // ni siquiera lo que sí tenía permitido. Descartándolos, cada perfil
-      // edita lo suyo y lo bloqueado nunca se toca ni se sobrescribe.
-      for (const field of fields) delete body[field];
-    }
-  }
+  // Los campos sin permiso se descartan del cuerpo en vez de rechazar la
+  // petición completa. Antes esto devolvía 403 apenas el cuerpo mencionara
+  // uno de estos campos, y el formulario SIEMPRE manda estatura, peso,
+  // alergias y etiquetas aunque vayan vacías — así que apagar un permiso
+  // dejaba a ese perfil sin poder guardar absolutamente nada del paciente,
+  // ni siquiera lo que sí tenía permitido. Descartándolos, cada perfil
+  // edita lo suyo y lo bloqueado nunca se toca ni se sobrescribe.
+  stripFieldsWithoutPermission(body, permissions);
 
   // Si el paciente ya tenía sus datos corroborados por un médico y ahora se
   // cambia justo el tipo de dato que se corrobora (identidad/contacto), esa
@@ -432,7 +462,7 @@ export async function update(req: Request<{ id: string }>, res: Response) {
     console.error('No se pudo sincronizar la edición del paciente con Dental-Demo-Back', err);
   });
 
-  return res.json({ patient: updated });
+  return res.json({ patient: hidePatientFieldsWithoutPermission(updated, permissions) });
 }
 
 // Etapa 01 (reunión 2/9 con Urbina): recepción puede cargar los datos

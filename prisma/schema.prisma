@@ -1338,3 +1338,14 @@ enum InsumoMovementType {
   OUT
   ADJUSTMENT
 }
+
+// Sesiones cerradas (13-11-2026): identificador (jti) de cada token de refresco
+// cuyo dueño cerró sesión, hasta que vence. /auth/refresh lo rechaza.
+model RevokedRefreshToken {
+  jti       String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("revoked_refresh_tokens")
+}
