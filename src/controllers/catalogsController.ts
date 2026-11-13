@@ -37,18 +37,30 @@ export async function listSucursales(req: Request, res: Response) {
   return res.json({ sucursales });
 }
 
+// "Centro" y "centro" (o "Centro  Norte" con dos espacios) se aceptaban como
+// sucursales distintas (13-11-2026). Se compara sin mayúsculas ni espacios de más.
+async function sucursalNameTaken(clinicaId: string, name: string, exceptId?: string) {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM sucursales
+    WHERE "clinicaId" = ${clinicaId}
+      AND lower(regexp_replace(trim(name), '\\s+', ' ', 'g')) = lower(${name})
+      ${exceptId ? Prisma.sql`AND id <> ${exceptId}` : Prisma.empty}
+    LIMIT 1`;
+  return rows.length > 0;
+}
+
 export async function createSucursal(req: Request, res: Response) {
   const { name, address } = req.body as { name?: string; address?: string };
   if (!name?.trim()) {
     return res.status(400).json({ error: 'El nombre de la sucursal es requerido' });
   }
   const clinicaId = req.user!.clinicaId!;
-  const existing = await prisma.sucursal.findFirst({ where: { clinicaId, name: name.trim() } });
-  if (existing) {
+  const cleanName = name.trim().replace(/\s+/g, ' ');
+  if (await sucursalNameTaken(clinicaId, cleanName)) {
     return res.status(409).json({ error: 'Ya existe una sucursal con ese nombre' });
   }
   const sucursal = await prisma.sucursal.create({
-    data: { name: name.trim(), address: address?.trim() || null, clinicaId },
+    data: { name: cleanName, address: address?.trim() || null, clinicaId },
   });
   syncSucursalToFederation(sucursal).catch((err) => {
     console.error('No se pudo sincronizar la sucursal recién creada con Dental-Demo-Back', err);
@@ -67,10 +79,19 @@ export async function updateSucursal(req: Request<{ id: string }>, res: Response
     active?: boolean;
     dimageClinicId?: string | null;
   };
+  const cleanName = name !== undefined ? String(name).trim().replace(/\s+/g, ' ') : undefined;
+  if (cleanName !== undefined) {
+    if (!cleanName) {
+      return res.status(400).json({ error: 'El nombre de la sucursal es requerido' });
+    }
+    if (await sucursalNameTaken(sucursal.clinicaId, cleanName, sucursal.id)) {
+      return res.status(409).json({ error: 'Ya existe una sucursal con ese nombre' });
+    }
+  }
   const updated = await prisma.sucursal.update({
     where: { id: req.params.id },
     data: {
-      ...(name !== undefined ? { name: name.trim() } : {}),
+      ...(cleanName !== undefined ? { name: cleanName } : {}),
       ...(address !== undefined ? { address: address?.trim() || null } : {}),
       ...(active !== undefined ? { active } : {}),
       ...(dimageClinicId !== undefined ? { dimageClinicId: dimageClinicId?.trim() || null } : {}),
