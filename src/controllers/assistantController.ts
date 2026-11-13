@@ -756,7 +756,8 @@ async function buildClinicContext(req: Request): Promise<string> {
   try {
     const [patients, todayAppointments, pendingPlans] = await Promise.all([
       prisma.patient.count({ where: { clinicaId } }),
-      prisma.appointment.count({ where: { clinicaId, startAt: { gte: dayStart, lt: dayEnd } } }),
+      // Sin las canceladas: igual que la agenda del día (13-11-2026).
+      prisma.appointment.count({ where: { clinicaId, status: { not: 'cancelada' }, startAt: { gte: dayStart, lt: dayEnd } } }),
       prisma.treatmentPlan.count({ where: { clinicaId, status: 'sin_iniciar' } }),
     ]);
     return (
@@ -963,6 +964,32 @@ const ACTION_MODULE: Record<string, ClinicaModuleKey> = {
   publicar_horas: 'agenda',
   enviar_cartola: 'cartola',
   // registrar_pago_consulta: sin módulo, igual que la pantalla Pagos de Consulta.
+};
+
+// Permisos de perfil que exige cada acción al ejecutarse (los mismos que revisa
+// /execute en cada rama). Se usan también al PROPONER, para no mostrar una
+// tarjeta que la cuenta no podrá confirmar (13-11-2026).
+const ACTION_PERMS: Record<string, PermissionKey[]> = {
+  nota_paciente: ['observaciones'],
+  agendar_cita: ['agenda'],
+  reagendar_cita: ['agenda'],
+  cancelar_cita: ['agenda'],
+  marcar_llegada: ['agenda'],
+  recordar_cita: ['agenda'],
+  publicar_horas: ['agenda'],
+  registrar_pago: ['cartola'],
+  enviar_cartola: ['cartola'],
+  estado_presupuesto: ['tratamientos'],
+  crear_presupuesto: ['tratamientos', 'crearPresupuestos'],
+  crear_paciente: ['pacientes'],
+  editar_ficha: ['pacientes', 'datosContacto'],
+  enviar_correo: ['pacientes', 'datosContacto'],
+  generar_receta: ['pacientes'],
+  solicitud_examen: ['pacientes'],
+  generar_certificado: ['pacientes'],
+  enviar_consentimiento: ['consentimientos'],
+  dictar_evolucion: ['evoluciones'],
+  evolucionar_procedimiento: ['evoluciones'],
 };
 
 export async function chat(req: Request, res: Response) {
@@ -1591,8 +1618,20 @@ export async function chat(req: Request, res: Response) {
           if (!can('agenda') || !modOn('agenda')) {
             return res.json({ denied: true, permiso: PERMISSION_LABELS.agenda });
           }
+          // Fin del período (13-11-2026): antes contaba desde el inicio sin
+          // límite, y "citas de hoy" sumaba también las de mañana en adelante.
+          let end: Date | null = null;
+          if (start) {
+            if (periodo === 'hoy') end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+            else if (periodo === 'semana') end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+            else {
+              const [y, m] = dayCl.split('-').map(Number);
+              const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+              end = parseSantiago(`${next}-01T00:00`);
+            }
+          }
           const count = await prisma.appointment.count({
-            where: { ...scope, status: { not: 'cancelada' }, ...(start ? { startAt: { gte: start } } : {}) },
+            where: { ...scope, status: { not: 'cancelada' }, ...(start ? { startAt: { gte: start, ...(end ? { lt: end } : {}) } } : {}) },
           });
           return res.json({ reporte: { tipo, periodoTxt, count } });
         }
@@ -1699,6 +1738,25 @@ export async function chat(req: Request, res: Response) {
         // Se identifica al paciente ANTES de confirmar: la tarjeta muestra su
         // nombre completo y RUT, y al ejecutar se usa ese mismo paciente.
         const tipoProp = String(args.tipo ?? 'otro');
+        // Si la cuenta no puede hacer esta acción, se le dice AHORA, sin armar
+        // una tarjeta que fallaría al confirmar (13-11-2026). Son los mismos
+        // permisos y módulos que revisa /execute (ACTION_PERMS / ACTION_MODULE).
+        const necesarios = ACTION_PERMS[tipoProp];
+        if (necesarios) {
+          const permsP = await resolveRequestPermissions(req);
+          if (permsP !== 'full-access') {
+            const falta = permsP === 'no-clinic' ? necesarios[0] : necesarios.find((k) => !permsP[k]);
+            if (falta) {
+              return res.json({
+                reply: `Su cuenta no tiene el permiso «${PERMISSION_LABELS[falta]}», así que no puedo preparar esa acción. Si lo necesita, un administrador de la clínica puede habilitárselo.`,
+              });
+            }
+          }
+        }
+        const modP = ACTION_MODULE[tipoProp];
+        if (modP && !(await moduleOn(req, modP))) {
+          return res.json({ reply: `El módulo «${CLINICA_MODULE_LABELS[modP]}» no está habilitado para su clínica.` });
+        }
         let pacienteNombre: string | null = args.paciente ? String(args.paciente) : null;
         let pacienteId: string | null = null;
         let pacienteRut: string | null = null;
