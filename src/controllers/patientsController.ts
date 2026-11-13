@@ -296,6 +296,23 @@ export async function list(req: Request, res: Response) {
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const searchRut = cleanRut(search);
   const clinicaId = req.user!.clinicaId!;
+  // "Juan Pérez" no calzaba ni con el nombre ni con el apellido por separado
+  // (13-11-2026). Ahora cada palabra tiene que aparecer en el nombre o en el
+  // apellido, así que sirven "juan perez", "perez juan" o "juan p".
+  const words = search.split(/\s+/).filter(Boolean).slice(0, 6);
+  // El RUT se guarda con puntos y guion ("19.427.912-4") y la búsqueda lo
+  // limpiaba ("194279124"), así que buscar por RUT nunca encontraba nada.
+  // Se compara limpiando también la columna.
+  const rutMatchIds =
+    searchRut.length >= 3 && /\d/.test(searchRut)
+      ? (
+          await prisma.$queryRaw<{ id: string }[]>`
+            SELECT id FROM patients
+            WHERE "clinicaId" = ${clinicaId}
+              AND upper(regexp_replace(rut, '[^0-9kK]', '', 'g')) LIKE ${'%' + searchRut + '%'}
+            LIMIT 50`
+        ).map((row) => row.id)
+      : [];
 
   const patients = await prisma.patient.findMany({
     where: {
@@ -304,8 +321,15 @@ export async function list(req: Request, res: Response) {
         ? {
             OR: [
               ...(searchRut ? [{ rut: { contains: searchRut, mode: 'insensitive' as const } }] : []),
-              { firstName: { contains: search, mode: 'insensitive' as const } },
-              { lastName: { contains: search, mode: 'insensitive' as const } },
+              ...(rutMatchIds.length ? [{ id: { in: rutMatchIds } }] : []),
+              {
+                AND: words.map((word) => ({
+                  OR: [
+                    { firstName: { contains: word, mode: 'insensitive' as const } },
+                    { lastName: { contains: word, mode: 'insensitive' as const } },
+                  ],
+                })),
+              },
             ],
           }
         : {}),
